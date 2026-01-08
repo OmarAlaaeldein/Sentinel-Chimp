@@ -31,7 +31,7 @@ except ImportError:
 # ===================== 1. Switchable Transformer Engine =====================
 class SentimentEngine:
     def __init__(self):
-        self.current_model_name = "DistilBERT"
+        self.current_model_name = "FinBERT"
         self.models = {
             "DistilBERT": {
                 "id": "distilbert-base-uncased-finetuned-sst-2-english",
@@ -112,6 +112,41 @@ class SentimentEngine:
         except Exception as e:
             print(f"[Model Error] {e}")
             return 0.5
+
+    def predict_batch(self, texts):
+        """Batch inference for better throughput."""
+        target = self.models[self.current_model_name]
+        if not target["loaded"]:
+            return [0.5 for _ in texts]
+        clean_texts = [t for t in texts if t and t.strip()]
+        if not clean_texts:
+            return [0.5 for _ in texts]
+        try:
+            inputs = target["tokenizer"](clean_texts, return_tensors="pt", truncation=True,
+                                          padding=True, max_length=128)
+            with torch.no_grad():
+                outputs = target["model"](**inputs)
+            probs = F.softmax(outputs.logits, dim=-1)
+            if self.current_model_name == "DistilBERT":
+                scores_clean = probs[:, 1].tolist()
+            elif self.current_model_name == "FinBERT":
+                pos = probs[:, 0]
+                neg = probs[:, 1]
+                scores_clean = (0.5 + (pos * 0.5) - (neg * 0.5)).tolist()
+            else:
+                scores_clean = [0.5 for _ in clean_texts]
+            full_scores = []
+            idx = 0
+            for t in texts:
+                if t and t.strip():
+                    full_scores.append(scores_clean[idx])
+                    idx += 1
+                else:
+                    full_scores.append(0.5)
+            return full_scores
+        except Exception as e:
+            print(f"[Model Error] {e}")
+            return [0.5 for _ in texts]
 
 sentiment_engine = SentimentEngine()
 
@@ -203,6 +238,9 @@ class MarketApp:
         self.root.title("Technical Command Center V18 (Fix: Chart Crash)")
         self.root.geometry("1100x950")
 
+        # Configurable cap on headlines scored for sentiment
+        self.headline_limit = 20
+
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
@@ -292,7 +330,7 @@ class MarketApp:
         ctrl_panel.pack(fill="x", pady=2)
         ttk.Label(ctrl_panel, text="Active Model:").pack(side="left")
         
-        self.model_var = tk.StringVar(value="DistilBERT")
+        self.model_var = tk.StringVar(value="FinBERT")
         self.combo_model = ttk.Combobox(ctrl_panel, textvariable=self.model_var, 
                                         values=["DistilBERT", "FinBERT"], state="readonly", width=15)
         self.combo_model.pack(side="left", padx=5)
@@ -311,8 +349,8 @@ class MarketApp:
         self.current_price = 0
         self.hv_30 = 0
         
-        self.log("App Started. Defaulting to DistilBERT.")
-        threading.Thread(target=self.init_model_bg, args=("DistilBERT",), daemon=True).start()
+        self.log("App Started. Defaulting to FinBERT.")
+        threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         
         self.root.after(500, self.load_data)
 
@@ -340,8 +378,10 @@ class MarketApp:
     def log(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] {msg}\n"
-        self.log_box.insert("end", full_msg)
-        self.log_box.see("end")
+        def _append():
+            self.log_box.insert("end", full_msg)
+            self.log_box.see("end")
+        self.root.after(0, _append)
         print(full_msg)
 
     def add_row(self, parent, text, row, tooltip_text=None):
@@ -368,8 +408,23 @@ class MarketApp:
         ticker = self.entry_ticker.get().upper().strip()
         if not ticker: return
         self.current_ticker = ticker
+        self.root.after(0, lambda: self.lbl_status.config(text=f"Loading {ticker} ({period})..."))
         self.log(f"Requesting Chart: {ticker} ({period})")
         threading.Thread(target=self.fetch_and_plot, args=(ticker, period, interval), daemon=True).start()
+
+    def fetch_history_with_retry(self, stock, period, interval, retries=2, delay=1.0):
+        last_exc = None
+        for attempt in range(retries + 1):
+            try:
+                df = stock.history(period=period, interval=interval)
+                if not df.empty:
+                    return df
+                last_exc = RuntimeError("Empty data returned")
+            except Exception as e:
+                last_exc = e
+                self.log(f"History fetch error try {attempt+1}/{retries+1}: {e}")
+            time.sleep(delay)
+        raise last_exc if last_exc else RuntimeError("Unknown history fetch failure")
 
     def get_cached_df(self, ticker, period, interval):
         key = (ticker, period, interval)
@@ -417,7 +472,8 @@ class MarketApp:
                 for n in ynews:
                     title = n.get('title') or n.get('headline') or ""
                     if title.strip(): headlines.append(title)
-        except: pass
+        except Exception as e:
+            self.log(f"Yahoo news error: {e}")
 
         if not headlines:
             headlines = self.get_google_news_rss(ticker)
@@ -427,14 +483,14 @@ class MarketApp:
             return None
 
         self.log(f"Analyzing {len(headlines)} headlines with {sentiment_engine.current_model_name}...")
-        scores = []
-        for i, h in enumerate(headlines[:5]):
-            score = sentiment_engine.predict(h)
-            scores.append(score)
+        top_headlines = headlines[: self.headline_limit]
+        scores = sentiment_engine.predict_batch(top_headlines)
+        for i, (h, score) in enumerate(zip(top_headlines, scores)):
             self.log(f"[{i+1}] {score:.2f} | {h[:40]}...")
 
-        if not scores: return 0.5
-        
+        if not scores: 
+            return 0.5
+
         avg_score = sum(scores) / len(scores)
         self.log(f"FINAL SCORE ({sentiment_engine.current_model_name}): {avg_score:.4f}")
         
@@ -448,9 +504,10 @@ class MarketApp:
             stock = yf.Ticker(ticker)
 
             if df is None:
-                df = stock.history(period=period, interval=interval)
+                df = self.fetch_history_with_retry(stock, period, interval)
                 if df.empty: 
                     self.log("No price data found.")
+                    self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                     return
                 if len(df) > 5: df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
                 if len(df) > 21: df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
@@ -465,7 +522,7 @@ class MarketApp:
             # 2. Technical Data
             df_tech, tech_cached = self.get_cached_df(ticker, "1y", "1d")
             if df_tech is None:
-                df_tech = stock.history(period="1y", interval="1d")
+                df_tech = self.fetch_history_with_retry(stock, "1y", "1d")
                 df_tech = calculate_technicals(df_tech)
                 df_tech['log_ret'] = np.log(df_tech['Close'] / df_tech['Close'].shift(1))
                 self.save_df_cache(ticker, "1y", "1d", df_tech)
@@ -489,6 +546,7 @@ class MarketApp:
 
         except Exception as e:
             self.log(f"CRITICAL ERROR: {e}")
+            self.root.after(0, lambda: self.lbl_status.config(text="Error"))
 
     def update_chart(self, df, ticker, period):
         # --- SAFETY FIX: Ensure 'ax' exists before using it ---
@@ -496,6 +554,10 @@ class MarketApp:
             return
 
         try:
+            if df is None or df.empty:
+                self.log("Chart skipped: no data")
+                self.root.after(0, lambda: self.lbl_status.config(text="No data"))
+                return
             self.ax.clear()
             self.ax.plot(df.index, df['Close'], label='Price', color='black', linewidth=1.5)
             if 'EMA_5' in df.columns: self.ax.plot(df.index, df['EMA_5'], label='EMA 5', color='blue', linewidth=1, linestyle='--')
@@ -627,7 +689,8 @@ class MarketApp:
                     vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), f"{row['lastPrice']:.2f}", 
                             f"{iv:.1%}", f"{self.hv_30:.1%}", f"{fair:.2f}", f"{ev:+.2f}", "Under" if ev>0.1 else "Over" if ev<-0.1 else "Fair")
                     self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
-            except: pass
+            except Exception as e:
+                self.log(f"Options fetch error for {date}: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()

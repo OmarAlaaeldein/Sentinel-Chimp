@@ -205,3 +205,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+my_distilbert_model/config.json
+my_distilbert_model/pytorch_model.bin
+my_distilbert_model/special_tokens_map.json
+my_distilbert_model/tokenizer_config.json
+my_distilbert_model/tokenizer.json
+my_distilbert_model/vocab.txt
+my_finbert_model/vocab.txt
+my_finbert_model/tokenizer.json
+my_finbert_model/tokenizer_config.json
+my_finbert_model/special_tokens_map.json
+my_finbert_model/pytorch_model.bin
+my_finbert_model/config.json
