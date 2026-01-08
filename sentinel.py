@@ -18,6 +18,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- Charting Libraries ---
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.dates as mdates
 
 # --- TRANSFORMERS SETUP ---
 try:
@@ -235,7 +236,7 @@ class Tooltip:
 class MarketApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Technical Command Center V18 (Fix: Chart Crash)")
+        self.root.title("Sentinel: Stock & Options Analyzer")
         self.root.geometry("1100x950")
 
         # Configurable cap on headlines scored for sentiment
@@ -300,27 +301,45 @@ class MarketApp:
         ctrl_frame = ttk.Frame(self.right_frame)
         ctrl_frame.pack(fill="x", pady=5)
         
+        # --- BUTTON CONFIGURATION UPDATES ---
         self.btn_1d = ttk.Button(ctrl_frame, text="1D", command=lambda: self.load_chart("1d", "1m"), width=5)
         self.btn_1d.pack(side="left", padx=2)
+        
         self.btn_5d = ttk.Button(ctrl_frame, text="5D", command=lambda: self.load_chart("5d", "5m"), width=5)
         self.btn_5d.pack(side="left", padx=2)
-        self.btn_1m = ttk.Button(ctrl_frame, text="1M", command=lambda: self.load_chart("1mo", "1d"), width=5)
+        
+        # 1M now uses 30m for higher resolution (was 1d)
+        self.btn_1m = ttk.Button(ctrl_frame, text="1M", command=lambda: self.load_chart("1mo", "30m"), width=5) 
         self.btn_1m.pack(side="left", padx=2)
+        
         self.btn_3m = ttk.Button(ctrl_frame, text="3M", command=lambda: self.load_chart("3mo", "1d"), width=5)
         self.btn_3m.pack(side="left", padx=2)
-        self.btn_1y = ttk.Button(ctrl_frame, text="1Y", command=lambda: self.load_chart("1y", "1wk"), width=5)
+        
+        # 1Y now uses 60m (hourly) to provide enough data points for EMA 200
+        self.btn_1y = ttk.Button(ctrl_frame, text="1Y", command=lambda: self.load_chart("1y", "60m"), width=5)
         self.btn_1y.pack(side="left", padx=2)
-        self.btn_5y = ttk.Button(ctrl_frame, text="5Y", command=lambda: self.load_chart("5y", "1mo"), width=5)
+        
+        self.btn_5y = ttk.Button(ctrl_frame, text="5Y", command=lambda: self.load_chart("5y", "1wk"), width=5)
         self.btn_5y.pack(side="left", padx=2)
+        self.btn_10y = ttk.Button(ctrl_frame, text="10Y", command=lambda: self.load_chart("10y", "1wk"), width=5)
+        self.btn_10y.pack(side="left", padx=2)
+        self.btn_25y = ttk.Button(ctrl_frame, text="25Y", command=lambda: self.load_chart("25y", "1mo"), width=5)
+        self.btn_25y.pack(side="left", padx=2)
 
         self.lbl_status = ttk.Label(ctrl_frame, text="", foreground="gray", font=("Arial", 8))
         self.lbl_status.pack(side="right", padx=10)
 
         # Chart Initialization
         self.figure = plt.Figure(figsize=(5, 4), dpi=100)
-        self.ax = self.figure.add_subplot(111) # <--- Created here
+        self.ax = self.figure.add_subplot(111) 
         self.canvas = FigureCanvasTkAgg(self.figure, self.right_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.hover_annot = None
+        self.last_plot_df = None
+        self.last_plot_x = None
+        self.last_plot_times = None
+        self.use_compressed_hover = False
+        self.canvas.mpl_connect('motion_notify_event', self.on_hover)
 
         # --- SYSTEM LOG & CONTROLS ---
         log_frame = ttk.LabelFrame(root, text="System Log & AI Controls", padding=5)
@@ -352,6 +371,7 @@ class MarketApp:
         self.log("App Started. Defaulting to FinBERT.")
         threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         
+        # --- DEFAULT CHANGED TO 5D/5M ---
         self.root.after(500, self.load_data)
 
     def init_model_bg(self, model_name):
@@ -402,12 +422,14 @@ class MarketApp:
             self.data_cache = {} 
             self.sent_cache = {}
             self.log(f"Ticker changed to {new_ticker}. Cleared Cache.")
-        self.load_chart("1mo", "1d")
+        # --- DEFAULT LOAD IS NOW 5D / 5M ---
+        self.load_chart("5d", "5m")
 
     def load_chart(self, period, interval):
         ticker = self.entry_ticker.get().upper().strip()
         if not ticker: return
         self.current_ticker = ticker
+        self.last_interval = interval
         self.root.after(0, lambda: self.lbl_status.config(text=f"Loading {ticker} ({period})..."))
         self.log(f"Requesting Chart: {ticker} ({period})")
         threading.Thread(target=self.fetch_and_plot, args=(ticker, period, interval), daemon=True).start()
@@ -509,9 +531,13 @@ class MarketApp:
                     self.log("No price data found.")
                     self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                     return
-                if len(df) > 5: df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
-                if len(df) > 21: df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
-                if len(df) > 63: df['EMA_63'] = df['Close'].ewm(span=63, adjust=False).mean()
+                
+                # EMAs: Calculate unconditionally
+                df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
+                df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+                df['EMA_63'] = df['Close'].ewm(span=63, adjust=False).mean()
+                df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+                
                 self.save_df_cache(ticker, period, interval, df)
                 status_msg = f"Live Data ({interval})"
             else:
@@ -558,16 +584,76 @@ class MarketApp:
                 self.log("Chart skipped: no data")
                 self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                 return
+            plot_df = df.copy()
+            interval = getattr(self, "last_interval", None)
+            intraday = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
+
+            if interval in intraday:
+                # Filter out pre/post-market and weekends
+                idx = plot_df.index
+                if getattr(idx, "tz", None):
+                    idx_eastern = idx.tz_convert("America/New_York")
+                else:
+                    idx_eastern = idx.tz_localize("UTC").tz_convert("America/New_York")
+                minutes = idx_eastern.hour * 60 + idx_eastern.minute
+                mask = (minutes >= 570) & (minutes <= 960) & (idx_eastern.dayofweek < 5)
+                filtered = plot_df[mask]
+                if not filtered.empty:
+                    plot_df = filtered
+
+            # Decide whether to compress timeline (intraday)
+            use_compressed = interval in intraday
+            if use_compressed:
+                times_for_labels = plot_df.index
+                if getattr(times_for_labels, "tz", None):
+                    times_for_labels = times_for_labels.tz_convert("America/New_York")
+                else:
+                    times_for_labels = times_for_labels.tz_localize("UTC").tz_convert("America/New_York")
+                x_vals = np.arange(len(plot_df))
+            else:
+                times_for_labels = plot_df.index
+                x_vals = mdates.date2num(times_for_labels.to_pydatetime())
+
             self.ax.clear()
-            self.ax.plot(df.index, df['Close'], label='Price', color='black', linewidth=1.5)
-            if 'EMA_5' in df.columns: self.ax.plot(df.index, df['EMA_5'], label='EMA 5', color='blue', linewidth=1, linestyle='--')
-            if 'EMA_21' in df.columns: self.ax.plot(df.index, df['EMA_21'], label='EMA 21', color='orange', linewidth=1)
-            if 'EMA_63' in df.columns: self.ax.plot(df.index, df['EMA_63'], label='EMA 63', color='purple', linewidth=1)
+            self.hover_annot = None 
+
+            self.ax.plot(x_vals, plot_df['Close'], label='Price', color='black', linewidth=1.5)
+            if 'EMA_5' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_5'], label='EMA 5', color='blue', linewidth=1, linestyle='--')
+            if 'EMA_21' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_21'], label='EMA 21', color='orange', linewidth=1)
+            if 'EMA_63' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_63'], label='EMA 63', color='purple', linewidth=1)
+            
+            # --- Plot EMA 200 ---
+            if 'EMA_200' in plot_df.columns:
+                if plot_df['EMA_200'].notna().sum() > 0:
+                    self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='red', linewidth=1.5)
+
             self.ax.set_title(f"{ticker} Price Action ({period})")
             self.ax.legend(loc='upper left', fontsize='small')
             self.ax.grid(True, alpha=0.3)
-            self.figure.autofmt_xdate()
+            
+            if use_compressed:
+                if len(times_for_labels) > 0:
+                    tick_count = min(6, len(times_for_labels))
+                    tick_idx = np.linspace(0, len(times_for_labels) - 1, tick_count, dtype=int)
+                    if interval in {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}:
+                        tick_labels = [times_for_labels[i].strftime("%m-%d %H:%M") for i in tick_idx]
+                    elif interval in {"1d", "1wk"}:
+                        tick_labels = [times_for_labels[i].strftime("%Y-%m-%d") for i in tick_idx]
+                    elif interval == "1mo":
+                        tick_labels = [times_for_labels[i].strftime("%Y-%b") for i in tick_idx]
+                    else:
+                        tick_labels = [str(times_for_labels[i]) for i in tick_idx]
+                    self.ax.set_xticks(tick_idx)
+                    self.ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=8)
+            else:
+                self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+                self.figure.autofmt_xdate()
+            
             self.canvas.draw()
+            self.last_plot_df = plot_df
+            self.last_plot_x = x_vals
+            self.last_plot_times = times_for_labels
+            self.use_compressed_hover = use_compressed
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
@@ -604,6 +690,59 @@ class MarketApp:
             self.lbl_sent.config(text="N/A", foreground="gray")
 
         self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
+
+    def on_hover(self, event):
+        if event.inaxes != self.ax or self.last_plot_df is None or self.last_plot_df.empty:
+            if self.hover_annot:
+                self.hover_annot.set_visible(False)
+                self.canvas.draw_idle()
+            return
+
+        try:
+            if self.use_compressed_hover:
+                xdata = self.last_plot_x
+                if xdata is None or len(xdata) == 0:
+                    return
+                idx = int(round(event.xdata))
+                idx = np.clip(idx, 0, len(xdata) - 1)
+                xval = xdata[idx]
+            else:
+                xdata = mdates.date2num(self.last_plot_times.to_pydatetime()) if self.last_plot_times is not None else []
+                if len(xdata) == 0:
+                    return
+                idx = np.searchsorted(xdata, event.xdata)
+                idx = np.clip(idx, 0, len(xdata) - 1)
+                xval = xdata[idx]
+
+            row = self.last_plot_df.iloc[idx]
+            yval = row['Close']
+
+            parts = [f"Price: ${yval:.2f}"]
+            if 'EMA_5' in row and not np.isnan(row['EMA_5']):
+                parts.append(f"EMA5: ${row['EMA_5']:.2f}")
+            if 'EMA_21' in row and not np.isnan(row['EMA_21']):
+                parts.append(f"EMA21: ${row['EMA_21']:.2f}")
+            if 'EMA_63' in row and not np.isnan(row['EMA_63']):
+                parts.append(f"EMA63: ${row['EMA_63']:.2f}")
+            if 'EMA_200' in row and not np.isnan(row['EMA_200']):
+                parts.append(f"EMA200: ${row['EMA_200']:.2f}")
+            
+            text = "\n".join(parts)
+
+            if not self.hover_annot:
+                self.hover_annot = self.ax.annotate(
+                    text, xy=(xval, yval), xytext=(15, 15), textcoords="offset points",
+                    bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
+                    arrowprops=dict(arrowstyle="->", color="0.5")
+                )
+            else:
+                self.hover_annot.set_text(text)
+                self.hover_annot.xy = (xval, yval)
+                self.hover_annot.set_visible(True)
+
+            self.canvas.draw_idle()
+        except Exception as e:
+            self.log(f"Hover error: {e}")
 
     # ===================== 5. Options Window (Same as Pro) =====================
     def open_options_window(self):
