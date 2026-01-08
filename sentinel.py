@@ -240,7 +240,7 @@ class MarketApp:
         self.root.geometry("1100x950")
 
         # Configurable cap on headlines scored for sentiment
-        self.headline_limit = 20
+        self.headline_limit = 100
 
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
