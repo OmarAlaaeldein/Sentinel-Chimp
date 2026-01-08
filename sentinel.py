@@ -367,7 +367,7 @@ class MarketApp:
         self.current_ticker = None
         self.current_price = 0
         self.hv_30 = 0
-        self.next_earnings_date = None
+        self.projected_earnings = []  # <--- Changed from single var to list
         
         self.log("App Started. Defaulting to FinBERT.")
         threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
@@ -526,30 +526,35 @@ class MarketApp:
             df, is_cached = self.get_cached_df(ticker, period, interval)
             stock = yf.Ticker(ticker)
             try:
+                self.projected_earnings = []
                 cal = stock.calendar
-                self.next_earnings_date = None
+                anchor_date = None
 
-                # Case 1: New yfinance (Dictionary)
+                # 1. Get the Anchor Date (The official next earnings)
                 if isinstance(cal, dict):
-                    # Usually looks like {'Earnings Date': [datetime.date(2025, 1, 28)]}
                     if 'Earnings Date' in cal:
                         dates = cal['Earnings Date']
                         if dates and len(dates) > 0:
-                            # Use the first date in the list
-                            self.next_earnings_date = pd.to_datetime(dates[0]).date()
+                            anchor_date = pd.to_datetime(dates[0]).date()
                 
-                # Case 2: Old yfinance (DataFrame)
                 elif cal is not None and hasattr(cal, 'empty') and not cal.empty:
-                    # Usually index 0 or column 0 contains the date
                     raw_date = cal.iloc[0].values[0]
-                    self.next_earnings_date = pd.to_datetime(raw_date).date()
+                    anchor_date = pd.to_datetime(raw_date).date()
 
-                if self.next_earnings_date:
-                    self.log(f"Next Earnings detected: {self.next_earnings_date}")
-
+                # 2. Project Future Quarters (Heuristic: +91 days)
+                if anchor_date:
+                    self.projected_earnings.append(anchor_date)
+                    current = anchor_date
+                    # Generate next 3 quarters (approx 1 year out)
+                    for _ in range(3):
+                        current = current + timedelta(days=91)
+                        self.projected_earnings.append(current)
+                    
+                    self.log(f"Earnings Cycle Detected: {self.projected_earnings}")
+                
             except Exception as e:
                 self.log(f"Earnings fetch skipped: {e}")
-                self.next_earnings_date = None
+                self.projected_earnings = []
 
             if df is None:
                 df = self.fetch_history_with_retry(stock, period, interval)
@@ -837,57 +842,62 @@ class MarketApp:
         threading.Thread(target=self.fetch_options_batch, args=(dates,), daemon=True).start()
 
     def fetch_options_batch(self, dates):
-        stock = yf.Ticker(self.current_ticker)
-        for date in dates:
-            try:
-                T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
-                if T <= 0: T=0.001
-                chain = stock.option_chain(date)
-                calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
-                top = pd.concat([calls.sort_values('volume', ascending=False).head(5), 
-                                 puts.sort_values('volume', ascending=False).head(5)])
-                for _, row in top.iterrows():
-                    iv = row['impliedVolatility']
-                    if not iv: continue
-                    
-                    # 1. Calc Theoretical Value based on Historical Volatility
-                    fair = VegaChimpCore.bs_price(self.current_price, row['strike'], 0.045, 0.0, self.hv_30, T, row['Type'].lower())
-                    ev = fair - row['lastPrice']
-                    
-                    # 2. Earnings Logic
-                    verdict = "Fair"
-                    tag = ""
-                    
-                    is_earnings_play = False
-                    if self.next_earnings_date:
-                        exp_dt = datetime.strptime(date, "%Y-%m-%d").date()
-                        
-                        # Calculate the gap: Expiration - Earnings
-                        delta = (exp_dt - self.next_earnings_date).days
-                        
-                        # ONLY flag if expiration is AFTER earnings 
-                        # AND within 14 days of the event (The "Crush Zone")
-                        if 0 <= delta <= 14:
-                            is_earnings_play = True
+            stock = yf.Ticker(self.current_ticker)
 
-                    if is_earnings_play:
-                        verdict = "Earnings"
-                        tag = "blue"
-                    else:
-                        # Standard Logic for all other dates
-                        if ev > 0.1:
-                            verdict = "Under"
-                            tag = "green"
-                        elif ev < -0.1:
-                            verdict = "Over"
-                            tag = "red"
+            # --- PRE-CALCULATE EARNINGS CONTRACTS ---
+            # Find the *first* available expiration date for each projected earnings event.
+            # This handles cases where weekly options don't exist and the next expiration 
+            # is a monthly (e.g., 30 days away).
+            earnings_contracts = set()
+            if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
+                for p_date in self.projected_earnings:
+                    p_str = p_date.strftime("%Y-%m-%d")
+                    # Filter for all expirations that occur ON or AFTER the earnings date
+                    valid_exps = [e for e in self.all_exps if e >= p_str]
+                    if valid_exps:
+                        # The minimum (earliest) valid date is the "Earnings Play"
+                        earnings_contracts.add(min(valid_exps))
+            # ----------------------------------------
 
-                    vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), f"{row['lastPrice']:.2f}", 
-                            f"{iv:.1%}", f"{self.hv_30:.1%}", f"{fair:.2f}", f"{ev:+.2f}", verdict)
+            for date in dates:
+                try:
+                    T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
+                    if T <= 0: T=0.001
+                    chain = stock.option_chain(date)
+                    calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
+                    top = pd.concat([calls.sort_values('volume', ascending=False).head(5), 
+                                    puts.sort_values('volume', ascending=False).head(5)])
                     
-                    self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
-            except Exception as e:
-                self.log(f"Options fetch error for {date}: {e}")
+                    for _, row in top.iterrows():
+                        iv = row['impliedVolatility']
+                        if not iv: continue
+                        
+                        fair = VegaChimpCore.bs_price(self.current_price, row['strike'], 0.045, 0.0, self.hv_30, T, row['Type'].lower())
+                        ev = fair - row['lastPrice']
+                        
+                        # 3. Final Earnings Logic (Exact Match)
+                        verdict = "Fair"
+                        tag = ""
+
+                        # Check if THIS expiration is one of the identified "Earnings Contracts"
+                        if date in earnings_contracts:
+                            verdict = "Earnings"
+                            tag = "blue"
+                        else:
+                            # Standard Logic
+                            if ev > 0.1:
+                                verdict = "Under"
+                                tag = "green"
+                            elif ev < -0.1:
+                                verdict = "Over"
+                                tag = "red"
+
+                        vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), f"{row['lastPrice']:.2f}", 
+                                f"{iv:.1%}", f"{self.hv_30:.1%}", f"{fair:.2f}", f"{ev:+.2f}", verdict)
+                        
+                        self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
+                except Exception as e:
+                    self.log(f"Options fetch error for {date}: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
