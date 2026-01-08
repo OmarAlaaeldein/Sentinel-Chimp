@@ -446,7 +446,7 @@ class MarketApp:
             resp = requests.get(url, headers=headers, timeout=5, verify=False) 
             if resp.status_code == 200:
                 root = ET.fromstring(resp.content)
-                titles = [item.find('title').text for item in root.findall('.//item')][:10]
+                titles = [item.find('title').text for item in root.findall('.//item')][: self.headline_limit]
                 self.log(f"RSS Found {len(titles)} headlines.")
                 return titles
         except Exception as e:
