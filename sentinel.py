@@ -290,6 +290,8 @@ class MarketApp:
                         "30-day historical (realized) volatility, annualized. Higher values = choppier price action; compare with implied vol.")
         self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6,
                          "Headline sentiment scored 0-1 by the selected transformer. Under 0.4 bearish, over 0.6 bullish, mid-range neutral.")
+        self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7,
+                         "Total percentage return over the currently selected chart period.")
 
         self.btn_opt = ttk.Button(self.left_frame, text="🔎 Options Explorer", command=self.open_options_window, state="disabled")
         self.btn_opt.pack(fill="x", padx=20, pady=20, ipady=10)
@@ -573,6 +575,15 @@ class MarketApp:
                 status_msg = f"Live Data ({interval})"
             else:
                 status_msg = f"Cached Data ({interval})"
+            
+            # --- CALCULATE RETURN FOR SELECTED PERIOD ---
+            if not df.empty:
+                start_price = df['Close'].iloc[0]
+                end_price = df['Close'].iloc[-1]
+                period_return = (end_price - start_price) / start_price
+            else:
+                period_return = 0.0
+            # --------------------------------------------
 
             self.root.after(0, lambda: self.lbl_status.config(text=status_msg))
 
@@ -598,7 +609,7 @@ class MarketApp:
             last_copy = last.copy()
             last_copy['Close'] = current_price 
             
-            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, sentiment_score))
+            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, sentiment_score, period_return))
             self.root.after(0, self.update_chart, df, ticker, period)
 
         except Exception as e:
@@ -688,7 +699,7 @@ class MarketApp:
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
-    def update_technicals(self, data, hv, sentiment):
+    def update_technicals(self, data, hv, sentiment, period_return):
         self.lbl_price.config(text=f"${data['Close']:.2f}")
         
         rsi_val = data['RSI']
@@ -719,6 +730,11 @@ class MarketApp:
             self.lbl_sent.config(text=f"{sentiment:.2f}", foreground=sent_c)
         else:
             self.lbl_sent.config(text="N/A", foreground="gray")
+        
+        # --- UPDATE RETURN LABEL ---
+        ret_c = "green" if period_return > 0 else "red" if period_return < 0 else "black"
+        self.lbl_return.config(text=f"{period_return:+.2%}", foreground=ret_c)
+        # ---------------------------
 
         self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
 
