@@ -31,8 +31,3 @@ A quantitative approach to options, featuring the **VegaChimp** logic core.
 
 ### Prerequisites
 Ensure you have Python 3.8+ installed. This project relies on `torch` and `transformers` for the AI components.
-
-1. **Clone the repository**
-   ```bash
-   git clone [https://github.com/OmarAlaaeldein/PyStock-Sentinel.git](https://github.com/OmarAlaaeldein/PyStock-Sentinel.git)
-   cd PyStock-Sentinel
