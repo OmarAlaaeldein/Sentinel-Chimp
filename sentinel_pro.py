@@ -317,7 +317,7 @@ class MarketApp:
         self.root.geometry("1500x900")
 
         self.headline_limit = 100
-        self.ev_absolute = False
+        self.ev_absolute = True
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
@@ -1040,14 +1040,27 @@ class MarketApp:
         for i in self.tree.get_children(): self.tree.delete(i)
         threading.Thread(target=self.fetch_options_batch, args=(dates,), daemon=True).start()
 
+    def get_risk_free_rate(self):
+        """Fetches the 13-week Treasury Bill yield (^IRX) as the risk-free rate."""
+        try:
+            tnx = yf.Ticker("^IRX")
+            # ^IRX is quoted in percentage (e.g., 4.50), we need decimal (0.045)
+            rate = tnx.fast_info['last_price'] / 100
+            if rate <= 0: return 0.045 # Fallback
+            return rate
+        except Exception:
+            return 0.045 # Fallback to a standard rate if fetch fails
+
     def fetch_options_batch(self, dates, filter_under_only=False):
         stock = yf.Ticker(self.current_ticker)
         
-        # 1.5% Yield for NVO (or dynamic)
+        # --- DYNAMIC INPUTS ---
         DIV_YIELD = self.get_smart_dividend(stock) 
+        RFR = self.get_risk_free_rate() # <--- NEW DYNAMIC RATE
         
-        # Optional: Keep the debug print we discussed if you want to verify yield
-        print(f"[DEBUG] Yield Used: {DIV_YIELD:.4%}")
+        print(f"[DEBUG] Market Environment | Ticker: {self.current_ticker}")
+        print(f"[DEBUG] Risk-Free Rate: {RFR:.4%}")
+        print(f"[DEBUG] Dividend Yield: {DIV_YIELD:.4%}")
 
         earnings_contracts = set()
         if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
@@ -1063,17 +1076,13 @@ class MarketApp:
                 chain = stock.option_chain(date)
                 calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
                 
-                # Get top 20 by volume to ensure we check enough candidates
                 top = pd.concat([calls, puts]).sort_values('volume', ascending=False).head(20)
                 
                 for _, row in top.iterrows():
-                    # --- PRICING LOGIC ---
                     bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
                     
-                    # Logic: Prefer Mid-Price, fallback to Last if Bid/Ask are missing
                     if bid > 0 and ask > 0:
                         market_price = (bid + ask) / 2
-                        # Filter out massive spreads (Liquidity trap)
                         if (ask - bid) / market_price > 0.4: continue 
                     elif last > 0:
                         market_price = last
@@ -1083,15 +1092,14 @@ class MarketApp:
                     iv = row['impliedVolatility']
                     if not iv or iv < 0.01: continue
 
-                    # GARCH or HV
                     vol_input = self.garch_vol if self.garch_vol > 0 else self.hv_30
                     
-                    # Fair Value (Bjerksund)
+                    # --- MODEL CALL WITH DYNAMIC RFR ---
                     fair = VegaChimpCore.bjerksund_stensland(
                         self.current_price, 
                         row['strike'], 
                         T, 
-                        0.045,      
+                        RFR,        # <--- USED HERE
                         DIV_YIELD,  
                         vol_input, 
                         row['Type'].lower()
@@ -1099,7 +1107,6 @@ class MarketApp:
                     
                     ev = fair - market_price
                     
-                    # Breakeven
                     if row['Type'] == "CALL":
                         breakeven = row['strike'] + market_price
                     else:
@@ -1108,32 +1115,21 @@ class MarketApp:
                     verdict = "Fair"
                     tag = ""
                     is_earnings = date in earnings_contracts
-
-                    # --- VERDICT LOGIC SWITCH ---
-                    # Uses self.ev_absolute variable to decide logic
                     
                     if self.ev_absolute:
-                        # === OLD METHOD (Absolute $) ===
                         threshold = 0.25 if is_earnings else 0.15
-                        
                         if ev > threshold:
                             verdict = "Earnings Under" if is_earnings else "Under"
                             tag = "green"
                         elif ev < -threshold:
                             verdict = "Earnings Over" if is_earnings else "Over"
                             tag = "red"
-                            
                     else:
-                        # === NEW METHOD (Percentage %) ===
-                        # 1. Calculate Edge %
                         safe_price = max(market_price, 0.01)
                         edge_percent = (ev / safe_price) * 100
-                        
-                        # 2. Define Thresholds (20% for Earnings, 10% Normal)
                         min_edge_pct = 20.0 if is_earnings else 10.0
-                        min_dollar_edge = 0.05 # Noise filter for penny options
+                        min_dollar_edge = 0.05 
 
-                        # 3. Apply Logic
                         if edge_percent > min_edge_pct and ev > min_dollar_edge:
                             verdict = f"Under ({edge_percent:.0f}%)"
                             if is_earnings: verdict = f"Earn Under ({edge_percent:.0f}%)"
@@ -1146,18 +1142,9 @@ class MarketApp:
                     if filter_under_only and "Under" not in verdict:
                         continue
 
-                    vals = (
-                        date, 
-                        row['Type'], 
-                        row['strike'], 
-                        int(row['volume'] or 0), 
-                        f"{market_price:.2f}", 
-                        f"{breakeven:.2f}", 
-                        f"{iv:.1%}", 
-                        f"{fair:.2f}", 
-                        f"{ev:+.2f}", 
-                        verdict
-                    )
+                    vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), 
+                            f"{market_price:.2f}", f"{breakeven:.2f}", f"{iv:.1%}", 
+                            f"{fair:.2f}", f"{ev:+.2f}", verdict)
                     
                     self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
             
