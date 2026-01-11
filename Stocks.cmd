@@ -22,6 +22,6 @@ call "%CONDA_ACTIVATE%" "%CONDA_ENV%" || (
     exit /b 1
 )
 
-python "%ROOT%sentinel.py"
+python "%ROOT%Sentinel.py"
 
 endlocal

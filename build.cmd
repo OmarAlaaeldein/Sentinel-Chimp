@@ -35,7 +35,7 @@ if errorlevel 1 (
 )
 
 rem Build one-file GUI exe with bundled models (requires caches present)
-pyinstaller --onefile --noconsole --name Sentinel "%ROOT%sentinel.py" ^
+pyinstaller --onefile --noconsole --name Sentinel "%ROOT%Sentinel.py" ^
     --add-data "%ROOT%my_finbert_model;my_finbert_model" ^
     --add-data "%ROOT%my_distilbert_model;my_distilbert_model"
 

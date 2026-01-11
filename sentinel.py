@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, Toplevel
+from tkinter import ttk, messagebox, Toplevel, filedialog
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -11,6 +11,7 @@ import requests
 import xml.etree.ElementTree as ET
 import os
 import urllib3
+import csv
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -88,34 +89,7 @@ class SentimentEngine:
             print(f"[Error] {self.status_msg}")
             return False
 
-    def predict(self, text):
-        target = self.models[self.current_model_name]
-        if not target["loaded"] or not text or not text.strip():
-            return 0.5 
-
-        try:
-            inputs = target["tokenizer"](text, return_tensors="pt", truncation=True, max_length=128)
-            with torch.no_grad():
-                outputs = target["model"](**inputs)
-            
-            probs = F.softmax(outputs.logits, dim=-1)
-            
-            if self.current_model_name == "DistilBERT":
-                # Index 1 is Positive
-                return probs[0][1].item()
-            elif self.current_model_name == "FinBERT":
-                # Index 0=Pos, 1=Neg, 2=Neu
-                pos = probs[0][0].item()
-                neg = probs[0][1].item()
-                # Balance around 0.5
-                return 0.5 + (pos * 0.5) - (neg * 0.5)
-                
-        except Exception as e:
-            print(f"[Model Error] {e}")
-            return 0.5
-
     def predict_batch(self, texts):
-        """Batch inference for better throughput."""
         target = self.models[self.current_model_name]
         if not target["loaded"]:
             return [0.5 for _ in texts]
@@ -151,19 +125,124 @@ class SentimentEngine:
 
 sentiment_engine = SentimentEngine()
 
-# ===================== 2. Math Core =====================
+
+# ===================== 2. Math Core (Log-Space Stability) =====================
 class VegaChimpCore:
     @staticmethod
-    def N(x): return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    def N(x): 
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    
     @staticmethod
     def bs_price(S, K, r, q, sig, T, kind):
-        if sig <= 0 or T <= 0 or S <= 0 or K <= 0: return 0.0
+        """Standard Black-Scholes (European) - Fallback."""
+        if sig <= 1e-4 or T <= 1e-4: 
+            return max(0.0, S - K) if kind == "call" else max(0.0, K - S)
+            
         d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * math.sqrt(T))
         d2 = d1 - sig * math.sqrt(T)
         disc = math.exp(-r * T); disc_q = math.exp(-q * T)
-        if kind == "call": return S * disc_q * VegaChimpCore.N(d1) - K * disc * VegaChimpCore.N(d2)
+        
+        if kind == "call": 
+            return S * disc_q * VegaChimpCore.N(d1) - K * disc * VegaChimpCore.N(d2)
         return K * disc * VegaChimpCore.N(-d2) - S * disc_q * VegaChimpCore.N(-d1)
 
+    @staticmethod
+    def garch_forecast(log_returns, days=252):
+        if len(log_returns) < 30: return 0.0
+        try:
+            alpha, beta, omega = 0.05, 0.94, 1e-6
+            variance = np.var(log_returns)
+            for r in log_returns:
+                variance = omega + alpha * (r**2) + beta * variance
+            return np.sqrt(variance * days)
+        except:
+            return 0.0
+
+    @staticmethod
+    def bjerksund_stensland(S, K, T, r, q, sigma, option_type='call'):
+        """
+        Approximation for American Options (2002).
+        Uses Log-Space algebra to prevent overflow errors.
+        """
+        # 1. Sanity Checks
+        if S <= 0 or K <= 0 or T <= 0: return 0.0
+        
+        # 2. Critical Volatility Clamp
+        # Volatility < 1% causes exponents to approach Infinity.
+        # We clamp it to 0.01 (1%) for stability.
+        sigma = max(sigma, 0.01)
+
+        if option_type == 'put':
+            return VegaChimpCore.bjerksund_stensland(K, S, T, q, r, sigma, 'call')
+
+        b = r - q 
+        if b >= r:
+            return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
+
+        try:
+            # --- HELPER: Safe Exponential ---
+            def safe_exp(val):
+                if val > 700: return float('inf') # Prevent overflow
+                if val < -700: return 0.0
+                return math.exp(val)
+
+            # --- HELPER: Phi Function (Rewritten in Log-Space) ---
+            # Original: exp(lam) * (S^gamma) * ( N(d) - (I/S)^k * N(d2) )
+            # New:      exp(lam + gamma*lnS) * N(d)  -  exp(lam + gamma*lnS + k*(lnI - lnS)) * N(d2)
+            def phi(s, t, gamma, h, i):
+                lam = (-r + gamma * b + 0.5 * gamma * (gamma - 1) * sigma**2) * t
+                d_den = (sigma * math.sqrt(t))
+                d_num = -(math.log(s / h) + (b + (gamma - 0.5) * sigma**2) * t)
+                d = d_num / d_den
+                
+                k = 2 * b / (sigma**2) + (2 * gamma - 1)
+                
+                # Pre-calculate Logs
+                ln_s = math.log(s)
+                ln_i = math.log(i)
+                
+                # Term 1: exp(lam + gamma * ln_s) * N(d)
+                power_term_1 = lam + (gamma * ln_s)
+                val_1 = safe_exp(power_term_1) * VegaChimpCore.N(d)
+                
+                # Term 2: exp(power_term_1 + k * (ln_i - ln_s)) * N(d - ...)
+                d2 = d - 2 * math.log(i/s) / d_den
+                power_term_2 = power_term_1 + k * (ln_i - ln_s)
+                val_2 = safe_exp(power_term_2) * VegaChimpCore.N(d2)
+
+                return val_1 - val_2
+
+            # Exercise Boundary
+            beta = (0.5 - b/sigma**2) + math.sqrt((b/sigma**2 - 0.5)**2 + 2*r/sigma**2)
+            if abs(beta - 1) < 1e-5: return S - K
+
+            inf_boundary = K * beta / (beta - 1)
+            h = -(b * T + 2 * sigma * math.sqrt(T)) * (K**2 / ((inf_boundary - K) * inf_boundary))
+            
+            # Safe calculation for I (exercise trigger)
+            I = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h))
+            
+            # Safe calculation for alpha
+            # alpha = (I - K) * I^(-beta)  -->  (I-K) * exp(-beta * lnI)
+            alpha = (I - K) * safe_exp(-beta * math.log(I))
+            
+            if S >= I:
+                return S - K
+            else:
+                # Main Formula
+                term1 = alpha * safe_exp(beta * math.log(S))
+                term2 = alpha * phi(S, T, beta, I, I)
+                term3 = phi(S, T, 1, I, I)
+                term4 = phi(S, T, 1, K, I)
+                term5 = K * phi(S, T, 0, I, I)
+                term6 = K * phi(S, T, 0, K, I)
+                
+                return term1 - term2 + term3 - term4 - term5 + term6
+
+        except (OverflowError, ValueError, ZeroDivisionError):
+            # If math still breaks (e.g. extreme inputs), use Black-Scholes
+            print("[Warning] Bjerksund-Stensland calculation failed, falling back to Black-Scholes.")
+            return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
 # ===================== 3. Technicals Logic =====================
 def calculate_technicals(df):
     delta = df['Close'].diff()
@@ -194,8 +273,6 @@ def calculate_technicals(df):
     df['StochRSI'] = (df['RSI'] - min_rsi) / (max_rsi - min_rsi)
     return df
 
-
-# Lightweight tooltip helper for hover explanations
 class Tooltip:
     def __init__(self, widget, text, delay=400):
         self.widget = widget
@@ -237,20 +314,17 @@ class MarketApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Sentinel: Stock & Options Analyzer")
-        self.root.geometry("1100x950")
+        self.root.geometry("1500x900")
 
-        # Configurable cap on headlines scored for sentiment
         self.headline_limit = 100
-
+        self.ev_absolute = True
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
         self.SENT_CACHE_DURATION = 1800 
         
-        # Initialize Chart Variable EARLY to prevent AttributeError
         self.ax = None 
 
-        # --- Input Frame ---
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
         
@@ -262,7 +336,6 @@ class MarketApp:
         
         ttk.Button(input_frame, text="Load Data", command=self.load_data).pack(side="left")
 
-        # --- Split View ---
         self.paned = ttk.PanedWindow(root, orient="horizontal")
         self.paned.pack(fill="both", expand=True, padx=10, pady=5)
 
@@ -272,56 +345,39 @@ class MarketApp:
         self.lbl_price = ttk.Label(self.left_frame, text="---", font=("Arial", 28, "bold"))
         self.lbl_price.pack(anchor="center", pady=10)
 
-        # Tech Grid
         self.grid_frame = ttk.LabelFrame(self.left_frame, text="Technical Analysis", padding=15)
         self.grid_frame.pack(fill="x", pady=5)
         
-        self.lbl_rsi = self.add_row(self.grid_frame, "RSI (14d)", 0,
-                         "Relative Strength Index. Range 0-100. Under 30 often signals oversold; over 70 signals overbought. 50 is neutral.")
-        self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1,
-                          "Stochastic RSI on a 14-period lookback. Range 0-1. Under 0.2 = oversold, over 0.8 = overbought.")
-        self.lbl_macd = self.add_row(self.grid_frame, "MACD", 2,
-                         "MACD = EMA(12) - EMA(26) with a 9-period signal. Positive values imply bullish momentum; negative imply bearish.")
-        self.lbl_bb = self.add_row(self.grid_frame, "Bollinger Bands", 3,
-                        "Bands are 20-day SMA ± 2 standard deviations. Price above upper band suggests overbought; below lower suggests oversold.")
-        self.lbl_atr = self.add_row(self.grid_frame, "ATR (Volatility)", 4,
-                        "Average True Range over 14 periods. Higher ATR = higher daily dollar swings; use for stop sizing.")
-        self.lbl_vol = self.add_row(self.grid_frame, "Hist. Vol (30d)", 5,
-                        "30-day historical (realized) volatility, annualized. Higher values = choppier price action; compare with implied vol.")
-        self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6,
-                         "Headline sentiment scored 0-1 by the selected transformer. Under 0.4 bearish, over 0.6 bullish, mid-range neutral.")
-        self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7,
-                         "Total percentage return over the currently selected chart period.")
+        self.lbl_rsi = self.add_row(self.grid_frame, "RSI (14d)", 0, "Relative Strength Index. Range 0-100.")
+        self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1, "Stochastic RSI. Range 0-1.")
+        self.lbl_macd = self.add_row(self.grid_frame, "MACD", 2, "Moving Average Convergence Divergence.")
+        self.lbl_bb = self.add_row(self.grid_frame, "Bollinger Bands", 3, "20-day SMA +/- 2 STDs.")
+        self.lbl_atr = self.add_row(self.grid_frame, "ATR (Volatility)", 4, "Average True Range (Daily Move in $).")
+        # Updated tooltip for GARCH
+        self.lbl_vol = self.add_row(self.grid_frame, "Vol (HV vs GARCH)", 5, "HV: 30d Historical Volatility.\nGARCH: Forward-looking Vol Forecast.")
+        self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6, "Headline sentiment scored 0-1.")
+        self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7, "Total return over selected period.")
 
         self.btn_opt = ttk.Button(self.left_frame, text="🔎 Options Explorer", command=self.open_options_window, state="disabled")
         self.btn_opt.pack(fill="x", padx=20, pady=20, ipady=10)
 
-        # Chart Frame
         self.right_frame = ttk.Frame(self.paned)
         self.paned.add(self.right_frame, weight=3)
         
         ctrl_frame = ttk.Frame(self.right_frame)
         ctrl_frame.pack(fill="x", pady=5)
         
-        # --- BUTTON CONFIGURATION UPDATES ---
         self.btn_1d = ttk.Button(ctrl_frame, text="1D", command=lambda: self.load_chart("1d", "1m"), width=5)
         self.btn_1d.pack(side="left", padx=2)
-        
         self.btn_5d = ttk.Button(ctrl_frame, text="5D", command=lambda: self.load_chart("5d", "5m"), width=5)
         self.btn_5d.pack(side="left", padx=2)
-        
-        # 1M now uses 30m for higher resolution (was 1d)
         self.btn_1m = ttk.Button(ctrl_frame, text="1M", command=lambda: self.load_chart("1mo", "30m"), width=5) 
         self.btn_1m.pack(side="left", padx=2)
-        
-        self.btn_3m = ttk.Button(ctrl_frame, text="3M", command=lambda: self.load_chart("3mo", "1d"), width=5)
+        self.btn_3m = ttk.Button(ctrl_frame, text="3M", command=lambda: self.load_chart("3mo", "60m"), width=5)
         self.btn_3m.pack(side="left", padx=2)
-        
-        # 1Y now uses 60m (hourly) to provide enough data points for EMA 200
         self.btn_1y = ttk.Button(ctrl_frame, text="1Y", command=lambda: self.load_chart("1y", "60m"), width=5)
         self.btn_1y.pack(side="left", padx=2)
-        
-        self.btn_5y = ttk.Button(ctrl_frame, text="5Y", command=lambda: self.load_chart("5y", "1wk"), width=5)
+        self.btn_5y = ttk.Button(ctrl_frame, text="5Y", command=lambda: self.load_chart("5y", "1d"), width=5)
         self.btn_5y.pack(side="left", padx=2)
         self.btn_10y = ttk.Button(ctrl_frame, text="10Y", command=lambda: self.load_chart("10y", "1wk"), width=5)
         self.btn_10y.pack(side="left", padx=2)
@@ -331,7 +387,6 @@ class MarketApp:
         self.lbl_status = ttk.Label(ctrl_frame, text="", foreground="gray", font=("Arial", 8))
         self.lbl_status.pack(side="right", padx=10)
 
-        # Chart Initialization
         self.figure = plt.Figure(figsize=(5, 4), dpi=100)
         self.ax = self.figure.add_subplot(111) 
         self.canvas = FigureCanvasTkAgg(self.figure, self.right_frame)
@@ -343,12 +398,17 @@ class MarketApp:
         self.use_compressed_hover = False
         self.canvas.mpl_connect('motion_notify_event', self.on_hover)
 
-        # --- SYSTEM LOG & CONTROLS ---
+# --- SYSTEM LOG & CONTROLS ---
         log_frame = ttk.LabelFrame(root, text="System Log & AI Controls", padding=5)
         log_frame.pack(fill="x", padx=10, pady=5)
 
         ctrl_panel = ttk.Frame(log_frame)
         ctrl_panel.pack(fill="x", pady=2)
+        
+        # [NEW] Toggle Button (Right Side)
+        self.btn_log = ttk.Button(ctrl_panel, text="Show Log", command=self.toggle_log, width=10)
+        self.btn_log.pack(side="right", padx=5)
+
         ttk.Label(ctrl_panel, text="Active Model:").pack(side="left")
         
         self.model_var = tk.StringVar(value="FinBERT")
@@ -360,21 +420,23 @@ class MarketApp:
         self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="blue")
         self.lbl_model_status.pack(side="left", padx=10)
 
+        # [MODIFIED] Create widgets but DO NOT pack them yet (Hidden by default)
         self.log_box = tk.Text(log_frame, height=6, font=("Consolas", 9))
-        self.log_box.pack(fill="x", side="left", expand=True)
-        scrollbar = ttk.Scrollbar(log_frame, command=self.log_box.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.log_box['yscrollcommand'] = scrollbar.set
+        self.log_scroll = ttk.Scrollbar(log_frame, command=self.log_box.yview)
+        self.log_box['yscrollcommand'] = self.log_scroll.set
+        
+        # Track visibility state
+        self.log_visible = False
 
         self.current_ticker = None
         self.current_price = 0
         self.hv_30 = 0
-        self.projected_earnings = []  # <--- Changed from single var to list
+        self.garch_vol = 0 # New variable for GARCH
+        self.projected_earnings = [] 
         
         self.log("App Started. Defaulting to FinBERT.")
         threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         
-        # --- DEFAULT CHANGED TO 5D/5M ---
         self.root.after(500, self.load_data)
 
     def init_model_bg(self, model_name):
@@ -406,6 +468,20 @@ class MarketApp:
             self.log_box.see("end")
         self.root.after(0, _append)
         print(full_msg)
+        
+    def toggle_log(self):
+        if self.log_visible:
+            # Hide widgets
+            self.log_box.pack_forget()
+            self.log_scroll.pack_forget()
+            self.btn_log.config(text="Show Log")
+            self.log_visible = False
+        else:
+            # Show widgets
+            self.log_box.pack(fill="x", side="left", expand=True)
+            self.log_scroll.pack(side="right", fill="y")
+            self.btn_log.config(text="Hide Log")
+            self.log_visible = True
 
     def add_row(self, parent, text, row, tooltip_text=None):
         f = ttk.Frame(parent)
@@ -425,7 +501,6 @@ class MarketApp:
             self.data_cache = {} 
             self.sent_cache = {}
             self.log(f"Ticker changed to {new_ticker}. Cleared Cache.")
-        # --- DEFAULT LOAD IS NOW 5D / 5M ---
         self.load_chart("5d", "5m")
 
     def load_chart(self, period, interval):
@@ -532,7 +607,6 @@ class MarketApp:
                 cal = stock.calendar
                 anchor_date = None
 
-                # 1. Get the Anchor Date (The official next earnings)
                 if isinstance(cal, dict):
                     if 'Earnings Date' in cal:
                         dates = cal['Earnings Date']
@@ -543,11 +617,9 @@ class MarketApp:
                     raw_date = cal.iloc[0].values[0]
                     anchor_date = pd.to_datetime(raw_date).date()
 
-                # 2. Project Future Quarters (Heuristic: +91 days)
                 if anchor_date:
                     self.projected_earnings.append(anchor_date)
                     current = anchor_date
-                    # Generate next 3 quarters (approx 1 year out)
                     for _ in range(3):
                         current = current + timedelta(days=91)
                         self.projected_earnings.append(current)
@@ -565,7 +637,7 @@ class MarketApp:
                     self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                     return
                 
-                # EMAs: Calculate unconditionally
+                # EMAs: Calculate unconditionally (PRESERVED)
                 df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
                 df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
                 df['EMA_63'] = df['Close'].ewm(span=63, adjust=False).mean()
@@ -576,18 +648,16 @@ class MarketApp:
             else:
                 status_msg = f"Cached Data ({interval})"
             
-            # --- CALCULATE RETURN FOR SELECTED PERIOD ---
             if not df.empty:
                 start_price = df['Close'].iloc[0]
                 end_price = df['Close'].iloc[-1]
                 period_return = (end_price - start_price) / start_price
             else:
                 period_return = 0.0
-            # --------------------------------------------
 
             self.root.after(0, lambda: self.lbl_status.config(text=status_msg))
 
-            # 2. Technical Data
+            # 2. Technical Data & GARCH
             df_tech, tech_cached = self.get_cached_df(ticker, "1y", "1d")
             if df_tech is None:
                 df_tech = self.fetch_history_with_retry(stock, "1y", "1d")
@@ -600,6 +670,12 @@ class MarketApp:
             else: current_price = last['Close']
 
             hv_30 = df_tech['log_ret'].rolling(30).std().iloc[-1] * np.sqrt(252)
+            
+            # --- APPLY GARCH(1,1) ---
+            returns = df_tech['log_ret'].dropna().values
+            self.garch_vol = VegaChimpCore.garch_forecast(returns)
+            # ------------------------
+
             self.current_price = current_price
             self.hv_30 = hv_30
             
@@ -609,7 +685,8 @@ class MarketApp:
             last_copy = last.copy()
             last_copy['Close'] = current_price 
             
-            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, sentiment_score, period_return))
+            # Pass GARCH to UI Update
+            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, self.garch_vol, sentiment_score, period_return))
             self.root.after(0, self.update_chart, df, ticker, period)
 
         except Exception as e:
@@ -617,9 +694,7 @@ class MarketApp:
             self.root.after(0, lambda: self.lbl_status.config(text="Error"))
 
     def update_chart(self, df, ticker, period):
-        # --- SAFETY FIX: Ensure 'ax' exists before using it ---
-        if not hasattr(self, 'ax') or self.ax is None:
-            return
+        if not hasattr(self, 'ax') or self.ax is None: return
 
         try:
             if df is None or df.empty:
@@ -631,7 +706,6 @@ class MarketApp:
             intraday = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
 
             if interval in intraday:
-                # Filter out pre/post-market and weekends
                 idx = plot_df.index
                 if getattr(idx, "tz", None):
                     idx_eastern = idx.tz_convert("America/New_York")
@@ -643,7 +717,6 @@ class MarketApp:
                 if not filtered.empty:
                     plot_df = filtered
 
-            # Decide whether to compress timeline (intraday)
             use_compressed = interval in intraday
             if use_compressed:
                 times_for_labels = plot_df.index
@@ -660,17 +733,16 @@ class MarketApp:
             self.hover_annot = None 
 
             self.ax.plot(x_vals, plot_df['Close'], label='Price', color='black', linewidth=1.5)
-            if 'EMA_5' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_5'], label='EMA 5', color='blue', linewidth=1, linestyle='--')
+            if 'EMA_5' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_5'], label='EMA 5', color='blue', linewidth=1)
             if 'EMA_21' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_21'], label='EMA 21', color='orange', linewidth=1)
             if 'EMA_63' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_63'], label='EMA 63', color='purple', linewidth=1)
             
-            # --- Plot EMA 200 ---
             if 'EMA_200' in plot_df.columns:
                 if plot_df['EMA_200'].notna().sum() > 0:
                     self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='red', linewidth=1.5)
-
+            self.ax.set_xlim(left=x_vals[0], right=x_vals[-1])
             self.ax.set_title(f"{ticker} Price Action ({period})")
-            self.ax.legend(loc='upper left', fontsize='small')
+            self.ax.legend(loc='upper right', fontsize='small')
             self.ax.grid(True, alpha=0.3)
             
             if use_compressed:
@@ -699,7 +771,8 @@ class MarketApp:
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
-    def update_technicals(self, data, hv, sentiment, period_return):
+    # --- UPDATED UI METHOD TO SHOW GARCH ---
+    def update_technicals(self, data, hv, garch, sentiment, period_return):
         self.lbl_price.config(text=f"${data['Close']:.2f}")
         
         rsi_val = data['RSI']
@@ -723,7 +796,9 @@ class MarketApp:
         self.lbl_bb.config(text=f"{bb_pos}\n[{data['BB_Lower']:.2f}-{data['BB_Upper']:.2f}]", foreground=bb_c)
         
         self.lbl_atr.config(text=f"${data['ATR']:.2f}")
-        self.lbl_vol.config(text=f"{hv:.1%}")
+        
+        # --- NEW GARCH DISPLAY ---
+        self.lbl_vol.config(text=f"HV: {hv:.1%} | GARCH: {garch:.1%}")
         
         if sentiment is not None:
             sent_c = "red" if sentiment < 0.4 else "green" if sentiment > 0.6 else "black"
@@ -731,10 +806,8 @@ class MarketApp:
         else:
             self.lbl_sent.config(text="N/A", foreground="gray")
         
-        # --- UPDATE RETURN LABEL ---
         ret_c = "green" if period_return > 0 else "red" if period_return < 0 else "black"
         self.lbl_return.config(text=f"{period_return:+.2%}", foreground=ret_c)
-        # ---------------------------
 
         self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
 
@@ -746,25 +819,35 @@ class MarketApp:
             return
 
         try:
+            # --- FIND THE DATA POINT ---
             if self.use_compressed_hover:
                 xdata = self.last_plot_x
-                if xdata is None or len(xdata) == 0:
-                    return
+                if xdata is None or len(xdata) == 0: return
                 idx = int(round(event.xdata))
                 idx = np.clip(idx, 0, len(xdata) - 1)
                 xval = xdata[idx]
             else:
                 xdata = mdates.date2num(self.last_plot_times.to_pydatetime()) if self.last_plot_times is not None else []
-                if len(xdata) == 0:
-                    return
+                if len(xdata) == 0: return
                 idx = np.searchsorted(xdata, event.xdata)
                 idx = np.clip(idx, 0, len(xdata) - 1)
                 xval = xdata[idx]
 
             row = self.last_plot_df.iloc[idx]
             yval = row['Close']
+            
+            # --- FORMAT DATE ---
+            # The index of the row is the timestamp
+            curr_time = self.last_plot_df.index[idx]
+            # Use specific format based on interval (Time for intraday, Date for daily)
+            if self.last_interval in ["1d", "5d", "1wk", "1mo"]:
+                date_str = curr_time.strftime("%Y-%m-%d")
+            else:
+                date_str = curr_time.strftime("%Y-%m-%d %H:%M")
 
-            parts = [f"Price: ${yval:.2f}"]
+            # --- BUILD TOOLTIP TEXT ---
+            parts = [f"Date: {date_str}", f"Price: ${yval:.2f}"] # Added Date here
+            
             if 'EMA_5' in row and not np.isnan(row['EMA_5']):
                 parts.append(f"EMA5: ${row['EMA_5']:.2f}")
             if 'EMA_21' in row and not np.isnan(row['EMA_21']):
@@ -790,13 +873,65 @@ class MarketApp:
             self.canvas.draw_idle()
         except Exception as e:
             self.log(f"Hover error: {e}")
+            
+    def scan_all_undervalued(self):
+        # Clear current results
+        for i in self.tree.get_children(): self.tree.delete(i)
+        
+        # Search ALL dates, but enable filtering for "Under" only
+        if hasattr(self, 'all_exps'):
+            self.log(f"Scanning {len(self.all_exps)} chains for value...")
+            threading.Thread(target=self.fetch_options_batch, args=(self.all_exps, True), daemon=True).start()
+    
+    def get_smart_dividend(self, stock_obj):
+        try:
+            # 1. Try 'dividendYield' from info
+            info = stock_obj.info
+            div = info.get('dividendYield')
+            
+            # --- FIX: SANITY CHECK ---
+            if div is not None and isinstance(div, (int, float)):
+                # If yield is > 0.5 (50%), it's almost certainly a percentage (e.g. 2.94)
+                # We need it to be a decimal (0.0294)
+                if div > 0.5: 
+                    print(f"[DEBUG] Detected Percentage Format ({div}). Fixing to {div/100}...")
+                    div = div / 100
+                
+                print(f"[DEBUG] Found Dividend (Info): {div:.4%}") 
+                return div
+            
+            # 2. Try 'trailingAnnualDividendYield'
+            div = info.get('trailingAnnualDividendYield')
+            if div is not None and isinstance(div, (int, float)):
+                if div > 0.5: div = div / 100 # Apply fix here too
+                print(f"[DEBUG] Found Dividend (Trailing): {div:.4%}")
+                return div
 
-    # ===================== 5. Options Window (Same as Pro) =====================
+            # 3. Fallback: Calculation
+            hist = stock_obj.dividends
+            if not hist.empty:
+                recent_total = hist.iloc[-4:].sum() 
+                if self.current_price > 0:
+                    yield_calc = recent_total / self.current_price
+                    print(f"[DEBUG] Calculated Dividend (History): {yield_calc:.4%}")
+                    return yield_calc
+            
+            # 4. NVO Specific Fallback
+            if self.current_ticker == "NVO":
+                print("[DEBUG] Forcing NVO Default: 1.5000%")
+                return 0.015
+
+            return 0.0
+            
+        except Exception as e:
+            print(f"[DEBUG] Div fetch error: {e}")
+            return 0.0
+
     def open_options_window(self):
         if not self.current_ticker: return
         win = Toplevel(self.root)
         win.title(f"Options Explorer: {self.current_ticker}")
-        win.geometry("1100x700")
+        win.geometry("1150x700")
 
         left_panel = ttk.Frame(win, width=200)
         left_panel.pack(side="left", fill="y", padx=5, pady=5)
@@ -809,16 +944,26 @@ class MarketApp:
         self.entry_date.insert(0, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d"))
         
         ttk.Button(left_panel, text="Select Prev 7 Expirations", command=self.filter_expirations).pack(fill="x", pady=5)
-        
+        ttk.Button(left_panel, text="⚡ Scan ALL Undervalued", command=self.scan_all_undervalued).pack(fill="x", pady=20)
+        ttk.Button(left_panel, text="💾 Export Results to CSV", command=self.export_to_csv).pack(fill="x", pady=5)
+          
         self.exp_list = tk.Listbox(left_panel, selectmode="extended", height=25)
         self.exp_list.pack(fill="both", expand=True)
         self.exp_list.bind('<<ListboxSelect>>', self.on_exp_select)
         
-        cols = ("Date", "Type", "Strike", "Vol", "Last", "Imp Vol", "Fair(HV)", "Fair", "EV", "Verdict")
+        # --- FIXED COLUMNS (Removed extra 'Fair' column) ---
+        # 10 Columns Total
+        # In open_options_window()
+        cols = ("Date", "Type", "Strike", "Vol", "Price", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
+        # I changed "Last" to "Price" so you know it's the effective price used for calc, it used bid+ask/2
         self.tree = ttk.Treeview(right_panel, columns=cols, show="headings")
+        
         for c in cols: 
             self.tree.heading(c, text=c)
-            self.tree.column(c, width=70, anchor="center")
+            # Adjust width: Breakeven needs more space, others less
+            w = 80 if c == "Breakeven" else 65
+            if c == "Date": w = 90
+            self.tree.column(c, width=w, anchor="center")
         
         scr = ttk.Scrollbar(right_panel, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scr.set); self.tree.pack(side="left", fill="both", expand=True); scr.pack(side="right", fill="y")
@@ -828,6 +973,44 @@ class MarketApp:
         self.tree.tag_configure("blue", background="#d4eef8")
         
         threading.Thread(target=self.load_expirations, daemon=True).start()
+
+    def export_to_csv(self):
+        # 1. Ask user where to save
+        filename = filedialog.asksaveasfilename(
+            initialfile=f"{self.current_ticker}_options_scan.csv",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not filename: return
+
+        try:
+            # 2. Collect Data from Treeview
+            rows = self.tree.get_children()
+            if not rows:
+                messagebox.showinfo("Export", "No data to export!")
+                return
+
+            # 3. Write to CSV
+            with open(filename, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # Write Headers
+                cols = ("Date", "Type", "Strike", "Vol", "Price", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
+                writer.writerow(cols)
+                
+                # Write Rows
+                count = 0
+                for row_id in rows:
+                    row_data = self.tree.item(row_id)['values']
+                    writer.writerow(row_data)
+                    count += 1
+            
+            messagebox.showinfo("Success", f"Successfully exported {count} rows to:\n{filename}")
+            self.log(f"Exported {count} rows to CSV.")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to save CSV:\n{e}")
+            self.log(f"Export Error: {e}")
 
     def load_expirations(self):
         stock = yf.Ticker(self.current_ticker)
@@ -857,63 +1040,116 @@ class MarketApp:
         for i in self.tree.get_children(): self.tree.delete(i)
         threading.Thread(target=self.fetch_options_batch, args=(dates,), daemon=True).start()
 
-    def fetch_options_batch(self, dates):
-            stock = yf.Ticker(self.current_ticker)
+    def get_risk_free_rate(self):
+        """Fetches the 13-week Treasury Bill yield (^IRX) as the risk-free rate."""
+        try:
+            tnx = yf.Ticker("^IRX")
+            # ^IRX is quoted in percentage (e.g., 4.50), we need decimal (0.045)
+            rate = tnx.fast_info['last_price'] / 100
+            if rate <= 0: return 0.045 # Fallback
+            return rate
+        except Exception:
+            return 0.045 # Fallback to a standard rate if fetch fails
 
-            # --- PRE-CALCULATE EARNINGS CONTRACTS ---
-            # Find the *first* available expiration date for each projected earnings event.
-            # This handles cases where weekly options don't exist and the next expiration 
-            # is a monthly (e.g., 30 days away).
-            earnings_contracts = set()
-            if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
-                for p_date in self.projected_earnings:
-                    p_str = p_date.strftime("%Y-%m-%d")
-                    # Filter for all expirations that occur ON or AFTER the earnings date
-                    valid_exps = [e for e in self.all_exps if e >= p_str]
-                    if valid_exps:
-                        # The minimum (earliest) valid date is the "Earnings Play"
-                        earnings_contracts.add(min(valid_exps))
-            # ----------------------------------------
+    def fetch_options_batch(self, dates, filter_under_only=False):
+        stock = yf.Ticker(self.current_ticker)
+        
+        # --- DYNAMIC INPUTS ---
+        DIV_YIELD = self.get_smart_dividend(stock) 
+        RFR = self.get_risk_free_rate() # <--- NEW DYNAMIC RATE
+        
+        print(f"[DEBUG] Market Environment | Ticker: {self.current_ticker}")
+        print(f"[DEBUG] Risk-Free Rate: {RFR:.4%}")
+        print(f"[DEBUG] Dividend Yield: {DIV_YIELD:.4%}")
 
-            for date in dates:
-                try:
-                    T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
-                    if T <= 0: T=0.001
-                    chain = stock.option_chain(date)
-                    calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
-                    top = pd.concat([calls.sort_values('volume', ascending=False).head(5), 
-                                    puts.sort_values('volume', ascending=False).head(5)])
+        earnings_contracts = set()
+        if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
+            for p_date in self.projected_earnings:
+                p_str = p_date.strftime("%Y-%m-%d")
+                valid_exps = [e for e in self.all_exps if e >= p_str]
+                if valid_exps: earnings_contracts.add(min(valid_exps))
+
+        for date in dates:
+            try:
+                T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
+                if T <= 0: T=0.001
+                chain = stock.option_chain(date)
+                calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
+                
+                top = pd.concat([calls, puts]).sort_values('volume', ascending=False).head(20)
+                
+                for _, row in top.iterrows():
+                    bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
                     
-                    for _, row in top.iterrows():
-                        iv = row['impliedVolatility']
-                        if not iv: continue
+                    if bid > 0 and ask > 0:
+                        market_price = (bid + ask) / 2
+                        if (ask - bid) / market_price > 0.4: continue 
+                    elif last > 0:
+                        market_price = last
+                    else:
+                        continue
                         
-                        fair = VegaChimpCore.bs_price(self.current_price, row['strike'], 0.045, 0.0, self.hv_30, T, row['Type'].lower())
-                        ev = fair - row['lastPrice']
-                        
-                        # 3. Final Earnings Logic (Exact Match)
-                        verdict = "Fair"
-                        tag = ""
+                    iv = row['impliedVolatility']
+                    if not iv or iv < 0.01: continue
 
-                        # Check if THIS expiration is one of the identified "Earnings Contracts"
-                        if date in earnings_contracts:
-                            verdict = "Earnings"
-                            tag = "blue"
-                        else:
-                            # Standard Logic
-                            if ev > 0.1:
-                                verdict = "Under"
-                                tag = "green"
-                            elif ev < -0.1:
-                                verdict = "Over"
-                                tag = "red"
+                    vol_input = self.garch_vol if self.garch_vol > 0 else self.hv_30
+                    
+                    # --- MODEL CALL WITH DYNAMIC RFR ---
+                    fair = VegaChimpCore.bjerksund_stensland(
+                        self.current_price, 
+                        row['strike'], 
+                        T, 
+                        RFR,        # <--- USED HERE
+                        DIV_YIELD,  
+                        vol_input, 
+                        row['Type'].lower()
+                    )
+                    
+                    ev = fair - market_price
+                    
+                    if row['Type'] == "CALL":
+                        breakeven = row['strike'] + market_price
+                    else:
+                        breakeven = row['strike'] - market_price
 
-                        vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), f"{row['lastPrice']:.2f}", 
-                                f"{iv:.1%}", f"{self.hv_30:.1%}", f"{fair:.2f}", f"{ev:+.2f}", verdict)
-                        
-                        self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
-                except Exception as e:
-                    self.log(f"Options fetch error for {date}: {e}")
+                    verdict = "Fair"
+                    tag = ""
+                    is_earnings = date in earnings_contracts
+                    
+                    if self.ev_absolute:
+                        threshold = 0.25 if is_earnings else 0.15
+                        if ev > threshold:
+                            verdict = "Earnings Under" if is_earnings else "Under"
+                            tag = "green"
+                        elif ev < -threshold:
+                            verdict = "Earnings Over" if is_earnings else "Over"
+                            tag = "red"
+                    else:
+                        safe_price = max(market_price, 0.01)
+                        edge_percent = (ev / safe_price) * 100
+                        min_edge_pct = 20.0 if is_earnings else 10.0
+                        min_dollar_edge = 0.05 
+
+                        if edge_percent > min_edge_pct and ev > min_dollar_edge:
+                            verdict = f"Under ({edge_percent:.0f}%)"
+                            if is_earnings: verdict = f"Earn Under ({edge_percent:.0f}%)"
+                            tag = "green"
+                        elif edge_percent < -min_edge_pct and ev < -min_dollar_edge:
+                            verdict = "Over"
+                            if is_earnings: verdict = f"Earn Over ({edge_percent:.0f}%)"
+                            tag = "red"
+
+                    if filter_under_only and "Under" not in verdict:
+                        continue
+
+                    vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), 
+                            f"{market_price:.2f}", f"{breakeven:.2f}", f"{iv:.1%}", 
+                            f"{fair:.2f}", f"{ev:+.2f}", verdict)
+                    
+                    self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
+            
+            except Exception as e:
+                self.log(f"Options fetch error for {date}: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
