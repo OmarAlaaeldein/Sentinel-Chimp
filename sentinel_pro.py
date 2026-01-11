@@ -862,7 +862,9 @@ class MarketApp:
         
         # --- FIXED COLUMNS (Removed extra 'Fair' column) ---
         # 10 Columns Total
-        cols = ("Date", "Type", "Strike", "Vol", "Last", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
+        # In open_options_window()
+        cols = ("Date", "Type", "Strike", "Vol", "Price", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
+        # I changed "Last" to "Price" so you know it's the effective price used for calc, it used bid+ask/2
         self.tree = ttk.Treeview(right_panel, columns=cols, show="headings")
         
         for c in cols: 
@@ -911,8 +913,11 @@ class MarketApp:
 
     def fetch_options_batch(self, dates, filter_under_only=False):
         stock = yf.Ticker(self.current_ticker)
-        earnings_contracts = set()
         
+        # 1.5% Yield for NVO
+        DIV_YIELD = 0.015 
+
+        earnings_contracts = set()
         if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
             for p_date in self.projected_earnings:
                 p_str = p_date.strftime("%Y-%m-%d")
@@ -926,50 +931,69 @@ class MarketApp:
                 chain = stock.option_chain(date)
                 calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
                 
-                top = pd.concat([calls.sort_values('volume', ascending=False).head(10), 
-                                puts.sort_values('volume', ascending=False).head(10)])
+                # Get top 20 by volume to ensure we check enough candidates
+                top = pd.concat([calls, puts]).sort_values('volume', ascending=False).head(20)
                 
                 for _, row in top.iterrows():
-                    iv = row['impliedVolatility']
-                    if not iv or row['lastPrice'] == 0: continue
+                    # --- PRICING LOGIC ---
+                    bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
                     
+                    # Logic: Prefer Mid-Price, fallback to Last if Bid/Ask are missing
+                    if bid > 0 and ask > 0:
+                        market_price = (bid + ask) / 2
+                        # Filter out massive spreads (Liquidity trap)
+                        if (ask - bid) / market_price > 0.4: continue 
+                    elif last > 0:
+                        market_price = last
+                    else:
+                        continue
+                        
+                    iv = row['impliedVolatility']
+                    if not iv or iv < 0.01: continue
+
+                    # GARCH or HV
                     vol_input = self.garch_vol if self.garch_vol > 0 else self.hv_30
                     
-                    # Correct Bjerksund Call: S, K, r, q, sig, T, kind
+                    # Fair Value (Bjerksund)
                     fair = VegaChimpCore.bjerksund_stensland(
-                        self.current_price, row['strike'], T, 0.045, 0.0, vol_input, row['Type'].lower()
+                        self.current_price, 
+                        row['strike'], 
+                        T, 
+                        0.045,      
+                        DIV_YIELD,  
+                        vol_input, 
+                        row['Type'].lower()
                     )
                     
-                    ev = fair - row['lastPrice']
+                    ev = fair - market_price
                     
-                    # Breakeven Calculation
+                    # Breakeven
                     if row['Type'] == "CALL":
-                        breakeven = row['strike'] + row['lastPrice']
+                        breakeven = row['strike'] + market_price
                     else:
-                        breakeven = row['strike'] - row['lastPrice']
+                        breakeven = row['strike'] - market_price
 
                     verdict = "Fair"
                     tag = ""
                     is_earnings = date in earnings_contracts
+                    threshold = 0.25 if is_earnings else 0.15
 
-                    if is_earnings:
-                        if ev > 0.2: verdict = "Earnings Under"; tag = "green"
-                        elif ev < -0.2: verdict = "Earnings Over"; tag = "red"
-                    else:
-                        if ev > 0.1: verdict = "Under"; tag = "green"
-                        elif ev < -0.1: verdict = "Over"; tag = "red"
+                    if ev > threshold:
+                        verdict = "Earnings Under" if is_earnings else "Under"
+                        tag = "green"
+                    elif ev < -threshold:
+                        verdict = "Earnings Over" if is_earnings else "Over"
+                        tag = "red"
 
-                    if filter_under_only and verdict not in ["Under", "Earnings Under"]:
+                    if filter_under_only and "Under" not in verdict:
                         continue
 
-                    # --- FIXED VALUES TUPLE (10 ITEMS) ---
-                    # 1.Date, 2.Type, 3.Strike, 4.Vol, 5.Last, 6.Breakeven, 7.ImpVol, 8.Fair, 9.EV, 10.Verdict
                     vals = (
                         date, 
                         row['Type'], 
                         row['strike'], 
                         int(row['volume'] or 0), 
-                        f"{row['lastPrice']:.2f}", 
+                        f"{market_price:.2f}",   # <--- NOW SHOWING MID PRICE
                         f"{breakeven:.2f}", 
                         f"{iv:.1%}", 
                         f"{fair:.2f}", 
@@ -979,6 +1003,8 @@ class MarketApp:
                     
                     self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
             
+            except Exception as e:
+                self.log(f"Options fetch error for {date}: {e}")            
             except Exception as e:
                 self.log(f"Options fetch error for {date}: {e}")
 
