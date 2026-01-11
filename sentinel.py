@@ -65,15 +65,18 @@ class SentimentEngine:
 
         local_path = os.path.join(os.getcwd(), target["dir"])
         
+        # Determine device (CUDA if available)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
         try:
-            print(f"[System] Loading {model_key}...")
+            print(f"[System] Loading {model_key} on {device}...")
             if os.path.exists(local_path) and os.listdir(local_path):
                 target["tokenizer"] = AutoTokenizer.from_pretrained(local_path)
-                target["model"] = AutoModelForSequenceClassification.from_pretrained(local_path)
+                target["model"] = AutoModelForSequenceClassification.from_pretrained(local_path).to(device)
             else:
                 print(f"[System] Downloading {model_key} (First Run)...")
                 target["tokenizer"] = AutoTokenizer.from_pretrained(target["id"])
-                target["model"] = AutoModelForSequenceClassification.from_pretrained(target["id"])
+                target["model"] = AutoModelForSequenceClassification.from_pretrained(target["id"]).to(device)
                 
                 print(f"[System] Saving {model_key} locally...")
                 target["tokenizer"].save_pretrained(local_path)
@@ -81,7 +84,7 @@ class SentimentEngine:
             
             target["loaded"] = True
             self.current_model_name = model_key
-            self.status_msg = f"{model_key} Loaded."
+            self.status_msg = f"{model_key} Loaded ({device.upper()})."
             return True
 
         except Exception as e:
@@ -91,25 +94,36 @@ class SentimentEngine:
 
     def predict_batch(self, texts):
         target = self.models[self.current_model_name]
+        
+        # Use "Pending" instead of 0.5 for non-loaded models
         if not target["loaded"]:
-            return [0.5 for _ in texts]
+            return ["Pending" for _ in texts]
+            
         clean_texts = [t for t in texts if t and t.strip()]
         if not clean_texts:
-            return [0.5 for _ in texts]
+            return ["Pending" for _ in texts]
+            
         try:
+            # Move inputs to the same device as the model
+            device = next(target["model"].parameters()).device
             inputs = target["tokenizer"](clean_texts, return_tensors="pt", truncation=True,
-                                          padding=True, max_length=128)
+                                          padding=True, max_length=128).to(device)
+            
             with torch.no_grad():
                 outputs = target["model"](**inputs)
+            
             probs = F.softmax(outputs.logits, dim=-1)
+            
             if self.current_model_name == "DistilBERT":
                 scores_clean = probs[:, 1].tolist()
             elif self.current_model_name == "FinBERT":
                 pos = probs[:, 0]
                 neg = probs[:, 1]
-                scores_clean = (0.5 + (pos * 0.5) - (neg * 0.5)).tolist()
+                # Convert back to CPU for list conversion
+                scores_clean = (0.5 + (pos * 0.5) - (neg * 0.5)).cpu().tolist()
             else:
                 scores_clean = [0.5 for _ in clean_texts]
+                
             full_scores = []
             idx = 0
             for t in texts:
@@ -117,11 +131,11 @@ class SentimentEngine:
                     full_scores.append(scores_clean[idx])
                     idx += 1
                 else:
-                    full_scores.append(0.5)
+                    full_scores.append("Pending")
             return full_scores
         except Exception as e:
             print(f"[Model Error] {e}")
-            return [0.5 for _ in texts]
+            return ["Pending" for _ in texts]
 
 sentiment_engine = SentimentEngine()
 
@@ -597,6 +611,31 @@ class MarketApp:
         self.sent_cache[ticker] = (avg_score, time.time())
         return avg_score
 
+    def treeview_sort_column(self, tv, col, reverse):
+        """Sorts the treeview contents when a column header is clicked."""
+        # Get all data from the column
+        l = [(tv.set(k, col), k) for k in tv.get_children('')]
+
+        # Helper to convert values to floats for proper numerical sorting
+        def sort_key(v):
+            val = v[0]
+            try:
+                # Remove symbols that break float conversion
+                clean_val = str(val).replace('%', '').replace('$', '').replace('+', '')
+                return float(clean_val)
+            except ValueError:
+                return str(val).lower()
+
+        # Sort the list
+        l.sort(key=sort_key, reverse=reverse)
+
+        # Rearrange items in sorted order
+        for index, (val, k) in enumerate(l):
+            tv.move(k, '', index)
+
+        # Update the heading command to toggle the sort direction next time
+        tv.heading(col, command=lambda _col=col: self.treeview_sort_column(tv, _col, not reverse))
+
     def fetch_and_plot(self, ticker, period, interval):
         try:
             # 1. Chart Data
@@ -771,7 +810,7 @@ class MarketApp:
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
-    # --- UPDATED UI METHOD TO SHOW GARCH ---
+# --- UPDATED UI METHOD TO SHOW GARCH & PENDING SENTIMENT ---
     def update_technicals(self, data, hv, garch, sentiment, period_return):
         self.lbl_price.config(text=f"${data['Close']:.2f}")
         
@@ -797,12 +836,20 @@ class MarketApp:
         
         self.lbl_atr.config(text=f"${data['ATR']:.2f}")
         
-        # --- NEW GARCH DISPLAY ---
+        # --- GARCH & HV DISPLAY ---
         self.lbl_vol.config(text=f"HV: {hv:.1%} | GARCH: {garch:.1%}")
         
-        if sentiment is not None:
-            sent_c = "red" if sentiment < 0.4 else "green" if sentiment > 0.6 else "black"
-            self.lbl_sent.config(text=f"{sentiment:.2f}", foreground=sent_c)
+        # --- UPDATED SENTIMENT BLOCK (Handles "Pending" string) ---
+        if sentiment == "Pending":
+            self.lbl_sent.config(text="Pending", foreground="gray")
+        elif sentiment is not None:
+            try:
+                # Ensure it's treated as a float for comparison
+                val = float(sentiment)
+                sent_c = "red" if val < 0.4 else "green" if val > 0.6 else "black"
+                self.lbl_sent.config(text=f"{val:.2f}", foreground=sent_c)
+            except (ValueError, TypeError):
+                self.lbl_sent.config(text="N/A", foreground="gray")
         else:
             self.lbl_sent.config(text="N/A", foreground="gray")
         
@@ -959,8 +1006,10 @@ class MarketApp:
         self.tree = ttk.Treeview(right_panel, columns=cols, show="headings")
         
         for c in cols: 
-            self.tree.heading(c, text=c)
-            # Adjust width: Breakeven needs more space, others less
+            # Added command= to trigger sorting on click
+            self.tree.heading(c, text=c, command=lambda _c=c: self.treeview_sort_column(self.tree, _c, False))
+            
+            # Keep your existing width logic
             w = 80 if c == "Breakeven" else 65
             if c == "Date": w = 90
             self.tree.column(c, width=w, anchor="center")
