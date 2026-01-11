@@ -127,10 +127,12 @@ sentiment_engine = SentimentEngine()
 # ===================== 2. Math Core (UPDATED WITH GARCH) =====================
 class VegaChimpCore:
     @staticmethod
-    def N(x): return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    def N(x): 
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
     
     @staticmethod
     def bs_price(S, K, r, q, sig, T, kind):
+        """Standard Black-Scholes (European) - Kept as fallback/helper."""
         if sig <= 0 or T <= 0 or S <= 0 or K <= 0: return 0.0
         d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * math.sqrt(T))
         d2 = d1 - sig * math.sqrt(T)
@@ -138,30 +140,63 @@ class VegaChimpCore:
         if kind == "call": return S * disc_q * VegaChimpCore.N(d1) - K * disc * VegaChimpCore.N(d2)
         return K * disc * VegaChimpCore.N(-d2) - S * disc_q * VegaChimpCore.N(-d1)
 
-    # --- NEW GARCH LOGIC ADDED HERE ---
     @staticmethod
     def garch_forecast(log_returns, days=252):
-        """
-        Calculates GARCH(1,1) forward volatility using a recursive numpy loop.
-        Uses standard parameters (Omega=small, Alpha=0.05, Beta=0.94) suitable for daily returns.
-        Returns: Annualized Volatility (float)
-        """
+        """GARCH(1,1) Volatility Forecast."""
         if len(log_returns) < 30: return 0.0
-        
-        # Standard RiskMetrics-style parameters (works well without expensive optimization)
-        alpha = 0.05
-        beta = 0.94
-        omega = 1e-6 # Small variance constant
-        
-        # Initialize variance with the simple sample variance of the dataset
+        alpha, beta, omega = 0.05, 0.94, 1e-6
         variance = np.var(log_returns)
-        
-        # Recursive calculation
         for r in log_returns:
-            # GARCH(1,1) formula: sigma^2_t = omega + alpha * r^2_{t-1} + beta * sigma^2_{t-1}
             variance = omega + alpha * (r**2) + beta * variance
-            
         return np.sqrt(variance * days)
+
+    # --- NEW: Bjerksund-Stensland (2002) for American Options ---
+    @staticmethod
+    def bjerksund_stensland(S, K, T, r, q, sigma, option_type='call'):
+        """
+        Approximation for American Options. 
+        Auto-converts Puts to Calls using symmetry for calculation.
+        """
+        if sigma <= 0 or T <= 0 or S <= 0 or K <= 0: return 0.0
+        
+        # Put-Call Transformation: P(S, K, T, r, q, sigma) -> C(K, S, T, r-q, -q, sigma)
+        if option_type == 'put':
+            # Swap S/K AND swap r/q
+            return VegaChimpCore.bjerksund_stensland(K, S, T, q, r, sigma, 'call')
+
+        # Cost of Carry (b = r - q)
+        b = r - q 
+
+        # 1. Edge Case: If b >= r (e.g. no dividends), American Call == European Call
+        if b >= r:
+            # S, K, r, q, sig, T, kind
+            return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
+
+        # 2. Main Approximation Logic (2002)
+        def phi(s, t, gamma, h, i):
+            lam = (-r + gamma * b + 0.5 * gamma * (gamma - 1) * sigma**2) * t
+            d = -(math.log(s / h) + (b + (gamma - 0.5) * sigma**2) * t) / (sigma * math.sqrt(t))
+            k = 2 * b / (sigma**2) + (2 * gamma - 1)
+            return math.exp(lam) * (s ** gamma) * (VegaChimpCore.N(d) - (i / s)**k * VegaChimpCore.N(d - 2 * math.log(i/s) / (sigma * math.sqrt(t))))
+        
+        # Exercise Boundary Calculation
+        beta = (0.5 - b/sigma**2) + math.sqrt((b/sigma**2 - 0.5)**2 + 2*r/sigma**2)
+        inf_boundary = K * beta / (beta - 1)
+        
+        h = -(b * T + 2 * sigma * math.sqrt(T)) * (K**2 / ((inf_boundary - K) * inf_boundary))
+        I = inf_boundary + (K - inf_boundary) * (1 - math.exp(h))
+        
+        alpha = (I - K) * (I ** (-beta))
+        
+        if S >= I:
+            return S - K
+        else:
+            return (alpha * (S ** beta) 
+                    - alpha * phi(S, T, beta, I, I) 
+                    + phi(S, T, 1, I, I) 
+                    - phi(S, T, 1, K, I) 
+                    - K * phi(S, T, 0, I, I) 
+                    + K * phi(S, T, 0, K, I))
 
 # ===================== 3. Technicals Logic =====================
 def calculate_technicals(df):
@@ -792,12 +827,21 @@ class MarketApp:
             self.canvas.draw_idle()
         except Exception as e:
             self.log(f"Hover error: {e}")
-
+            
+    def scan_all_undervalued(self):
+        # Clear current results
+        for i in self.tree.get_children(): self.tree.delete(i)
+        
+        # Search ALL dates, but enable filtering for "Under" only
+        if hasattr(self, 'all_exps'):
+            self.log(f"Scanning {len(self.all_exps)} chains for value...")
+            threading.Thread(target=self.fetch_options_batch, args=(self.all_exps, True), daemon=True).start()
+    
     def open_options_window(self):
         if not self.current_ticker: return
         win = Toplevel(self.root)
         win.title(f"Options Explorer: {self.current_ticker}")
-        win.geometry("1100x700")
+        win.geometry("1150x700")
 
         left_panel = ttk.Frame(win, width=200)
         left_panel.pack(side="left", fill="y", padx=5, pady=5)
@@ -810,16 +854,23 @@ class MarketApp:
         self.entry_date.insert(0, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d"))
         
         ttk.Button(left_panel, text="Select Prev 7 Expirations", command=self.filter_expirations).pack(fill="x", pady=5)
+        ttk.Button(left_panel, text="⚡ Scan ALL Undervalued", command=self.scan_all_undervalued).pack(fill="x", pady=20)
         
         self.exp_list = tk.Listbox(left_panel, selectmode="extended", height=25)
         self.exp_list.pack(fill="both", expand=True)
         self.exp_list.bind('<<ListboxSelect>>', self.on_exp_select)
         
-        cols = ("Date", "Type", "Strike", "Vol", "Last", "Imp Vol", "Fair(HV)", "Fair", "EV", "Verdict")
+        # --- FIXED COLUMNS (Removed extra 'Fair' column) ---
+        # 10 Columns Total
+        cols = ("Date", "Type", "Strike", "Vol", "Last", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
         self.tree = ttk.Treeview(right_panel, columns=cols, show="headings")
+        
         for c in cols: 
             self.tree.heading(c, text=c)
-            self.tree.column(c, width=70, anchor="center")
+            # Adjust width: Breakeven needs more space, others less
+            w = 80 if c == "Breakeven" else 65
+            if c == "Date": w = 90
+            self.tree.column(c, width=w, anchor="center")
         
         scr = ttk.Scrollbar(right_panel, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scr.set); self.tree.pack(side="left", fill="both", expand=True); scr.pack(side="right", fill="y")
@@ -858,53 +909,78 @@ class MarketApp:
         for i in self.tree.get_children(): self.tree.delete(i)
         threading.Thread(target=self.fetch_options_batch, args=(dates,), daemon=True).start()
 
-    def fetch_options_batch(self, dates):
-            stock = yf.Ticker(self.current_ticker)
-            earnings_contracts = set()
-            if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
-                for p_date in self.projected_earnings:
-                    p_str = p_date.strftime("%Y-%m-%d")
-                    valid_exps = [e for e in self.all_exps if e >= p_str]
-                    if valid_exps:
-                        earnings_contracts.add(min(valid_exps))
+    def fetch_options_batch(self, dates, filter_under_only=False):
+        stock = yf.Ticker(self.current_ticker)
+        earnings_contracts = set()
+        
+        if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
+            for p_date in self.projected_earnings:
+                p_str = p_date.strftime("%Y-%m-%d")
+                valid_exps = [e for e in self.all_exps if e >= p_str]
+                if valid_exps: earnings_contracts.add(min(valid_exps))
 
-            for date in dates:
-                try:
-                    T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
-                    if T <= 0: T=0.001
-                    chain = stock.option_chain(date)
-                    calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
-                    top = pd.concat([calls.sort_values('volume', ascending=False).head(5), 
-                                    puts.sort_values('volume', ascending=False).head(5)])
+        for date in dates:
+            try:
+                T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
+                if T <= 0: T=0.001
+                chain = stock.option_chain(date)
+                calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
+                
+                top = pd.concat([calls.sort_values('volume', ascending=False).head(10), 
+                                puts.sort_values('volume', ascending=False).head(10)])
+                
+                for _, row in top.iterrows():
+                    iv = row['impliedVolatility']
+                    if not iv or row['lastPrice'] == 0: continue
                     
-                    for _, row in top.iterrows():
-                        iv = row['impliedVolatility']
-                        if not iv: continue
-                        
-                        # Note: Still using BS Price with HV for safety (as requested), can swap self.hv_30 with self.garch_vol later
-                        fair = VegaChimpCore.bs_price(self.current_price, row['strike'], 0.045, 0.0, self.hv_30, T, row['Type'].lower())
-                        ev = fair - row['lastPrice']
-                        
-                        verdict = "Fair"
-                        tag = ""
+                    vol_input = self.garch_vol if self.garch_vol > 0 else self.hv_30
+                    
+                    # Correct Bjerksund Call: S, K, r, q, sig, T, kind
+                    fair = VegaChimpCore.bjerksund_stensland(
+                        self.current_price, row['strike'], T, 0.045, 0.0, vol_input, row['Type'].lower()
+                    )
+                    
+                    ev = fair - row['lastPrice']
+                    
+                    # Breakeven Calculation
+                    if row['Type'] == "CALL":
+                        breakeven = row['strike'] + row['lastPrice']
+                    else:
+                        breakeven = row['strike'] - row['lastPrice']
 
-                        if date in earnings_contracts:
-                            verdict = "Earnings"
-                            tag = "blue"
-                        else:
-                            if ev > 0.1:
-                                verdict = "Under"
-                                tag = "green"
-                            elif ev < -0.1:
-                                verdict = "Over"
-                                tag = "red"
+                    verdict = "Fair"
+                    tag = ""
+                    is_earnings = date in earnings_contracts
 
-                        vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), f"{row['lastPrice']:.2f}", 
-                                f"{iv:.1%}", f"{self.hv_30:.1%}", f"{fair:.2f}", f"{ev:+.2f}", verdict)
-                        
-                        self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
-                except Exception as e:
-                    self.log(f"Options fetch error for {date}: {e}")
+                    if is_earnings:
+                        if ev > 0.2: verdict = "Earnings Under"; tag = "green"
+                        elif ev < -0.2: verdict = "Earnings Over"; tag = "red"
+                    else:
+                        if ev > 0.1: verdict = "Under"; tag = "green"
+                        elif ev < -0.1: verdict = "Over"; tag = "red"
+
+                    if filter_under_only and verdict not in ["Under", "Earnings Under"]:
+                        continue
+
+                    # --- FIXED VALUES TUPLE (10 ITEMS) ---
+                    # 1.Date, 2.Type, 3.Strike, 4.Vol, 5.Last, 6.Breakeven, 7.ImpVol, 8.Fair, 9.EV, 10.Verdict
+                    vals = (
+                        date, 
+                        row['Type'], 
+                        row['strike'], 
+                        int(row['volume'] or 0), 
+                        f"{row['lastPrice']:.2f}", 
+                        f"{breakeven:.2f}", 
+                        f"{iv:.1%}", 
+                        f"{fair:.2f}", 
+                        f"{ev:+.2f}", 
+                        verdict
+                    )
+                    
+                    self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
+            
+            except Exception as e:
+                self.log(f"Options fetch error for {date}: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
