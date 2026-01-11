@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, Toplevel
+from tkinter import ttk, messagebox, Toplevel, filedialog
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -11,6 +11,7 @@ import requests
 import xml.etree.ElementTree as ET
 import os
 import urllib3
+import csv
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -124,7 +125,8 @@ class SentimentEngine:
 
 sentiment_engine = SentimentEngine()
 
-# ===================== 2. Math Core (UPDATED WITH GARCH) =====================
+
+# ===================== 2. Math Core (Log-Space Stability) =====================
 class VegaChimpCore:
     @staticmethod
     def N(x): 
@@ -132,72 +134,115 @@ class VegaChimpCore:
     
     @staticmethod
     def bs_price(S, K, r, q, sig, T, kind):
-        """Standard Black-Scholes (European) - Kept as fallback/helper."""
-        if sig <= 0 or T <= 0 or S <= 0 or K <= 0: return 0.0
+        """Standard Black-Scholes (European) - Fallback."""
+        if sig <= 1e-4 or T <= 1e-4: 
+            return max(0.0, S - K) if kind == "call" else max(0.0, K - S)
+            
         d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * math.sqrt(T))
         d2 = d1 - sig * math.sqrt(T)
         disc = math.exp(-r * T); disc_q = math.exp(-q * T)
-        if kind == "call": return S * disc_q * VegaChimpCore.N(d1) - K * disc * VegaChimpCore.N(d2)
+        
+        if kind == "call": 
+            return S * disc_q * VegaChimpCore.N(d1) - K * disc * VegaChimpCore.N(d2)
         return K * disc * VegaChimpCore.N(-d2) - S * disc_q * VegaChimpCore.N(-d1)
 
     @staticmethod
     def garch_forecast(log_returns, days=252):
-        """GARCH(1,1) Volatility Forecast."""
         if len(log_returns) < 30: return 0.0
-        alpha, beta, omega = 0.05, 0.94, 1e-6
-        variance = np.var(log_returns)
-        for r in log_returns:
-            variance = omega + alpha * (r**2) + beta * variance
-        return np.sqrt(variance * days)
+        try:
+            alpha, beta, omega = 0.05, 0.94, 1e-6
+            variance = np.var(log_returns)
+            for r in log_returns:
+                variance = omega + alpha * (r**2) + beta * variance
+            return np.sqrt(variance * days)
+        except:
+            return 0.0
 
-    # --- NEW: Bjerksund-Stensland (2002) for American Options ---
     @staticmethod
     def bjerksund_stensland(S, K, T, r, q, sigma, option_type='call'):
         """
-        Approximation for American Options. 
-        Auto-converts Puts to Calls using symmetry for calculation.
+        Approximation for American Options (2002).
+        Uses Log-Space algebra to prevent overflow errors.
         """
-        if sigma <= 0 or T <= 0 or S <= 0 or K <= 0: return 0.0
+        # 1. Sanity Checks
+        if S <= 0 or K <= 0 or T <= 0: return 0.0
         
-        # Put-Call Transformation: P(S, K, T, r, q, sigma) -> C(K, S, T, r-q, -q, sigma)
+        # 2. Critical Volatility Clamp
+        # Volatility < 1% causes exponents to approach Infinity.
+        # We clamp it to 0.01 (1%) for stability.
+        sigma = max(sigma, 0.01)
+
         if option_type == 'put':
-            # Swap S/K AND swap r/q
             return VegaChimpCore.bjerksund_stensland(K, S, T, q, r, sigma, 'call')
 
-        # Cost of Carry (b = r - q)
         b = r - q 
-
-        # 1. Edge Case: If b >= r (e.g. no dividends), American Call == European Call
         if b >= r:
-            # S, K, r, q, sig, T, kind
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
 
-        # 2. Main Approximation Logic (2002)
-        def phi(s, t, gamma, h, i):
-            lam = (-r + gamma * b + 0.5 * gamma * (gamma - 1) * sigma**2) * t
-            d = -(math.log(s / h) + (b + (gamma - 0.5) * sigma**2) * t) / (sigma * math.sqrt(t))
-            k = 2 * b / (sigma**2) + (2 * gamma - 1)
-            return math.exp(lam) * (s ** gamma) * (VegaChimpCore.N(d) - (i / s)**k * VegaChimpCore.N(d - 2 * math.log(i/s) / (sigma * math.sqrt(t))))
-        
-        # Exercise Boundary Calculation
-        beta = (0.5 - b/sigma**2) + math.sqrt((b/sigma**2 - 0.5)**2 + 2*r/sigma**2)
-        inf_boundary = K * beta / (beta - 1)
-        
-        h = -(b * T + 2 * sigma * math.sqrt(T)) * (K**2 / ((inf_boundary - K) * inf_boundary))
-        I = inf_boundary + (K - inf_boundary) * (1 - math.exp(h))
-        
-        alpha = (I - K) * (I ** (-beta))
-        
-        if S >= I:
-            return S - K
-        else:
-            return (alpha * (S ** beta) 
-                    - alpha * phi(S, T, beta, I, I) 
-                    + phi(S, T, 1, I, I) 
-                    - phi(S, T, 1, K, I) 
-                    - K * phi(S, T, 0, I, I) 
-                    + K * phi(S, T, 0, K, I))
+        try:
+            # --- HELPER: Safe Exponential ---
+            def safe_exp(val):
+                if val > 700: return float('inf') # Prevent overflow
+                if val < -700: return 0.0
+                return math.exp(val)
 
+            # --- HELPER: Phi Function (Rewritten in Log-Space) ---
+            # Original: exp(lam) * (S^gamma) * ( N(d) - (I/S)^k * N(d2) )
+            # New:      exp(lam + gamma*lnS) * N(d)  -  exp(lam + gamma*lnS + k*(lnI - lnS)) * N(d2)
+            def phi(s, t, gamma, h, i):
+                lam = (-r + gamma * b + 0.5 * gamma * (gamma - 1) * sigma**2) * t
+                d_den = (sigma * math.sqrt(t))
+                d_num = -(math.log(s / h) + (b + (gamma - 0.5) * sigma**2) * t)
+                d = d_num / d_den
+                
+                k = 2 * b / (sigma**2) + (2 * gamma - 1)
+                
+                # Pre-calculate Logs
+                ln_s = math.log(s)
+                ln_i = math.log(i)
+                
+                # Term 1: exp(lam + gamma * ln_s) * N(d)
+                power_term_1 = lam + (gamma * ln_s)
+                val_1 = safe_exp(power_term_1) * VegaChimpCore.N(d)
+                
+                # Term 2: exp(power_term_1 + k * (ln_i - ln_s)) * N(d - ...)
+                d2 = d - 2 * math.log(i/s) / d_den
+                power_term_2 = power_term_1 + k * (ln_i - ln_s)
+                val_2 = safe_exp(power_term_2) * VegaChimpCore.N(d2)
+
+                return val_1 - val_2
+
+            # Exercise Boundary
+            beta = (0.5 - b/sigma**2) + math.sqrt((b/sigma**2 - 0.5)**2 + 2*r/sigma**2)
+            if abs(beta - 1) < 1e-5: return S - K
+
+            inf_boundary = K * beta / (beta - 1)
+            h = -(b * T + 2 * sigma * math.sqrt(T)) * (K**2 / ((inf_boundary - K) * inf_boundary))
+            
+            # Safe calculation for I (exercise trigger)
+            I = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h))
+            
+            # Safe calculation for alpha
+            # alpha = (I - K) * I^(-beta)  -->  (I-K) * exp(-beta * lnI)
+            alpha = (I - K) * safe_exp(-beta * math.log(I))
+            
+            if S >= I:
+                return S - K
+            else:
+                # Main Formula
+                term1 = alpha * safe_exp(beta * math.log(S))
+                term2 = alpha * phi(S, T, beta, I, I)
+                term3 = phi(S, T, 1, I, I)
+                term4 = phi(S, T, 1, K, I)
+                term5 = K * phi(S, T, 0, I, I)
+                term6 = K * phi(S, T, 0, K, I)
+                
+                return term1 - term2 + term3 - term4 - term5 + term6
+
+        except (OverflowError, ValueError, ZeroDivisionError):
+            # If math still breaks (e.g. extreme inputs), use Black-Scholes
+            print("[Warning] Bjerksund-Stensland calculation failed, falling back to Black-Scholes.")
+            return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
 # ===================== 3. Technicals Logic =====================
 def calculate_technicals(df):
     delta = df['Close'].diff()
@@ -272,6 +317,7 @@ class MarketApp:
         self.root.geometry("1500x900")
 
         self.headline_limit = 100
+        self.ev_absolute = False
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
@@ -837,6 +883,50 @@ class MarketApp:
             self.log(f"Scanning {len(self.all_exps)} chains for value...")
             threading.Thread(target=self.fetch_options_batch, args=(self.all_exps, True), daemon=True).start()
     
+    def get_smart_dividend(self, stock_obj):
+        try:
+            # 1. Try 'dividendYield' from info
+            info = stock_obj.info
+            div = info.get('dividendYield')
+            
+            # --- FIX: SANITY CHECK ---
+            if div is not None and isinstance(div, (int, float)):
+                # If yield is > 0.5 (50%), it's almost certainly a percentage (e.g. 2.94)
+                # We need it to be a decimal (0.0294)
+                if div > 0.5: 
+                    print(f"[DEBUG] Detected Percentage Format ({div}). Fixing to {div/100}...")
+                    div = div / 100
+                
+                print(f"[DEBUG] Found Dividend (Info): {div:.4%}") 
+                return div
+            
+            # 2. Try 'trailingAnnualDividendYield'
+            div = info.get('trailingAnnualDividendYield')
+            if div is not None and isinstance(div, (int, float)):
+                if div > 0.5: div = div / 100 # Apply fix here too
+                print(f"[DEBUG] Found Dividend (Trailing): {div:.4%}")
+                return div
+
+            # 3. Fallback: Calculation
+            hist = stock_obj.dividends
+            if not hist.empty:
+                recent_total = hist.iloc[-4:].sum() 
+                if self.current_price > 0:
+                    yield_calc = recent_total / self.current_price
+                    print(f"[DEBUG] Calculated Dividend (History): {yield_calc:.4%}")
+                    return yield_calc
+            
+            # 4. NVO Specific Fallback
+            if self.current_ticker == "NVO":
+                print("[DEBUG] Forcing NVO Default: 1.5000%")
+                return 0.015
+
+            return 0.0
+            
+        except Exception as e:
+            print(f"[DEBUG] Div fetch error: {e}")
+            return 0.0
+
     def open_options_window(self):
         if not self.current_ticker: return
         win = Toplevel(self.root)
@@ -855,7 +945,8 @@ class MarketApp:
         
         ttk.Button(left_panel, text="Select Prev 7 Expirations", command=self.filter_expirations).pack(fill="x", pady=5)
         ttk.Button(left_panel, text="⚡ Scan ALL Undervalued", command=self.scan_all_undervalued).pack(fill="x", pady=20)
-        
+        ttk.Button(left_panel, text="💾 Export Results to CSV", command=self.export_to_csv).pack(fill="x", pady=5)
+          
         self.exp_list = tk.Listbox(left_panel, selectmode="extended", height=25)
         self.exp_list.pack(fill="both", expand=True)
         self.exp_list.bind('<<ListboxSelect>>', self.on_exp_select)
@@ -882,6 +973,44 @@ class MarketApp:
         self.tree.tag_configure("blue", background="#d4eef8")
         
         threading.Thread(target=self.load_expirations, daemon=True).start()
+
+    def export_to_csv(self):
+        # 1. Ask user where to save
+        filename = filedialog.asksaveasfilename(
+            initialfile=f"{self.current_ticker}_options_scan.csv",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not filename: return
+
+        try:
+            # 2. Collect Data from Treeview
+            rows = self.tree.get_children()
+            if not rows:
+                messagebox.showinfo("Export", "No data to export!")
+                return
+
+            # 3. Write to CSV
+            with open(filename, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # Write Headers
+                cols = ("Date", "Type", "Strike", "Vol", "Price", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
+                writer.writerow(cols)
+                
+                # Write Rows
+                count = 0
+                for row_id in rows:
+                    row_data = self.tree.item(row_id)['values']
+                    writer.writerow(row_data)
+                    count += 1
+            
+            messagebox.showinfo("Success", f"Successfully exported {count} rows to:\n{filename}")
+            self.log(f"Exported {count} rows to CSV.")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to save CSV:\n{e}")
+            self.log(f"Export Error: {e}")
 
     def load_expirations(self):
         stock = yf.Ticker(self.current_ticker)
@@ -914,8 +1043,11 @@ class MarketApp:
     def fetch_options_batch(self, dates, filter_under_only=False):
         stock = yf.Ticker(self.current_ticker)
         
-        # 1.5% Yield for NVO
-        DIV_YIELD = 0.015 
+        # 1.5% Yield for NVO (or dynamic)
+        DIV_YIELD = self.get_smart_dividend(stock) 
+        
+        # Optional: Keep the debug print we discussed if you want to verify yield
+        print(f"[DEBUG] Yield Used: {DIV_YIELD:.4%}")
 
         earnings_contracts = set()
         if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
@@ -976,14 +1108,40 @@ class MarketApp:
                     verdict = "Fair"
                     tag = ""
                     is_earnings = date in earnings_contracts
-                    threshold = 0.25 if is_earnings else 0.15
 
-                    if ev > threshold:
-                        verdict = "Earnings Under" if is_earnings else "Under"
-                        tag = "green"
-                    elif ev < -threshold:
-                        verdict = "Earnings Over" if is_earnings else "Over"
-                        tag = "red"
+                    # --- VERDICT LOGIC SWITCH ---
+                    # Uses self.ev_absolute variable to decide logic
+                    
+                    if self.ev_absolute:
+                        # === OLD METHOD (Absolute $) ===
+                        threshold = 0.25 if is_earnings else 0.15
+                        
+                        if ev > threshold:
+                            verdict = "Earnings Under" if is_earnings else "Under"
+                            tag = "green"
+                        elif ev < -threshold:
+                            verdict = "Earnings Over" if is_earnings else "Over"
+                            tag = "red"
+                            
+                    else:
+                        # === NEW METHOD (Percentage %) ===
+                        # 1. Calculate Edge %
+                        safe_price = max(market_price, 0.01)
+                        edge_percent = (ev / safe_price) * 100
+                        
+                        # 2. Define Thresholds (20% for Earnings, 10% Normal)
+                        min_edge_pct = 20.0 if is_earnings else 10.0
+                        min_dollar_edge = 0.05 # Noise filter for penny options
+
+                        # 3. Apply Logic
+                        if edge_percent > min_edge_pct and ev > min_dollar_edge:
+                            verdict = f"Under ({edge_percent:.0f}%)"
+                            if is_earnings: verdict = f"Earn Under ({edge_percent:.0f}%)"
+                            tag = "green"
+                        elif edge_percent < -min_edge_pct and ev < -min_dollar_edge:
+                            verdict = "Over"
+                            if is_earnings: verdict = f"Earn Over ({edge_percent:.0f}%)"
+                            tag = "red"
 
                     if filter_under_only and "Under" not in verdict:
                         continue
@@ -993,7 +1151,7 @@ class MarketApp:
                         row['Type'], 
                         row['strike'], 
                         int(row['volume'] or 0), 
-                        f"{market_price:.2f}",   # <--- NOW SHOWING MID PRICE
+                        f"{market_price:.2f}", 
                         f"{breakeven:.2f}", 
                         f"{iv:.1%}", 
                         f"{fair:.2f}", 
@@ -1003,8 +1161,6 @@ class MarketApp:
                     
                     self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
             
-            except Exception as e:
-                self.log(f"Options fetch error for {date}: {e}")            
             except Exception as e:
                 self.log(f"Options fetch error for {date}: {e}")
 
