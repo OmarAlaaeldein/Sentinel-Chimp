@@ -29,9 +29,10 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo Using Python: %CONDA_ENV%\python.exe
 
-rem Build a slim version of Sentinel by explicitly excluding AI libraries
+rem Build a slim version of Sentinel with the logo
 pyinstaller --onefile --noconsole ^
     --name "Sentinel" ^
+    --icon="logo.ico" ^
     --exclude-module "torch" ^
     --exclude-module "transformers" ^
     --exclude-module "tensorflow" ^

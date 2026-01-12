@@ -408,7 +408,12 @@ class MarketApp:
         self.canvas.mpl_connect('motion_notify_event', self.on_hover)
 
 # --- SYSTEM LOG & CONTROLS ---
-        log_frame = ttk.LabelFrame(root, text="System Log & AI Controls", padding=5)
+        if self.use_sentiment:
+            log_frame = ttk.LabelFrame(root, text="System Log & AI Controls", padding=5)
+
+        else:
+            log_frame = ttk.LabelFrame(root, text="System Log", padding=5)
+            
         log_frame.pack(fill="x", padx=10, pady=5)
 
         ctrl_panel = ttk.Frame(log_frame)
@@ -417,13 +422,13 @@ class MarketApp:
         # [NEW] Toggle Button (Right Side)
         self.btn_log = ttk.Button(ctrl_panel, text="Show Log", command=self.toggle_log, width=10)
         self.btn_log.pack(side="right", padx=5)
-
-        ttk.Label(ctrl_panel, text="Active Model:").pack(side="left")
+        if self.use_sentiment:
+            ttk.Label(ctrl_panel, text="Active Model:").pack(side="left")
         
-        self.model_var = tk.StringVar(value="FinBERT")
+            self.model_var = tk.StringVar(value="FinBERT")
 
-        self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="blue")
-        self.lbl_model_status.pack(side="left", padx=10)
+            self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="blue")
+            self.lbl_model_status.pack(side="left", padx=10)
 
         # [MODIFIED] Create widgets but DO NOT pack them yet (Hidden by default)
         self.log_box = tk.Text(log_frame, height=6, font=("Consolas", 9))
@@ -454,8 +459,7 @@ class MarketApp:
             threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         else:
             self.log("AI Sentiment is currently disabled.")
-            self.lbl_model_status.config(text="Status: Disabled", foreground="gray")
-        threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
+            #self.lbl_model_status.config(text="Status: Disabled", foreground="gray")
         
         self.root.after(500, self.load_data)
 
@@ -640,9 +644,11 @@ class MarketApp:
         self.log(f"Analyzing {len(headlines)} headlines with {sentiment_engine.current_model_name}...")
         top_headlines = headlines[: self.headline_limit]
         scores = sentiment_engine.predict_batch(top_headlines)
-        for i, (h, score) in enumerate(zip(top_headlines, scores)):
-            self.log(f"[{i+1}] {score:.2f} | {h[:40]}...")
-
+        #for i, (h, score) in enumerate(zip(top_headlines, scores)):
+        #    self.log(f"[{i+1}] {score:.2f} | {h[:40]}...")
+        news_num = len(top_headlines)
+        # indicate how many headlines were analyzed
+        self.log("Retrieved and analyzed {} headlines.".format(news_num))
         if not scores: 
             return 'Pending'
 
