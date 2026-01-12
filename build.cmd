@@ -36,6 +36,7 @@ rem Added exclude-module for 'scipy' if you aren't using it (it's huge).
 pyinstaller --onefile --noconsole --clean ^
     --name "Sentinel" ^
     --icon="logo.ico" ^
+    --splash "loading.png" ^
     --exclude-module "torch" ^
     --exclude-module "transformers" ^
     --exclude-module "tensorflow" ^

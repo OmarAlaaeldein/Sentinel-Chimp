@@ -12,6 +12,11 @@ import xml.etree.ElementTree as ET
 import os
 import urllib3
 import csv
+# Put this at the very top of your imports
+try:
+    import pyi_splash
+except ImportError:
+    pass
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -20,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.dates as mdates
-
+import matplotlib.style as mplstyle  # <--- ADD THIS
 # --- TRANSFORMERS SETUP ---
 try:
     import torch
@@ -317,6 +322,7 @@ class MarketApp:
         self.root = root
         self.root.title("Sentinel: Stock & Options Analyzer")
         self.root.geometry("1450x900")
+        self.setup_dark_theme() # <--- CALL THEME HERE
 
         self.headline_limit = 1000
         self.ev_absolute = False
@@ -327,7 +333,7 @@ class MarketApp:
         
         self.ax = None 
         
-        self.use_sentiment = True  # New toggle for sentiment analysis
+        self.use_sentiment = False  # New toggle for sentiment analysis
 
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
@@ -396,10 +402,20 @@ class MarketApp:
         self.lbl_status = ttk.Label(ctrl_frame, text="", foreground="gray", font=("Arial", 8))
         self.lbl_status.pack(side="right", padx=10)
 
-        self.figure = Figure(figsize=(5, 4), dpi=150)
+        # --- MODIFIED: Create Figure with Dark Background ---
+        # facecolor='#121212' matches a dark UI better than pure black
+        self.figure = Figure(figsize=(5, 4), dpi=120, facecolor='#121212') 
+        
         self.ax = self.figure.add_subplot(111) 
+        
+        # Make the chart background slightly lighter than the border for contrast
+        self.ax.set_facecolor('#121212') 
+        
         self.canvas = FigureCanvasTkAgg(self.figure, self.right_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        
+        # Make the Tkinter canvas widget black to match
+        self.canvas.get_tk_widget().configure(bg='#121212')
         self.hover_annot = None
         self.last_plot_df = None
         self.last_plot_x = None
@@ -427,11 +443,13 @@ class MarketApp:
         
             self.model_var = tk.StringVar(value="FinBERT")
 
-            self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="blue")
+            self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="orange")
             self.lbl_model_status.pack(side="left", padx=10)
 
         # [MODIFIED] Create widgets but DO NOT pack them yet (Hidden by default)
-        self.log_box = tk.Text(log_frame, height=6, font=("Consolas", 9))
+        self.log_box = tk.Text(log_frame, height=6, font=("Consolas", 9), 
+                               bg="#1e1e1e", fg="#00ff00", # Matrix Green Text
+                               insertbackground="white") # Cursor color
         self.log_scroll = ttk.Scrollbar(log_frame, command=self.log_box.yview)
         self.log_box['yscrollcommand'] = self.log_scroll.set
         
@@ -506,7 +524,7 @@ class MarketApp:
         f.grid(row=row, column=0, sticky="w", padx=5, pady=5)
         ttk.Label(f, text=text, font=("Arial", 10, "bold")).pack(side="left")
         if tooltip_text:
-            q = ttk.Label(f, text="?", foreground="blue", cursor="question_arrow", padding=(4, 0))
+            q = ttk.Label(f, text="?", foreground="orange", cursor="question_arrow", padding=(4, 0))
             q.pack(side="left")
             Tooltip(q, tooltip_text)
         lbl = ttk.Label(parent, text="---", font=("Arial", 10))
@@ -525,7 +543,7 @@ class MarketApp:
             self.sent_cache = {}
             
             # Show a 'loading' state in the UI for fundamentals
-            self.lbl_pe.config(text="Updating...", foreground="blue")
+            self.lbl_pe.config(text="Updating...", foreground="orange")
             
             # Start heavy fundamental fetch in the background
             threading.Thread(target=self.get_info, daemon=True).start()
@@ -805,6 +823,47 @@ class MarketApp:
         except Exception as e:
             self.log(f"CRITICAL ERROR in fetch_and_plot: {e}")
             self.root.after(0, lambda: self.lbl_status.config(text="Error"))
+            
+    def setup_dark_theme(self):
+        # 1. Main Window & Common Backgrounds
+        dark_bg = "#1e1e1e"
+        dark_fg = "#ffffff"
+        entry_bg = "#2d2d2d"
+        
+        self.style = ttk.Style()
+        self.style.theme_use('clam') # 'clam' is easiest to recolor
+        
+        # 2. Configure General Widgets
+        self.style.configure(".", background=dark_bg, foreground=dark_fg)
+        self.style.configure("TLabel", background=dark_bg, foreground=dark_fg)
+        self.style.configure("TButton", background="#333333", foreground=dark_fg, borderwidth=1)
+        self.style.map("TButton", background=[("active", "#ff8c00")]) # Orange highlight on hover
+        
+        self.style.configure("TEntry", fieldbackground=entry_bg, foreground=dark_fg)
+        self.style.configure("TFrame", background=dark_bg)
+        self.style.configure("TLabelframe", background=dark_bg, foreground=dark_fg)
+        self.style.configure("TLabelframe.Label", background=dark_bg, foreground=dark_fg)
+        
+        # 3. Configure Treeview (The Scanner)
+        self.style.configure("Treeview", 
+                             background="#252526", 
+                             foreground=dark_fg, 
+                             fieldbackground="#252526",
+                             rowheight=25)
+        self.style.map("Treeview", background=[("selected", "#007acc")])
+        
+        # Header (Column Titles)
+        self.style.configure("Treeview.Heading", 
+                             background="#333333", 
+                             foreground=dark_fg, 
+                             relief="flat")
+        self.style.map("Treeview.Heading", background=[("active", "#4d4d4d")])
+
+        # 4. Standard Tkinter Widgets (Text, Listbox need manual config)
+        self.root.configure(bg=dark_bg)
+        # We also need to configure the specific widgets created in __init__
+        # (See Step 2 below for where to apply this)        
+            
     def update_chart(self, df, ticker, period):
         if not hasattr(self, 'ax') or self.ax is None: return
 
@@ -813,10 +872,12 @@ class MarketApp:
                 self.log("Chart skipped: no data")
                 self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                 return
+            
             plot_df = df.copy()
             interval = getattr(self, "last_interval", None)
             intraday = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
 
+            # --- Intraday Market Hours Filtering ---
             if interval in intraday:
                 idx = plot_df.index
                 if getattr(idx, "tz", None):
@@ -824,11 +885,13 @@ class MarketApp:
                 else:
                     idx_eastern = idx.tz_localize("UTC").tz_convert("America/New_York")
                 minutes = idx_eastern.hour * 60 + idx_eastern.minute
+                # Filter 9:30 AM (570) to 4:00 PM (960)
                 mask = (minutes >= 570) & (minutes <= 960) & (idx_eastern.dayofweek < 5)
                 filtered = plot_df[mask]
                 if not filtered.empty:
                     plot_df = filtered
 
+            # --- X-Axis Logic ---
             use_compressed = interval in intraday
             if use_compressed:
                 times_for_labels = plot_df.index
@@ -841,26 +904,48 @@ class MarketApp:
                 times_for_labels = plot_df.index
                 x_vals = mdates.date2num(times_for_labels.to_pydatetime())
 
+            # --- PLOTTING & STYLING ---
             self.ax.clear()
             self.hover_annot = None 
 
-            self.ax.plot(x_vals, plot_df['Close'], label='Price', color='black', linewidth=1.5)
-            if 'EMA_5' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_5'], label='EMA 5', color='blue', linewidth=1)
-            if 'EMA_21' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_21'], label='EMA 21', color='orange', linewidth=1)
-            if 'EMA_63' in plot_df.columns: self.ax.plot(x_vals, plot_df['EMA_63'], label='EMA 63', color='purple', linewidth=1)
+            # 1. Neon Colors
+            # Price: Neon Cyan
+            self.ax.plot(x_vals, plot_df['Close'], label='Price', color='#00e6ff', linewidth=1.5)
+            
+            # EMAs: Neon Pink, Yellow, Red
+            if 'EMA_5' in plot_df.columns: 
+                self.ax.plot(x_vals, plot_df['EMA_5'], label='EMA 5', color='#ff00ff', linewidth=1, alpha=0.8)
+            if 'EMA_21' in plot_df.columns: 
+                self.ax.plot(x_vals, plot_df['EMA_21'], label='EMA 21', color='#ffe100', linewidth=1, alpha=0.8)
+            if 'EMA_63' in plot_df.columns: 
+                self.ax.plot(x_vals, plot_df['EMA_63'], label='EMA 63', color='#9900ff', linewidth=1, alpha=0.8) # Purple
             
             if 'EMA_200' in plot_df.columns:
                 if plot_df['EMA_200'].notna().sum() > 0:
-                    self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='red', linewidth=1.5)
+                    self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='#ff3333', linewidth=1.5)
+
+            # 2. Limits & Title
             self.ax.set_xlim(left=x_vals[0], right=x_vals[-1])
-            self.ax.set_title(f"{ticker} Price Action ({period})")
-            self.ax.legend(loc='upper right', fontsize='small')
-            self.ax.grid(True, alpha=0.3)
+            self.ax.set_title(f"{ticker} Price Action ({period})", color="white", fontweight="bold")
             
+            # 3. Clean Legend (No box, white text)
+            self.ax.legend(loc='upper right', fontsize='small', frameon=False, labelcolor='white')
+            
+            # 4. Subtle Grid & Minimal Spines
+            self.ax.grid(True, color='#2a2a2a', linestyle='-', linewidth=0.5)
+            self.ax.spines['top'].set_visible(False)
+            self.ax.spines['right'].set_visible(False)
+            self.ax.spines['bottom'].set_color('#444444')
+            self.ax.spines['left'].set_color('#444444')
+            self.ax.tick_params(axis='x', colors='gray')
+            self.ax.tick_params(axis='y', colors='gray')
+
+            # --- Ticks Formatting ---
             if use_compressed:
                 if len(times_for_labels) > 0:
                     tick_count = min(6, len(times_for_labels))
                     tick_idx = np.linspace(0, len(times_for_labels) - 1, tick_count, dtype=int)
+                    
                     if interval in {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}:
                         tick_labels = [times_for_labels[i].strftime("%m-%d %H:%M") for i in tick_idx]
                     elif interval in {"1d", "1wk"}:
@@ -869,17 +954,24 @@ class MarketApp:
                         tick_labels = [times_for_labels[i].strftime("%Y-%b") for i in tick_idx]
                     else:
                         tick_labels = [str(times_for_labels[i]) for i in tick_idx]
+                        
                     self.ax.set_xticks(tick_idx)
                     self.ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=8)
             else:
                 self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
                 self.figure.autofmt_xdate()
             
+            # --- Finalize ---
+            # Force background color (Fix for clear() resetting it)
+            self.ax.set_facecolor('#121212')
+            self.figure.patch.set_facecolor('#121212')
+
             self.canvas.draw()
             self.last_plot_df = plot_df
             self.last_plot_x = x_vals
             self.last_plot_times = times_for_labels
             self.use_compressed_hover = use_compressed
+
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
@@ -888,11 +980,11 @@ class MarketApp:
         self.lbl_price.config(text=f"${data['Close']:.2f}")
         
         rsi_val = data['RSI']
-        rsi_c = "green" if rsi_val < 30 else "red" if rsi_val > 70 else "black"
+        rsi_c = "green" if rsi_val < 30 else "red" if rsi_val > 70 else "white"
         self.lbl_rsi.config(text=f"{rsi_val:.2f}", foreground=rsi_c)
         
         stoch_val = data['StochRSI']
-        stoch_c = "green" if stoch_val < 0.2 else "red" if stoch_val > 0.8 else "black"
+        stoch_c = "green" if stoch_val < 0.2 else "red" if stoch_val > 0.8 else "white"
         self.lbl_stoch.config(text=f"{stoch_val:.2f}", foreground=stoch_c)
         
         macd_val = data['MACD']
@@ -911,14 +1003,14 @@ class MarketApp:
             if hasattr(self, 'pe_percentile'):
                 p_val = self.pe_percentile
                 # Color: Red if > 80% (Expensive), Green if < 20% (Cheap)
-                p_color = "red" if p_val > 80 else "green" if p_val < 20 else "black"
+                p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
                 self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
         except Exception as e:
             self.log(f"P/E Fetch Error: {e}")
             self.lbl_pe.config(text="N/A", foreground="gray")
         
         bb_pos = "Inside"
-        bb_c = "black"
+        bb_c = "white"
         if data['Close'] > data['BB_Upper']: 
             bb_pos = "Overbought"; bb_c = "red"
         elif data['Close'] < data['BB_Lower']: 
@@ -938,14 +1030,14 @@ class MarketApp:
                 try:
                 # Ensure it's treated as a float for comparison
                     val = float(sentiment)
-                    sent_c = "red" if val < 0.4 else "green" if val > 0.6 else "black"
+                    sent_c = "red" if val < 0.4 else "green" if val > 0.6 else "white"
                     self.lbl_sent.config(text=f"{val:.2f}", foreground=sent_c)
                 except (ValueError, TypeError):
                     self.lbl_sent.config(text="N/A", foreground="gray")
             else:
                 self.lbl_sent.config(text="N/A", foreground="gray")
         
-        ret_c = "green" if period_return > 0 else "red" if period_return < 0 else "black"
+        ret_c = "green" if period_return > 0 else "red" if period_return < 0 else "white"
         self.lbl_return.config(text=f"{period_return:+.2%}", foreground=ret_c)
 
         self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
@@ -1164,6 +1256,7 @@ class MarketApp:
         win = Toplevel(self.root)
         win.title(f"Options Explorer: {self.current_ticker}")
         win.geometry("1200x800")
+        win.configure(bg="#1e1e1e") # <--- Dark Background for Pop-up
 
         left_panel = ttk.Frame(win, width=200)
         left_panel.pack(side="left", fill="y", padx=5, pady=5)
@@ -1179,7 +1272,8 @@ class MarketApp:
         ttk.Button(left_panel, text="⚡ Scan ALL Undervalued", command=self.scan_all_undervalued).pack(fill="x", pady=20)
         ttk.Button(left_panel, text="💾 Export Results to CSV", command=self.export_to_csv).pack(fill="x", pady=5)
           
-        self.exp_list = tk.Listbox(left_panel, selectmode="extended", height=25)
+        self.exp_list = tk.Listbox(left_panel, selectmode="extended", height=25,
+                                   bg="#252526", fg="white", highlightthickness=0)
         self.exp_list.pack(fill="both", expand=True)
         self.exp_list.bind('<<ListboxSelect>>', self.on_exp_select)
         
@@ -1202,10 +1296,17 @@ class MarketApp:
         scr = ttk.Scrollbar(right_panel, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scr.set); self.tree.pack(side="left", fill="both", expand=True); scr.pack(side="right", fill="y")
         
-        self.tree.tag_configure("green", background="#d4f8d4")
-        self.tree.tag_configure("red", background="#f8d4d4")
-        self.tree.tag_configure("blue", background="#d4eef8")
-        
+        # Green (Undervalued): "Sage Green" 
+        # Old: #d4f8d4 (Too bright)
+        self.tree.tag_configure("green", background="#8fbc8f", foreground="black") 
+    
+        # Red (Overvalued): "Muted Salmon"
+        # Old: #f8d4d4 (Too bright)
+        self.tree.tag_configure("red", background="#e57373", foreground="black")   
+    
+        # Blue (Info/Neutral): "Steel Blue"
+        # Old: #d4eef8 (Too bright)
+        self.tree.tag_configure("blue", background="#90caf9", foreground="black")
         threading.Thread(target=self.load_expirations, daemon=True).start()
 
     def export_to_csv(self):
@@ -1419,6 +1520,12 @@ class MarketApp:
                 self.log(f"Options fetch error for {date}: {e}")
 
 if __name__ == "__main__":
+    try:
+        import pyi_splash
+        if pyi_splash.is_alive():
+            pyi_splash.close()
+    except ImportError:
+        pass
     root = tk.Tk()
     app = MarketApp(root)
     root.mainloop()
