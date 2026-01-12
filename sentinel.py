@@ -793,17 +793,36 @@ class MarketApp:
                 df_tech['log_ret'] = np.log(df_tech['Close'] / df_tech['Close'].shift(1))
                 self.save_df_cache(ticker, "1y", "1d", df_tech)
             
+            # --- NEW CODE: Prioritize Real-Time Tick Price ---
             last = df_tech.iloc[-1]
-            current_price = df['Close'].iloc[-1] if not df.empty else last['Close']
+            
+            # 1. Try to get the absolute latest tick from fast_info
+            real_time_price = None
+            try:
+                # fast_info is lighter/faster than .info and usually has the latest metadata
+                real_time_price = stock.fast_info['last_price']
+            except Exception:
+                pass
+
+            # 2. Assign Current Price (Priority: Fast Info -> Intraday Chart -> Daily Cache)
+            if real_time_price and not math.isnan(real_time_price):
+                current_price = real_time_price
+            elif not df.empty:
+                current_price = df['Close'].iloc[-1]
+            else:
+                current_price = last['Close']
+
+            # Update the class variable so the Option Scanner sees the real price
+            self.current_price = current_price
 
             hv_30 = df_tech['log_ret'].rolling(30).std().iloc[-1] * np.sqrt(252)
+            
+            self.hv_30 = hv_30
+            self.current_price = current_price
             
             # GARCH(1,1) Forecast
             returns = df_tech['log_ret'].dropna().values
             self.garch_vol = VegaChimpCore.garch_forecast(returns)
-
-            self.current_price = current_price
-            self.hv_30 = hv_30
             
             # --- 4. Sentiment Analysis ---
             if self.use_sentiment:
@@ -1122,20 +1141,23 @@ class MarketApp:
             stock = yf.Ticker(ticker_str)
             info = stock.info
             
-            # Store these for display and for the Z-Score math
             self.pe_fwd = info.get('forwardPE')
             self.pe_ttm = info.get('trailingPE')
             self.eps = info.get('trailingEps')
             self.dividend_yield = info.get('dividendYield', 0.0)
             
-            # Pre-calculate the valuation multiplier right now
             self.val_multiplier = self.calculate_valuation_multiplier(stock)
             self.log(f"Valuation Multiplier: {self.val_multiplier:.2f}x (Z: {self.current_z_score:.2f})")
+            
+            # --- FIX: Force UI update now that data is ready ---
+            self.root.after(0, self.update_pe_display)
             
         except Exception as e:
             self.log(f"get_info error: {e}")
             self.pe_fwd = self.pe_ttm = self.eps = None
             self.val_multiplier = 1.0
+            # Update UI even on failure so "Updating..." goes away
+            self.root.after(0, self.update_pe_display)
             
     def calculate_valuation_multiplier(self, ticker_obj):
         try:
@@ -1188,8 +1210,7 @@ class MarketApp:
             self.current_z_score = z_score
             
             # 6. Tanh Logic (Universal)
-            AMPLITUDE = 2 
-            raw_mult = 1.0 + (AMPLITUDE * math.tanh(z_score))
+            raw_mult = 1.0 + (math.tanh(z_score))
             
             return max(0.1, raw_mult)
 
@@ -1298,7 +1319,10 @@ class MarketApp:
         
         # Green (Undervalued): "Sage Green" 
         # Old: #d4f8d4 (Too bright)
-        self.tree.tag_configure("green", background="#8fbc8f", foreground="black") 
+        self.tree.tag_configure("green", background="#8fbc8f", foreground="black")
+        
+        # Arbitrage breakevev < price
+        self.tree.tag_configure("gold", background="#ffd700", foreground="black")
     
         # Red (Overvalued): "Muted Salmon"
         # Old: #f8d4d4 (Too bright)
@@ -1385,6 +1409,25 @@ class MarketApp:
             return rate
         except Exception:
             return 0.045 # Fallback to a standard rate if fetch fails
+        
+    def update_pe_display(self):
+        """Updates only the P/E labels. Called when get_info finishes."""
+        try:
+            # Update TTM/Fwd Label
+            pe_ttm_str = f"{self.pe_ttm:.2f}" if isinstance(self.pe_ttm, (int, float)) else "N/A"
+            pe_fwd_str = f"{self.pe_fwd:.2f}" if isinstance(self.pe_fwd, (int, float)) else "N/A"
+            self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}", foreground="white")
+
+            # Update Percentile Label
+            if hasattr(self, 'pe_percentile'):
+                p_val = self.pe_percentile
+                p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
+                self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
+            else:
+                self.lbl_pe_percentile.config(text="Loading...", foreground="orange")
+                
+        except Exception as e:
+            self.log(f"UI Update Error: {e}")
 
     def fetch_options_batch(self, dates, filter_under_only=False):
         stock = yf.Ticker(self.current_ticker)
@@ -1491,7 +1534,19 @@ class MarketApp:
                     tag = ""
                     is_earnings = date in earnings_contracts
                     
-                    if self.ev_absolute:
+                    # --- 1. ARBITRAGE CHECK (Highest Priority) ---
+                    is_arbitrage = False
+                    if row['Type'] == "CALL" and breakeven < self.current_price:
+                        is_arbitrage = True
+                    elif row['Type'] == "PUT" and breakeven > self.current_price:
+                        is_arbitrage = True
+
+                    if is_arbitrage:
+                        verdict = "Arbitrage / Deep Val" 
+                        tag = "gold"
+                    
+                    # --- 2. Standard Valuation (Only run if NOT Arbitrage) ---
+                    elif self.ev_absolute:
                         threshold = 0.25 if is_earnings else 0.15
                         if ev > threshold:
                             verdict = "Earnings Under" if is_earnings else "Under"
@@ -1499,23 +1554,16 @@ class MarketApp:
                         elif ev < -threshold:
                             verdict = "Earnings Over" if is_earnings else "Over"
                             tag = "red"
+                            
                     else:
                         safe_price = max(market_price, 0.01)
                         edge_percent = (ev / safe_price) * 100
-                        # --- Inside your fetch_options_batch loop ---
-                        # (After calculating ev and edge_percent)
-
-                        # Base requirement (e.g., 10% edge)
+                        
                         base_min_edge = 10.0 if is_earnings else 5.0
 
                         if row['Type'] == "CALL":
                             adjusted_bar = base_min_edge * self.val_multiplier
                         else:
-                            # For Puts, we want the OPPOSITE effect.
-                            # If Val Multiplier is 2.0 (Expensive), Puts need 1/2 the edge.
-                            # If Val Multiplier is 0.5 (Cheap), Puts need 2x the edge.
-                            
-                            # Safety check to avoid division by zero
                             safe_mul = max(0.1, self.val_multiplier)
                             adjusted_bar = base_min_edge / safe_mul
 
@@ -1527,8 +1575,7 @@ class MarketApp:
                             verdict = "Over"
                             tag = "red"
                             if is_earnings: verdict = f"Earning Over ({edge_percent:.0f}%)"
-
-                    if filter_under_only and "Under" not in verdict:
+                    if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
                         continue
 
                     vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), 
