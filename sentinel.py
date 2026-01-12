@@ -333,7 +333,7 @@ class MarketApp:
         
         self.ax = None 
         
-        self.use_sentiment = False  # New toggle for sentiment analysis
+        self.use_sentiment = True  # New toggle for sentiment analysis
 
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
