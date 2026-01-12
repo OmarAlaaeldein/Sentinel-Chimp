@@ -1554,7 +1554,7 @@ class MarketApp:
                         is_arbitrage = True
 
                     if is_arbitrage:# aribtrage could be misleading if we run this intraday or just after end of trading day
-                        verdict = "Arbitrage / Deep Val" 
+                        verdict = "Arbitrage" 
                         tag = "gold"
                     
                     # --- 2. Standard Valuation (Only run if NOT Arbitrage) ---
