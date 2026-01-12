@@ -35,13 +35,6 @@ class SentimentEngine:
     def __init__(self):
         self.current_model_name = "FinBERT"
         self.models = {
-            "DistilBERT": {
-                "id": "distilbert-base-uncased-finetuned-sst-2-english",
-                "dir": "my_distilbert_model",
-                "loaded": False,
-                "tokenizer": None,
-                "model": None
-            },
             "FinBERT": {
                 "id": "ProsusAI/finbert",
                 "dir": "my_finbert_model",
@@ -114,15 +107,10 @@ class SentimentEngine:
             
             probs = F.softmax(outputs.logits, dim=-1)
             
-            if self.current_model_name == "DistilBERT":
-                scores_clean = probs[:, 1].tolist()
-            elif self.current_model_name == "FinBERT":
-                pos = probs[:, 0]
-                neg = probs[:, 1]
-                # Convert back to CPU for list conversion
-                scores_clean = (0.5 + (pos * 0.5) - (neg * 0.5)).cpu().tolist()
-            else:
-                scores_clean = [0.5 for _ in clean_texts]
+            pos = probs[:, 0]
+            neg = probs[:, 1]
+            # Convert back to CPU for list conversion
+            scores_clean = (0.5 + (pos * 0.5) - (neg * 0.5)).cpu().tolist()
                 
             full_scores = []
             idx = 0
@@ -338,6 +326,8 @@ class MarketApp:
         self.SENT_CACHE_DURATION = 1800 
         
         self.ax = None 
+        
+        self.use_sentiment = False
 
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
@@ -370,8 +360,12 @@ class MarketApp:
         self.lbl_atr = self.add_row(self.grid_frame, "ATR (Volatility)", 4, "Average True Range (Daily Move in $).")
         # Updated tooltip for GARCH
         self.lbl_vol = self.add_row(self.grid_frame, "Vol (HV vs GARCH)", 5, "HV: 30d Historical Volatility.\nGARCH: Forward-looking Vol Forecast.")
-        self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6, "Headline sentiment scored 0-1.")
-        self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7, "Total return over selected period.")
+        if self.use_sentiment:
+            self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6, "Headline sentiment scored 0-1.")
+            self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7, "Total return over selected period.")
+        else:
+            self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 6, "Total return over selected period.")
+
 
         self.btn_opt = ttk.Button(self.left_frame, text="🔎 Options Explorer", command=self.open_options_window, state="disabled")
         self.btn_opt.pack(fill="x", padx=20, pady=20, ipady=10)
@@ -454,7 +448,13 @@ class MarketApp:
         # Add this in your __init__ section
         self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 9, 
                                      "How expensive the current P/E is vs the last 5 years (0-100%).")
-        self.log("App Started. Defaulting to FinBERT.")
+        # Only initialize the transformer if the toggle is True
+        if self.use_sentiment:
+            self.log("App Started. Defaulting to FinBERT.")
+            threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
+        else:
+            self.log("AI Sentiment is currently disabled.")
+            self.lbl_model_status.config(text="Status: Disabled", foreground="gray")
         threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         
         self.root.after(500, self.load_data)
@@ -788,7 +788,10 @@ class MarketApp:
             self.hv_30 = hv_30
             
             # --- 4. Sentiment Analysis ---
-            sentiment_score = self.calculate_sentiment(ticker, stock)
+            if self.use_sentiment:
+                sentiment_score = self.calculate_sentiment(ticker, stock)
+            else:
+                sentiment_score = None  # Skip analysis if False
 
             # --- 5. UI Updates ---
             last_copy = last.copy()
@@ -928,18 +931,19 @@ class MarketApp:
         self.lbl_vol.config(text=f"HV: {hv:.1%} | GARCH: {garch:.1%}")
         
         # --- UPDATED SENTIMENT BLOCK (Handles "Pending" string) ---
-        if sentiment == "Pending":
-            self.lbl_sent.config(text="Pending", foreground="gray")
-        elif sentiment is not None:
-            try:
+        if self.use_sentiment:
+            if sentiment == "Pending":
+                self.lbl_sent.config(text="Pending", foreground="gray")
+            elif sentiment is not None:
+                try:
                 # Ensure it's treated as a float for comparison
-                val = float(sentiment)
-                sent_c = "red" if val < 0.4 else "green" if val > 0.6 else "black"
-                self.lbl_sent.config(text=f"{val:.2f}", foreground=sent_c)
-            except (ValueError, TypeError):
+                    val = float(sentiment)
+                    sent_c = "red" if val < 0.4 else "green" if val > 0.6 else "black"
+                    self.lbl_sent.config(text=f"{val:.2f}", foreground=sent_c)
+                except (ValueError, TypeError):
+                    self.lbl_sent.config(text="N/A", foreground="gray")
+            else:
                 self.lbl_sent.config(text="N/A", foreground="gray")
-        else:
-            self.lbl_sent.config(text="N/A", foreground="gray")
         
         ret_c = "green" if period_return > 0 else "red" if period_return < 0 else "black"
         self.lbl_return.config(text=f"{period_return:+.2%}", foreground=ret_c)
