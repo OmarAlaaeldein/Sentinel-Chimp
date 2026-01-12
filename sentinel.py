@@ -437,7 +437,11 @@ class MarketApp:
         # Track visibility state
         self.log_visible = False
         
-
+        self.use_median = tk.BooleanVar(value=False) # Default = False (Mean/Standard)
+        self.chk_valuation = ttk.Checkbutton(self.grid_frame, text="Use Median (Robust)", 
+                                             variable=self.use_median, 
+                                             command=self.refresh_valuation)
+        self.chk_valuation.grid(row=10, column=0, columnspan=2, sticky="w", padx=5, pady=5)
         self.current_ticker = None
         self.current_price = 0
         self.hv_30 = 0
@@ -1047,32 +1051,71 @@ class MarketApp:
             
     def calculate_valuation_multiplier(self, ticker_obj):
         try:
+            # 1. Safety Checks
             if not self.pe_fwd or not self.eps or self.eps <= 0:
                 self.current_z_score = 0
-                self.pe_percentile = 50 # Neutral
                 return 1.0
-                
+            
+            # 2. Get 5y History
             hist = ticker_obj.history(period="5y")
             if hist.empty: return 1.0
             
-            pe_series = hist['Close'] / self.eps
+            # 3. Calculate P/E Series (Filter valid only)
+            pe_series = (hist['Close'] / self.eps)
+            pe_series = pe_series[pe_series > 0]
+            if pe_series.empty: return 1.0
             
-            # --- NEW PERCENTILE LOGIC ---
-            # Count how many historical P/E days were lower than the current Forward P/E
-            count_lower = (pe_series < self.pe_fwd).sum()
-            self.pe_percentile = (count_lower / len(pe_series)) * 100
-            
-            # Existing Z-Score Logic
-            mean_pe = pe_series.mean()
-            std_pe = pe_series.std()
-            z_score = (self.pe_fwd - mean_pe) / std_pe
+            # Calculate percentage of historical P/Es that are strictly lower than current Forward P/E
+            if self.pe_fwd:
+                self.pe_percentile = (pe_series < self.pe_fwd).mean() * 100
+                print(f"[DEBUG] P/E Percentile: {self.pe_percentile:.1f}%")
+            else:
+                self.pe_percentile = 50.0
+            # 4. Check Toggle State
+            use_robust = self.use_median.get()
+
+            if use_robust:
+                # --- MODE A: ROBUST (Median + IQR) ---
+                # Good for Tesla, NVDA, skewed data
+                center = pe_series.median()
+                q75 = pe_series.quantile(0.75)
+                q25 = pe_series.quantile(0.25)
+                spread = q75 - q25
+                # Normalize IQR to approx StdDev (IQR / 1.35)
+                denominator = (spread / 1.35) if spread > 0 else max(1.0, center * 0.1)
+                
+                print(f"[VALUATION] Mode: ROBUST (Median) | Center: {center:.2f}")
+
+            else:
+                # --- MODE B: NORMAL (Mean + StdDev) ---
+                # Good for KO, JNJ, normal distributions
+                center = pe_series.mean()
+                spread = pe_series.std()
+                denominator = spread if spread > 0 else max(1.0, center * 0.1)
+
+                print(f"[VALUATION] Mode: NORMAL (Mean) | Center: {center:.2f}")
+
+            # 5. Calculate Z-Score
+            z_score = (self.pe_fwd - center) / denominator
             self.current_z_score = z_score
             
-            multiplier = 1.0 + (z_score * 0.25)
-            return max(0.1, multiplier)
-        except:
-            return 1.0     
+            # 6. Tanh Logic (Universal)
+            AMPLITUDE = 2 
+            raw_mult = 1.0 + (AMPLITUDE * math.tanh(z_score))
+            
+            return max(0.1, raw_mult)
 
+        except Exception as e:
+            self.log(f"Valuation Math Error: {e}")
+            return 1.0
+
+    def refresh_valuation(self):
+        """Called when the Median/Mean toggle is clicked."""
+        if not self.current_ticker: return
+        self.log(f"Switching Valuation Mode... (Median={self.use_median.get()})")
+        # Re-trigger get_info to recalculate Z-score and update labels
+        threading.Thread(target=self.get_info, daemon=True).start()
+        
     def get_smart_dividend(self, stock_obj):
         try:
             # 1. Try 'dividendYield' from info
@@ -1342,10 +1385,16 @@ class MarketApp:
                         # Base requirement (e.g., 10% edge)
                         base_min_edge = 10.0 if is_earnings else 5.0
 
-                        # Apply the Valuation Multiplier
-                        # For TSLA (Z=2.0), bar becomes 15% (Strict)
-                        # For a Value stock (Z=-2.0), bar becomes 5% (Aggressive Reward)
-                        adjusted_bar = base_min_edge * self.val_multiplier
+                        if row['Type'] == "CALL":
+                            adjusted_bar = base_min_edge * self.val_multiplier
+                        else:
+                            # For Puts, we want the OPPOSITE effect.
+                            # If Val Multiplier is 2.0 (Expensive), Puts need 1/2 the edge.
+                            # If Val Multiplier is 0.5 (Cheap), Puts need 2x the edge.
+                            
+                            # Safety check to avoid division by zero
+                            safe_mul = max(0.1, self.val_multiplier)
+                            adjusted_bar = base_min_edge / safe_mul
 
                         if edge_percent > adjusted_bar and ev > 0.05:
                             verdict = f"Under ({edge_percent:.0f}%)"
