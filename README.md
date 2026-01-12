@@ -1,40 +1,96 @@
-# PyStock-Sentinel 🛡️📈
+# Sentinel 🛡️
 
-**PyStock-Sentinel** is a local, AI-powered stock market dashboard designed for traders who want privacy and depth. It combines institutional-grade quantitative modeling with local Large Language Model (LLM) sentiment analysis.
+**Sentinel** is a sophisticated, Python-based market analysis dashboard designed for retail traders who demand institutional-grade mathematics. It bridges the gap between basic charting tools and professional quantitative platforms, featuring advanced options pricing models, volatility forecasting, and real-time technical analysis.
 
-![Status](https://img.shields.io/badge/Status-Active-green)
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
-![AI](https://img.shields.io/badge/AI-Transformers-orange)
+> **⚠️ Release Note:** The standalone executable (Release Package) operates in **"Lite Mode"** for maximum compatibility. It **does not include** the AI Sentiment Analysis engine to keep file sizes manageable and ensure it runs on any Windows machine without heavy dependencies. To use the AI features, run the application from the source.
 
-## 🚀 Features
+---
 
-### 1. Advanced Options Explorer (Quant Core) 🔎
-The scanner uses the **Bjerksund-Stensland (2002)** approximation, a professional standard for pricing American-style options.
+## 🚀 Key Features
 
-* **Dynamic Macro Inputs:**
-    * **Risk-Free Rate ($r$):** Automatically pulls the 13-week US Treasury Bill yield (`^IRX`) to ensure the time-value of money is accurate to the current hour.
-    * **Smart Dividend Yield ($q$):** Dynamically calculates dividend drag from metadata and history. Includes a "Glitch Filter" to prevent percentage-formatting errors from inflating values.
-* **Stability Engine:** Rewritten in log-space algebra to prevent `RuntimeWarnings` and mathematical overflows during high-volatility events.
-* **Liquidity Filtering:** Uses the **Bid/Ask Mid-Price** for all calculations to ensure "Fair Value" is compared against real tradeable prices, not stale "Last" prints.
-* **Breakeven Analysis:** Integrated column showing the exact price the underlying must hit by expiration to reach a $0.00 profit/loss.
+### 1. Advanced Options Valuation
+Unlike standard calculators that use Black-Scholes, Sentinel uses the **Bjerksund-Stensland (2002)** model to price American options.
+* **Log-Space Algebra:** Prevents mathematical overflow/underflow during extreme volatility events.
+* **Dynamic Risk-Free Rate:** Automatically adjusts the risk-free rate based on treasury yields (^IRX) and stock-specific growth drift.
+* **Edge Detection:** Scans option chains to find contracts where the Market Price diverges significantly from the Theoretical Value (EV).
 
-### 2. Risk Management & Verdict Logic
-The scanner features a switchable **Verdict Engine** controlled by `self.ev_absolute`:
+### 2. Institutional Volatility Forecasting
+Sentinel looks beyond simple Historical Volatility (HV).
+* **GARCH(1,1) Model:** Implements a Generalized Autoregressive Conditional Heteroskedasticity model to forecast *future* volatility rather than just looking at the past.
+* **Smart Blending:** Option pricing inputs are a weighted blend of Market Implied Volatility and the GARCH forecast to find a realistic "fair value".
 
-* **Percentage Mode (`False`):** Focuses on "Edge %." Requires a higher threshold for Earnings events (10%) than normal days (5%) to protect against **IV Crush**.
-* **Absolute Mode (`True`):** Uses fixed dollar-amount thresholds ($0.1 - $0.2) for high-priced or stable tickers.
-* **CSV Export:** One-click backup of all "Under" or "Earnings Under" opportunities for journaling and backtesting.
+### 3. Smart Technical Dashboard
+A threaded, non-blocking GUI providing real-time technicals:
+* **Momentum:** RSI (14), Stoch RSI, MACD.
+* **Trend:** Bollinger Bands, SMA/EMA Ribbons (5, 21, 63, 200).
+* **Risk:** ATR (Average True Range) for volatility-based stop losses.
+* **Fundamental Context:** Displays P/E Ratios (TTM/Fwd) and calculates a **P/E Percentile** to show if the stock is historically cheap or expensive.
 
-### 3. Local AI Sentiment Engine 🧠
-Runs **Hugging Face Transformers** locally on your machine—no APIs, no costs, total privacy.
-* **FinBERT Optimization:** Uses a model specifically pre-trained on financial communication (Reuters, Bloomberg) for superior sentiment accuracy.
-* **News Aggregator:** Real-time scraping of Yahoo Finance and Google News RSS feeds.
+### 4. AI Sentiment Engine (Source Code Only)
+* **Model:** Powered by `ProsusAI/finbert` (Financial BERT).
+* **Function:** Scrapes news headlines and computes a sentiment score (-1 to +1) using a Transformer model specifically fine-tuned for financial text.
+* *Note: Requires PyTorch and Transformers libraries.*
 
-### 4. Technical Analysis & Volatility
-* **GARCH(1,1) Forecasting:** Goes beyond simple moving averages to forecast future volatility based on the clustering of recent price shocks.
-* **Live Indicators:** Real-time MACD, RSI, Bollinger Bands, and Stochastic RSI.
+---
+
+## 📦 Compatibility & Release Info
+
+To ensure this tool works on standard trading laptops without requiring NVIDIA GPUs or massive libraries, the **pre-compiled Release Package** differs from the source code:
+
+| Feature | Source Code (`.py`) | Release Package (`.exe`) |
+| :--- | :---: | :---: |
+| **Charting & Technicals** | ✅ Included | ✅ Included |
+| **Bjerksund-Stensland Math** | ✅ Included | ✅ Included |
+| **GARCH Volatility** | ✅ Included | ✅ Included |
+| **Options Scanner** | ✅ Included | ✅ Included |
+| **AI Sentiment (FinBERT)** | ✅ **Active** | ❌ **Disabled** |
+
+**Why is AI disabled in the release?**
+The AI engine relies on `PyTorch` and `Transformers`, which can add over 1GB to the file size and may cause compatibility issues on computers without specific drivers. The Release Package is optimized for speed and portability.
+
+---
 
 ## 🛠️ Installation
 
-```bash
-pip install yfinance pandas numpy matplotlib transformers torch urllib3
+### Option A: Running from Source (Full Features)
+To use the AI Sentiment engine, you must run from the source:
+
+1.  **Clone the Repo**
+    ```bash
+    git clone [https://github.com/yourusername/Sentinel.git](https://github.com/yourusername/Sentinel.git)
+    cd Sentinel
+    ```
+2.  **Install Dependencies**
+    ```bash
+    pip install -r requirements.txt
+    ```
+    *(Ensure `torch`, `transformers`, `yfinance`, `pandas`, `numpy`, `matplotlib` are installed)*
+3.  **Run**
+    ```bash
+    python Sentinel.py
+    ```
+
+### Option B: Using the Release Package
+1.  Download the latest `.zip` from the **Releases** tab.
+2.  Extract the folder.
+3.  Run `Sentinel.exe`.
+4.  *No Python installation required.*
+
+---
+
+## 📉 Usage Guide
+
+1.  **Ticker Entry:** Type a ticker (e.g., `NVDA`, `SPY`) and press Enter.
+2.  **Technicals:** Review the left panel for RSI, MACD, and Volatility stats.
+3.  **Options Scanner:**
+    * Click **"Open Options Explorer"**.
+    * Select an expiration date.
+    * Click **"Scan ALL Undervalued"** to find contracts where `EV > 0`.
+    * **Green Rows** indicate "Undervalued" (Potential Buy).
+    * **Red Rows** indicate "Overvalued" (Potential Sell/Write).
+4.  **Export:** Save your scan results to CSV for further analysis in Excel.
+
+---
+
+## ⚖️ Disclaimer
+*This software is for educational and research purposes only. It is not financial advice. The Bjerksund-Stensland model and GARCH forecasts are theoretical approximations and do not guarantee future market behavior. Always trade at your own risk.*
