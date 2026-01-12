@@ -1541,7 +1541,7 @@ class MarketApp:
                     elif row['Type'] == "PUT" and breakeven > self.current_price:
                         is_arbitrage = True
 
-                    if is_arbitrage:
+                    if is_arbitrage:# aribtrage could be misleading if we run this intraday or just after end of trading day
                         verdict = "Arbitrage / Deep Val" 
                         tag = "gold"
                     
