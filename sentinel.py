@@ -903,8 +903,7 @@ class MarketApp:
 
             # Update the display label
             self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}")
-            
-            self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}")
+        
             # Inside your update_technicals method:
             if hasattr(self, 'pe_percentile'):
                 p_val = self.pe_percentile

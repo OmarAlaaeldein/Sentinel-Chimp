@@ -73,3 +73,4 @@ This module allows users to search for a stock and immediately see "broken corre
 1- option for fibbonaci retracements on charts
 2- add option to save an option in a watchlist that is updated everytime the user opens the app
 3- add economic calendar events to the chart (fed announcements, jobs report, cpi, etc)
+4- add support for derivative tickers (leveraged etfs, etc)
