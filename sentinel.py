@@ -1447,8 +1447,29 @@ class MarketApp:
                     # You can add a 'Growth' parameter to offset the dividend drain
                     growth_offset = self.annual_growth_offset # 5% growth assumption
 
-                    # Use this adjusted RFR to signal that the stock isn't just a falling rock
-                    adjusted_rfr = RFR + growth_offset
+                    # If Valuation is > 1.5 (Expensive), kill the growth assumption.
+                    # 1. Get the Percentile (Default to 50 if missing)
+                    p_rank = getattr(self, 'pe_percentile', 50.0)
+
+                    # 2. Calculate a "Dampener" Factor (0.0 to 1.0)
+                    # If Rank < 50: Factor is 1.0 (Full Growth)
+                    # If Rank > 90: Factor is 0.0 (No Growth)
+                    # In between: It slides linearly
+                    if p_rank <= 50:
+                        dampener = 1.0
+                    elif p_rank >= 90:
+                        dampener = 0.0
+                    else:
+                        # Example: Rank 71
+                        # (90 - 71) / (90 - 50) = 19 / 40 = 0.475
+                        dampener = (90 - p_rank) / (90 - 50)
+
+                    # 3. Apply the Dampener to the Growth Offset
+                    # TSLA Example: 15% Growth * 0.475 = +7.1% Drift (Instead of 15%)
+                    dynamic_growth = self.annual_growth_offset * dampener
+
+                    # 4. Set the Rate
+                    adjusted_rfr = RFR + dynamic_growth
 
                     fair = VegaChimpCore.bjerksund_stensland(
                         self.current_price, 
