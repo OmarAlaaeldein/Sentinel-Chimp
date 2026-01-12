@@ -19,18 +19,21 @@ if not exist "%CONDA_ACTIVATE%" (
     exit /b 1
 )
 
-rem FIX: Proper syntax for activation error handling 
 call "%CONDA_ACTIVATE%" "%CONDA_ENV%"
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Failed to activate conda env at %CONDA_ENV% 
+    echo [ERROR] Failed to activate conda env.
     pause
     exit /b 1
 )
 
-echo Using Python: %CONDA_ENV%\python.exe
+echo Using Python from: %CONDA_ENV%
 
-rem Build a slim version of Sentinel with the logo
-pyinstaller --onefile --noconsole ^
+rem --- BUILD COMMAND ---
+rem Added --clean to clear cache (prevents old builds from messing up new ones)
+rem Added exclude-module for 'PIL' (Pillow) if you aren't using images, saves 5-10MB.
+rem Added exclude-module for 'scipy' if you aren't using it (it's huge).
+
+pyinstaller --onefile --noconsole --clean ^
     --name "Sentinel" ^
     --icon="logo.ico" ^
     --exclude-module "torch" ^
@@ -38,9 +41,13 @@ pyinstaller --onefile --noconsole ^
     --exclude-module "tensorflow" ^
     --exclude-module "tensorboard" ^
     --exclude-module "nvidia" ^
+    --exclude-module "tkinter.test" ^
+    --exclude-module "notebook" ^
+    --exclude-module "scipy" ^
     --collect-submodules "matplotlib" ^
     "%ROOT%Sentinel.py" 
 
-echo Build Complete.
+echo.
+echo Build Complete. Check the 'dist' folder.
 pause
 endlocal

@@ -17,7 +17,7 @@ import csv
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Charting Libraries ---
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.dates as mdates
 
@@ -396,7 +396,7 @@ class MarketApp:
         self.lbl_status = ttk.Label(ctrl_frame, text="", foreground="gray", font=("Arial", 8))
         self.lbl_status.pack(side="right", padx=10)
 
-        self.figure = plt.Figure(figsize=(5, 4), dpi=100)
+        self.figure = Figure(figsize=(5, 4), dpi=150)
         self.ax = self.figure.add_subplot(111) 
         self.canvas = FigureCanvasTkAgg(self.figure, self.right_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -1136,12 +1136,17 @@ class MarketApp:
 
             # 3. Fallback: Calculation
             hist = stock_obj.dividends
+            # New Safe Code:
             if not hist.empty:
-                recent_total = hist.iloc[-4:].sum() 
-                if self.current_price > 0:
+                recent_total = hist.iloc[-4:].sum()
+                # Check if price is valid to avoid ZeroDivisionError
+                if self.current_price and self.current_price > 0:
                     yield_calc = recent_total / self.current_price
                     print(f"[DEBUG] Calculated Dividend (History): {yield_calc:.4%}")
                     return yield_calc
+                else:
+                    print("[Warning] Current Price is 0 or None. Cannot calc dividend yield.")
+                    return 0.0
             
             # 4. NVO Specific Fallback
             if self.current_ticker == "NVO":
