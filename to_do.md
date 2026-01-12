@@ -67,3 +67,9 @@ This module allows users to search for a stock and immediately see "broken corre
 1.  **Filter by Semantics**: Use FinBERT to identify a "Fundamental Basket" of 10–20 truly similar companies.
 2.  **Trade by Correlation**: Inside that basket, calculate the Z-Score of the price spread between the target and the basket average.
 3.  **Trigger**: Buy when the target stock deviates $> 2$ Standard Deviations from the basket's price action.
+
+
+### Minor To-Do Items
+1- option for fibbonaci retracements on charts
+2- add option to save an option in a watchlist that is updated everytime the user opens the app
+3- add economic calendar events to the chart (fed announcements, jobs report, cpi, etc)
