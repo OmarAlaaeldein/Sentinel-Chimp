@@ -308,7 +308,7 @@ class Tooltip:
         self._tip.wm_overrideredirect(True)
         self._tip.wm_geometry(f"+{x}+{y}")
         lbl = ttk.Label(self._tip, text=self.text, justify="left", relief="solid", borderwidth=1,
-                        background="lightyellow", padding=5, wraplength=280)
+                        background="#333333", foreground="#ffffff", padding=2, wraplength=300)
         lbl.pack(ipadx=1)
 
     def _hide(self):
@@ -1111,9 +1111,21 @@ class MarketApp:
 
             if not self.hover_annot:
                 self.hover_annot = self.ax.annotate(
-                    text, xy=(xval, yval), xytext=(15, 15), textcoords="offset points",
-                    bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
-                    arrowprops=dict(arrowstyle="->", color="0.5")
+                    text, 
+                    xy=(xval, yval), 
+                    xytext=(10, 10),      # Reduced offset (closer to cursor)
+                    textcoords="offset points",
+                    color="white",        # Keep your Dark Mode text color
+                    fontsize=8,           # <--- SMALLER FONT (Default is ~10)
+                    fontweight="bold",
+                    bbox=dict(
+                        # <--- SMALLER PADDING (pad=0.3 makes the box tighter)
+                        boxstyle="round,pad=0.3", 
+                        fc="#252526", 
+                        ec="#00e6ff", 
+                        alpha=0.9
+                    ),
+                    arrowprops=dict(arrowstyle="->", color="#00e6ff")
                 )
             else:
                 self.hover_annot.set_text(text)
