@@ -8,9 +8,11 @@ import threading
 from datetime import datetime, timedelta
 import time
 import requests
+from requests.adapters import HTTPAdapter
 import xml.etree.ElementTree as ET
 import os
 import urllib3
+from urllib3.util.retry import Retry
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 # Put this at the very top of your imports
@@ -462,6 +464,7 @@ class MarketApp:
                                              variable=self.use_median, 
                                              command=self.refresh_valuation)
         self.chk_valuation.grid(row=10, column=0, columnspan=2, sticky="w", padx=5, pady=5)
+        
         self.current_ticker = None
         self.stock = None  # <--- NEW: Store the object here
         self.current_price = 0
@@ -538,24 +541,26 @@ class MarketApp:
         new_ticker = self.entry_ticker.get().upper().strip()
         if not new_ticker: return
 
-        # 1. Handle Ticker Change (Heavy Logic)
+        # Only reload the Heavy Ticker Object if the symbol changed
         if new_ticker != self.current_ticker:
             self.current_ticker = new_ticker
+            
+            # Use the shared session for the ticker
             self.stock = yf.Ticker(new_ticker)
+            
+            # Clear caches and reset drift for the new stock
             self.data_cache = {} 
             self.sent_cache = {}
+            self.annual_growth_offset = None 
+            self.projected_earnings = []
             
-            self.annual_growth_offset = None # Reset this so it recalculates
-            
-            # Show a 'loading' state in the UI for fundamentals
             self.lbl_pe.config(text="Updating...", foreground="orange")
             
-            # Start heavy fundamental fetch in the background
+            # Start background fundamental fetch
             threading.Thread(target=self.get_info, daemon=True).start()
-            self.log(f"Ticker changed: {new_ticker}. Fetching fundamentals...")
+            self.log(f"Ticker changed: {new_ticker}. Session reused.")
 
-        # 2. Always Refresh Chart (Light Logic)
-        # Moving this outside the IF allows users to 'Refresh' the current ticker
+        # Always refresh the chart (light logic)
         self.load_chart("5d", "5m")
 
     def load_chart(self, period, interval):
@@ -779,15 +784,26 @@ class MarketApp:
                 df_tech['log_ret'] = np.log(df_tech['Close'] / df_tech['Close'].shift(1))
                 self.save_df_cache(ticker, "1y", "1d", df_tech)
             
-            # --- REAL-TIME PRICE LOGIC ---
+            # --- NEW CODE: Prioritize Real-Time Tick Price ---
             last = df_tech.iloc[-1]
+            
+            # 1. Try to get the absolute latest tick from fast_info
+            real_time_price = None
             try:
-                # fast_info is significantly faster than standard .info
+                # fast_info is lighter/faster than .info and usually has the latest metadata
                 real_time_price = stock.fast_info['last_price']
-            except:
-                real_time_price = None
+            except Exception:
+                pass
 
-            current_price = real_time_price if real_time_price and not math.isnan(real_time_price) else (df['Close'].iloc[-1] if not df.empty else last['Close'])
+            # 2. Assign Current Price (Priority: Fast Info -> Intraday Chart -> Daily Cache)
+            if real_time_price and not math.isnan(real_time_price):
+                current_price = real_time_price
+            elif not df.empty:
+                current_price = df['Close'].iloc[-1]
+            else:
+                current_price = last['Close']
+
+            # Update the class variable so the Option Scanner sees the real price
             self.current_price = current_price
 
             # Volatility Logic
@@ -1204,45 +1220,43 @@ class MarketApp:
         threading.Thread(target=self.get_info, daemon=True).start()
         
     def get_smart_dividend(self, stock_obj):
+        """
+        Retrieves the dividend yield using a high-performance priority queue:
+        1. fast_info (Fastest, lightest)
+        2. info (Standard, slower)
+        3. Manual calculation from history (Fallback)
+        """
         try:
-            # 1. Try 'dividendYield' from info
-            info = stock_obj.info
-            div = info.get('dividendYield')
-            
-            # --- FIX: SANITY CHECK ---
-            if div is not None and isinstance(div, (int, float)):
-                # If yield is > 0.5 (50%), it's almost certainly a percentage (e.g. 2.94)
-                # We need it to be a decimal (0.0294)
-                div = div / 100
-                
-                print(f"[DEBUG] Found Dividend (Info): {div:.4%}") 
-                return div
-            
-            # 2. Try 'trailingAnnualDividendYield'
-            div = info.get('trailingAnnualDividendYield')
-            if div is not None and isinstance(div, (int, float)):
-                div = div / 100 # Apply fix here too
-                print(f"[DEBUG] Found Dividend (Trailing): {div:.4%}")
-                return div
+            # 1. High-Performance Priority: fast_info (Milliseconds)
+            # This is significantly faster as it avoids scraping the full JSON blob.
+            fast_div = stock_obj.fast_info.get('dividend_yield')
+            if fast_div is not None and isinstance(fast_div, (int, float)):
+                # fast_info usually returns decimal (e.g., 0.0294)
+                print(f"[DEBUG] Found Dividend (fast_info): {fast_div:.4%}")
+                return fast_div
 
-            # 3. Fallback: Calculation
+            # 2. Standard Ticker Info (Second Priority)
+            info = stock_obj.info
+            div = info.get('dividendYield') or info.get('trailingAnnualDividendYield')
+            
+            if div is not None and isinstance(div, (int, float)):
+                # Sanity Check: info often returns raw percentages (e.g., 2.94 instead of 0.0294)
+                if div > 0.5: # 50%+ yield is likely a raw number
+                    div = div / 100
+                print(f"[DEBUG] Found Dividend (info): {div:.4%}") 
+                return div
+            
+            # 3. Fallback: Manual Calculation from Dividend History
             hist = stock_obj.dividends
-            # New Safe Code:
             if not hist.empty:
+                # Sum the last 4 quarterly payments to get an annual estimate
                 recent_total = hist.iloc[-4:].sum()
-                # Check if price is valid to avoid ZeroDivisionError
                 if self.current_price and self.current_price > 0:
                     yield_calc = recent_total / self.current_price
                     print(f"[DEBUG] Calculated Dividend (History): {yield_calc:.4%}")
                     return yield_calc
                 else:
-                    print("[Warning] Current Price is 0 or None. Cannot calc dividend yield.")
-                    return 0.0
-            
-            # 4. NVO Specific Fallback
-            if self.current_ticker == "NVO":
-                print("[DEBUG] Forcing NVO Default: 1.5000%")
-                return 0.015
+                    print("[Warning] No valid price to calculate yield from history.")
 
             return 0.0
             
@@ -1538,7 +1552,7 @@ class MarketApp:
                             is_arbitrage = True
 
                         if is_arbitrage:
-                            verdict = "Arbitrage / Deep Val" 
+                            verdict = "Arbitrage" 
                             tag = "gold"
                         
                         # --- 2. STANDARD VALUATION ---
@@ -1580,8 +1594,11 @@ class MarketApp:
                                 f"{market_price:.2f}", f"{breakeven:.2f}", f"{iv:.1%}", 
                                 f"{fair:.2f}", f"{ev:+.2f}", verdict)
                         
-                        self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
-                
+                        # To this safer version:
+                        def safe_insert(v, t):
+                            if self.tree.winfo_exists():
+                                self.tree.insert("", "end", values=v, tags=(t,))
+                        self.root.after(0, lambda: safe_insert(vals, tag))
                 except Exception as e:
                     self.log(f"Options fetch error for {date}: {e}")
 
