@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 import os
 import urllib3
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 # Put this at the very top of your imports
 try:
     import pyi_splash
@@ -462,6 +463,7 @@ class MarketApp:
                                              command=self.refresh_valuation)
         self.chk_valuation.grid(row=10, column=0, columnspan=2, sticky="w", padx=5, pady=5)
         self.current_ticker = None
+        self.stock = None  # <--- NEW: Store the object here
         self.current_price = 0
         self.hv_30 = 0
         self.garch_vol = 0 # New variable for GARCH
@@ -539,8 +541,11 @@ class MarketApp:
         # 1. Handle Ticker Change (Heavy Logic)
         if new_ticker != self.current_ticker:
             self.current_ticker = new_ticker
+            self.stock = yf.Ticker(new_ticker)
             self.data_cache = {} 
             self.sent_cache = {}
+            
+            self.annual_growth_offset = None # Reset this so it recalculates
             
             # Show a 'loading' state in the UI for fundamentals
             self.lbl_pe.config(text="Updating...", foreground="orange")
@@ -703,38 +708,32 @@ class MarketApp:
 
     def fetch_and_plot(self, ticker, period, interval):
         try:
-            # 1. Chart Data
-            df, is_cached = self.get_cached_df(ticker, period, interval)
-            stock = yf.Ticker(ticker)
+            # 1. Use the shared stock object instead of recreating it
+            stock = self.stock 
             
-            # --- Earnings Cycle Detection (Existing) ---
-            try:
-                self.projected_earnings = []
-                cal = stock.calendar
-                anchor_date = None
-
-                if isinstance(cal, dict):
-                    if 'Earnings Date' in cal:
+            # Chart Data - check cache first
+            df, is_cached = self.get_cached_df(ticker, period, interval)
+            
+            # --- Earnings Cycle Detection (Optimized) ---
+            # We only need to fetch the calendar once per ticker change.
+            # If self.projected_earnings is already populated, we skip this.
+            if not self.projected_earnings:
+                try:
+                    cal = stock.calendar
+                    anchor_date = None
+                    if isinstance(cal, dict) and 'Earnings Date' in cal:
                         dates = cal['Earnings Date']
-                        if dates and len(dates) > 0:
-                            anchor_date = pd.to_datetime(dates[0]).date()
-                
-                elif cal is not None and hasattr(cal, 'empty') and not cal.empty:
-                    raw_date = cal.iloc[0].values[0]
-                    anchor_date = pd.to_datetime(raw_date).date()
+                        if dates: anchor_date = pd.to_datetime(dates[0]).date()
+                    elif cal is not None and not cal.empty:
+                        anchor_date = pd.to_datetime(cal.iloc[0].values[0]).date()
 
-                if anchor_date:
-                    self.projected_earnings.append(anchor_date)
-                    current = anchor_date
-                    for _ in range(3):
-                        current = current + timedelta(days=91)
-                        self.projected_earnings.append(current)
-                    
-                    self.log(f"Earnings Cycle Detected: {self.projected_earnings}")
-                
-            except Exception as e:
-                self.log(f"Earnings fetch skipped: {e}")
-                self.projected_earnings = []
+                    if anchor_date:
+                        self.projected_earnings = [anchor_date]
+                        for i in range(1, 4):
+                            self.projected_earnings.append(anchor_date + timedelta(days=91*i))
+                        self.log(f"Earnings Cycle Detected: {self.projected_earnings}")
+                except Exception as e:
+                    self.log(f"Earnings fetch skipped: {e}")
 
             # --- Main Price Data Fetching ---
             if df is None:
@@ -744,46 +743,33 @@ class MarketApp:
                     self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                     return
                 
-                # EMAs: Calculate unconditionally
-                df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
-                df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
-                df['EMA_63'] = df['Close'].ewm(span=63, adjust=False).mean()
-                df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+                # Vectorized EMA calculations
+                for span in [5, 21, 63, 200]:
+                    df[f'EMA_{span}'] = df['Close'].ewm(span=span, adjust=False).mean()
                 
                 self.save_df_cache(ticker, period, interval, df)
                 status_msg = f"Live Data ({interval})"
             else:
                 status_msg = f"Cached Data ({interval})"
             
-            # Calculate Period Return for UI
-            if not df.empty:
-                start_price = df['Close'].iloc[0]
-                end_price = df['Close'].iloc[-1]
-                period_return = (end_price - start_price) / start_price
-            else:
-                period_return = 0.0
-
+            # Calculate Period Return
+            period_return = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0] if not df.empty else 0.0
             self.root.after(0, lambda: self.lbl_status.config(text=status_msg))
 
-            # --- 2. [NEW] 5-Year Growth Drift Calculation ---
-            try:
-                # Using 1mo interval for 5y history to keep it fast
-                df_5y = self.fetch_history_with_retry(stock, "5y", "1mo")
-                if not df_5y.empty and len(df_5y) > 12:
-                    p_start = df_5y['Close'].iloc[0]
-                    p_end = df_5y['Close'].iloc[-1]
-                    
-                    # CAGR Formula: (End/Start)^(1/5) - 1
-                    cagr = ((p_end / p_start) ** (1/5)) - 1
-                    
-                    # Clamp between -5% and +15% to ground the model
-                    self.annual_growth_offset = max(min(cagr*0.5, 0.15), -0.05) # QQQ was crazy the last 5 years, we halve the effect
-                    self.log(f"5Y Historical Drift (CAGR): {self.annual_growth_offset:+.2%}")
-                else:
-                    self.annual_growth_offset = 0.05 # Default Fallback
-            except Exception as e:
-                self.log(f"Growth Offset Error: {e}")
-                self.annual_growth_offset = 0.05
+            # --- 2. [PERFORMANCE FIX] Cached 5-Year Growth Drift ---
+            # This only runs once per ticker change now.
+            if self.annual_growth_offset is None:
+                try:
+                    df_5y = self.fetch_history_with_retry(stock, "5y", "1mo")
+                    if not df_5y.empty and len(df_5y) > 12:
+                        p_start, p_end = df_5y['Close'].iloc[0], df_5y['Close'].iloc[-1]
+                        cagr = ((p_end / p_start) ** (1/5)) - 1
+                        self.annual_growth_offset = max(min(cagr*0.5, 0.15), -0.05)
+                        self.log(f"5Y Historical Drift (CAGR): {self.annual_growth_offset:+.2%}")
+                    else:
+                        self.annual_growth_offset = 0.05
+                except Exception:
+                    self.annual_growth_offset = 0.05
 
             # --- 3. Technical Data & GARCH (1y Daily) ---
             df_tech, tech_cached = self.get_cached_df(ticker, "1y", "1d")
@@ -793,50 +779,30 @@ class MarketApp:
                 df_tech['log_ret'] = np.log(df_tech['Close'] / df_tech['Close'].shift(1))
                 self.save_df_cache(ticker, "1y", "1d", df_tech)
             
-            # --- NEW CODE: Prioritize Real-Time Tick Price ---
+            # --- REAL-TIME PRICE LOGIC ---
             last = df_tech.iloc[-1]
-            
-            # 1. Try to get the absolute latest tick from fast_info
-            real_time_price = None
             try:
-                # fast_info is lighter/faster than .info and usually has the latest metadata
+                # fast_info is significantly faster than standard .info
                 real_time_price = stock.fast_info['last_price']
-            except Exception:
-                pass
+            except:
+                real_time_price = None
 
-            # 2. Assign Current Price (Priority: Fast Info -> Intraday Chart -> Daily Cache)
-            if real_time_price and not math.isnan(real_time_price):
-                current_price = real_time_price
-            elif not df.empty:
-                current_price = df['Close'].iloc[-1]
-            else:
-                current_price = last['Close']
-
-            # Update the class variable so the Option Scanner sees the real price
+            current_price = real_time_price if real_time_price and not math.isnan(real_time_price) else (df['Close'].iloc[-1] if not df.empty else last['Close'])
             self.current_price = current_price
 
+            # Volatility Logic
             hv_30 = df_tech['log_ret'].rolling(30).std().iloc[-1] * np.sqrt(252)
-            
             self.hv_30 = hv_30
-            self.current_price = current_price
-            
-            # GARCH(1,1) Forecast
-            returns = df_tech['log_ret'].dropna().values
-            self.garch_vol = VegaChimpCore.garch_forecast(returns)
+            self.garch_vol = VegaChimpCore.garch_forecast(df_tech['log_ret'].dropna().values)
             
             # --- 4. Sentiment Analysis ---
-            if self.use_sentiment:
-                sentiment_score = self.calculate_sentiment(ticker, stock)
-            else:
-                sentiment_score = None  # Skip analysis if False
+            sentiment_score = self.calculate_sentiment(ticker, stock) if self.use_sentiment else None
 
             # --- 5. UI Updates ---
             last_copy = last.copy()
             last_copy['Close'] = current_price 
             
-            self.root.after(0, lambda: self.update_technicals(
-                last_copy, hv_30, self.garch_vol, sentiment_score, period_return
-            ))
+            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, self.garch_vol, sentiment_score, period_return))
             self.root.after(0, self.update_chart, df, ticker, period)
 
         except Exception as e:
@@ -1150,8 +1116,8 @@ class MarketApp:
         """Consolidated fundamental fetch called when ticker changes."""
         ticker_str = self.entry_ticker.get().upper().strip()
         try:
-            stock = yf.Ticker(ticker_str)
-            info = stock.info
+            stock = self.stock
+            info = self.stock.info
             
             self.pe_fwd = info.get('forwardPE')
             self.pe_ttm = info.get('trailingPE')
@@ -1384,7 +1350,7 @@ class MarketApp:
             self.log(f"Export Error: {e}")
 
     def load_expirations(self):
-        stock = yf.Ticker(self.current_ticker)
+        stock = self.stock
         self.all_exps = stock.options
         self.root.after(0, lambda: self.update_exp_list(self.all_exps))
 
@@ -1442,16 +1408,28 @@ class MarketApp:
             self.log(f"UI Update Error: {e}")
 
     def fetch_options_batch(self, dates, filter_under_only=False):
-        stock = yf.Ticker(self.current_ticker)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Use the centralized stock object (Performance Fix #1)
+        stock = self.stock 
         
         # --- DYNAMIC INPUTS ---
         DIV_YIELD = self.get_smart_dividend(stock) 
-        RFR = self.get_risk_free_rate() # <--- NEW DYNAMIC RATE
+        RFR = self.get_risk_free_rate() 
         
         print(f"[DEBUG] Market Environment | Ticker: {self.current_ticker}")
         print(f"[DEBUG] Risk-Free Rate: {RFR:.4%}")
         print(f"[DEBUG] Dividend Yield: {DIV_YIELD:.4%}")
+        
+        # --- HELPER: Fetch Single Chain (For Threading) ---
+        def fetch_chain(d):
+            try:
+                # Return tuple: (date, chain_data)
+                return d, stock.option_chain(d)
+            except Exception:
+                return d, None
 
+        # --- EARNINGS LOGIC ---
         earnings_contracts = set()
         if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
             for p_date in self.projected_earnings:
@@ -1459,145 +1437,153 @@ class MarketApp:
                 valid_exps = [e for e in self.all_exps if e >= p_str]
                 if valid_exps: earnings_contracts.add(min(valid_exps))
 
-        for date in dates:
-            try:
-                T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
-                if T <= 0: T=0.001
-                chain = stock.option_chain(date)
-                calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
-                
-                top = pd.concat([calls, puts]).sort_values('volume', ascending=False).head(20)
-                
-                for _, row in top.iterrows():
-                    bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
-                    
-                    if bid > 0 and ask > 0:
-                        market_price = (bid + ask) / 2
-                        if (ask - bid) / market_price > 0.4: continue 
-                    elif last > 0:
-                        market_price = last
-                    else:
-                        continue
-                        
-                    iv = row['impliedVolatility']
-                    if not iv or iv < 0.01: continue
-
-                    # Blend GARCH with Market IV to prevent extreme outliers
-                    market_iv = row.get('impliedVolatility', self.hv_30)
-                    if self.garch_vol > 0:
-                        # Give the market IV 60% weight and GARCH 40% weight
-                        # This respects market consensus while keeping your "edge"
-                        vol_input = (self.garch_vol * 0.4) + (market_iv * 0.6)
-                    else:
-                        vol_input = market_iv
-
-                    # Sanity Check: Volatility Mean Reversion for LEAPS
-                    # If time to expiry (T) is > 1 year, blend toward historical mean (approx 18%)
-                    if T > 1.0:
-                        vol_input = (vol_input + 0.18) / 2
-                    
-                    # --- MODEL CALL WITH DYNAMIC RFR ---
-                    
-                    # Indices like QQQ have a historical upward drift (approx 7-8% annually)
-                    # You can add a 'Growth' parameter to offset the dividend drain
-                    growth_offset = self.annual_growth_offset # 5% growth assumption
-
-                    # If Valuation is > 1.5 (Expensive), kill the growth assumption.
-                    # 1. Get the Percentile (Default to 50 if missing)
-                    p_rank = getattr(self, 'pe_percentile', 50.0)
-
-                    # 2. Calculate a "Dampener" Factor (0.0 to 1.0)
-                    # If Rank < 50: Factor is 1.0 (Full Growth)
-                    # If Rank > 90: Factor is 0.0 (No Growth)
-                    # In between: It slides linearly
-                    if p_rank <= 50:
-                        dampener = 1.0
-                    elif p_rank >= 90:
-                        dampener = 0.0
-                    else:
-                        # Example: Rank 71
-                        # (90 - 71) / (90 - 50) = 19 / 40 = 0.475
-                        dampener = (90 - p_rank) / (90 - 50)
-
-                    # 3. Apply the Dampener to the Growth Offset
-                    # TSLA Example: 15% Growth * 0.475 = +7.1% Drift (Instead of 15%)
-                    dynamic_growth = self.annual_growth_offset * dampener
-
-                    # 4. Set the Rate
-                    adjusted_rfr = RFR + dynamic_growth
-
-                    fair = VegaChimpCore.bjerksund_stensland(
-                        self.current_price, 
-                        row['strike'], 
-                        T, 
-                        adjusted_rfr,  # Using RFR + Growth Offset
-                        DIV_YIELD,  
-                        vol_input, 
-                        row['Type'].lower()
-                    )
-                    ev = fair - market_price
-                    
-                    if row['Type'] == "CALL":
-                        breakeven = row['strike'] + market_price
-                    else:
-                        breakeven = row['strike'] - market_price
-
-                    verdict = "Fair"
-                    tag = ""
-                    is_earnings = date in earnings_contracts
-                    
-                    # --- 1. ARBITRAGE CHECK (Highest Priority) ---
-                    is_arbitrage = False
-                    if row['Type'] == "CALL" and breakeven < self.current_price:
-                        is_arbitrage = True
-                    elif row['Type'] == "PUT" and breakeven > self.current_price:
-                        is_arbitrage = True
-
-                    if is_arbitrage:# aribtrage could be misleading if we run this intraday or just after end of trading day
-                        verdict = "Arbitrage" 
-                        tag = "gold"
-                    
-                    # --- 2. Standard Valuation (Only run if NOT Arbitrage) ---
-                    elif self.ev_absolute:
-                        threshold = 0.25 if is_earnings else 0.15
-                        if ev > threshold:
-                            verdict = "Earnings Under" if is_earnings else "Under"
-                            tag = "green"
-                        elif ev < -threshold:
-                            verdict = "Earnings Over" if is_earnings else "Over"
-                            tag = "red"
-                            
-                    else:
-                        safe_price = max(market_price, 0.01)
-                        edge_percent = (ev / safe_price) * 100
-                        
-                        base_min_edge = 10.0 if is_earnings else 5.0
-
-                        if row['Type'] == "CALL":
-                            adjusted_bar = base_min_edge * self.val_multiplier
-                        else:
-                            safe_mul = max(0.1, self.val_multiplier)
-                            adjusted_bar = base_min_edge / safe_mul
-
-                        if edge_percent > adjusted_bar and ev > 0.05:
-                            verdict = f"Under ({edge_percent:.0f}%)"
-                            tag = "green"
-                            if is_earnings: verdict = f"Earning Under ({edge_percent:.0f}%)"
-                        elif edge_percent < -adjusted_bar and ev < -0.05:
-                            verdict = "Over"
-                            tag = "red"
-                            if is_earnings: verdict = f"Earning Over ({edge_percent:.0f}%)"
-                    if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
-                        continue
-
-                    vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), 
-                            f"{market_price:.2f}", f"{breakeven:.2f}", f"{iv:.1%}", 
-                            f"{fair:.2f}", f"{ev:+.2f}", verdict)
-                    
-                    self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
+        # --- MAIN PARALLEL LOOP (Performance Fix #2) ---
+        # We fetch up to 5 chains simultaneously
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            # Submit all tasks
+            future_to_date = {executor.submit(fetch_chain, d): d for d in dates}
             
-            except Exception as e:
-                self.log(f"Options fetch error for {date}: {e}")
+            # Process results as they arrive
+            for future in as_completed(future_to_date):
+                date, chain = future.result()
+                
+                if not chain: 
+                    continue
+
+                try:
+                    T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
+                    if T <= 0: T=0.001
+                    
+                    calls = chain.calls.assign(Type="CALL")
+                    puts = chain.puts.assign(Type="PUT")
+                    
+                    # Merge and filter for liquidity
+                    top = pd.concat([calls, puts]).sort_values('volume', ascending=False).head(20)
+                    
+                    for _, row in top.iterrows():
+                        bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
+                        
+                        # Price Logic: Prefer Midpoint, fallback to Last
+                        if bid > 0 and ask > 0:
+                            market_price = (bid + ask) / 2
+                            # Skip if spread is massive (>40% wide)
+                            if (ask - bid) / market_price > 0.4: continue 
+                        elif last > 0:
+                            market_price = last
+                        else:
+                            continue
+                            
+                        iv = row['impliedVolatility']
+                        if not iv or iv < 0.01: continue
+
+                        # Volatility Blend (GARCH + Market)
+                        market_iv = row.get('impliedVolatility', self.hv_30)
+                        if self.garch_vol > 0:
+                            vol_input = (self.garch_vol * 0.4) + (market_iv * 0.6)
+                        else:
+                            vol_input = market_iv
+
+                        # LEAPS Mean Reversion
+                        if T > 1.0:
+                            vol_input = (vol_input + 0.18) / 2
+                        
+                        # --- GROWTH & DRIFT LOGIC (The "Put Finder" Logic) ---
+                        
+                        # 1. Calculate P/E Percentile Rank Dampener
+                        p_rank = getattr(self, 'pe_percentile', 50.0)
+                        if p_rank <= 50:
+                            dampener = 1.0
+                        elif p_rank >= 90:
+                            dampener = 0.0
+                        else:
+                            dampener = (90 - p_rank) / (90 - 50)
+
+                        # 2. BEARISH OVERRIDE (Critical for Overvalued Stocks)
+                        # If Valuation Multiplier is high, force Negative Drift (Bearish)
+                        if self.val_multiplier >= 1.5:
+                            dynamic_growth = -0.05  # Assume 5% drop
+                        elif self.val_multiplier > 1.2:
+                            dynamic_growth = 0.0    # Flat
+                        else:
+                            dynamic_growth = self.annual_growth_offset * dampener
+
+                        adjusted_rfr = RFR + dynamic_growth
+
+                        # --- PRICING MODEL ---
+                        fair = VegaChimpCore.bjerksund_stensland(
+                            self.current_price, 
+                            row['strike'], 
+                            T, 
+                            adjusted_rfr,
+                            DIV_YIELD,  
+                            vol_input, 
+                            row['Type'].lower()
+                        )
+                        ev = fair - market_price
+                        
+                        if row['Type'] == "CALL":
+                            breakeven = row['strike'] + market_price
+                        else:
+                            breakeven = row['strike'] - market_price
+
+                        verdict = "Fair"
+                        tag = ""
+                        is_earnings = date in earnings_contracts
+                        
+                        # --- 1. ARBITRAGE CHECK ---
+                        is_arbitrage = False
+                        if row['Type'] == "CALL" and breakeven < self.current_price:
+                            is_arbitrage = True
+                        elif row['Type'] == "PUT" and breakeven > self.current_price:
+                            is_arbitrage = True
+
+                        if is_arbitrage:
+                            verdict = "Arbitrage / Deep Val" 
+                            tag = "gold"
+                        
+                        # --- 2. STANDARD VALUATION ---
+                        elif self.ev_absolute:
+                            threshold = 0.25 if is_earnings else 0.15
+                            if ev > threshold:
+                                verdict = "Earnings Under" if is_earnings else "Under"
+                                tag = "green"
+                            elif ev < -threshold:
+                                verdict = "Earnings Over" if is_earnings else "Over"
+                                tag = "red"
+                                
+                        else:
+                            safe_price = max(market_price, 0.01)
+                            edge_percent = (ev / safe_price) * 100
+                            
+                            base_min_edge = 10.0 if is_earnings else 5.0
+
+                            if row['Type'] == "CALL":
+                                adjusted_bar = base_min_edge * self.val_multiplier
+                            else:
+                                safe_mul = max(0.1, self.val_multiplier)
+                                adjusted_bar = base_min_edge / safe_mul
+
+                            if edge_percent > adjusted_bar and ev > 0.05:
+                                verdict = f"Under ({edge_percent:.0f}%)"
+                                tag = "green"
+                                if is_earnings: verdict = f"Earning Under ({edge_percent:.0f}%)"
+                            elif edge_percent < -adjusted_bar and ev < -0.05:
+                                verdict = "Over"
+                                tag = "red"
+                                if is_earnings: verdict = f"Earning Over ({edge_percent:.0f}%)"
+
+                        # Filter Logic
+                        if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
+                            continue
+
+                        vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), 
+                                f"{market_price:.2f}", f"{breakeven:.2f}", f"{iv:.1%}", 
+                                f"{fair:.2f}", f"{ev:+.2f}", verdict)
+                        
+                        self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
+                
+                except Exception as e:
+                    self.log(f"Options fetch error for {date}: {e}")
 
 if __name__ == "__main__":
     try:
