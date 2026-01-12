@@ -328,10 +328,10 @@ class MarketApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Sentinel: Stock & Options Analyzer")
-        self.root.geometry("1500x900")
+        self.root.geometry("1450x900")
 
         self.headline_limit = 1000
-        self.ev_absolute = True
+        self.ev_absolute = False
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
@@ -513,11 +513,25 @@ class MarketApp:
         return lbl
 
     def load_data(self):
+        """Refreshes chart data and updates fundamentals only on ticker change."""
         new_ticker = self.entry_ticker.get().upper().strip()
+        if not new_ticker: return
+
+        # 1. Handle Ticker Change (Heavy Logic)
         if new_ticker != self.current_ticker:
+            self.current_ticker = new_ticker
             self.data_cache = {} 
             self.sent_cache = {}
-            self.log(f"Ticker changed to {new_ticker}. Cleared Cache.")
+            
+            # Show a 'loading' state in the UI for fundamentals
+            self.lbl_pe.config(text="Updating...", foreground="blue")
+            
+            # Start heavy fundamental fetch in the background
+            threading.Thread(target=self.get_info, daemon=True).start()
+            self.log(f"Ticker changed: {new_ticker}. Fetching fundamentals...")
+
+        # 2. Always Refresh Chart (Light Logic)
+        # Moving this outside the IF allows users to 'Refresh' the current ticker
         self.load_chart("5d", "5m")
 
     def load_chart(self, period, interval):
@@ -998,7 +1012,29 @@ class MarketApp:
             threading.Thread(target=self.fetch_options_batch, args=(self.all_exps, True), daemon=True).start()
     
     
-    
+    def get_info(self):
+        """Consolidated fundamental fetch called when ticker changes."""
+        ticker_str = self.entry_ticker.get().upper().strip()
+        try:
+            stock = yf.Ticker(ticker_str)
+            info = stock.info
+            
+            # Store these for display and for the Z-Score math
+            self.pe_fwd = info.get('forwardPE')
+            self.pe_ttm = info.get('trailingPE')
+            self.eps = info.get('trailingEps')
+            self.dividend_yield = info.get('dividendYield', 0.0)
+            
+            # Pre-calculate the valuation multiplier right now
+            self.val_multiplier = self.calculate_valuation_multiplier(stock)
+            self.log(f"Valuation Multiplier: {self.val_multiplier:.2f}x (Z: {self.current_z_score:.2f})")
+            
+        except Exception as e:
+            self.log(f"get_info error: {e}")
+            self.pe_fwd = self.pe_ttm = self.eps = None
+            self.val_multiplier = 1.0
+            
+            
     def calculate_valuation_penalty(self, ticker_obj):
         # 1. Get current Forward P/E
         current_fwd_pe = self.pe_fwd # From your get_info()
@@ -1070,7 +1106,7 @@ class MarketApp:
         if not self.current_ticker: return
         win = Toplevel(self.root)
         win.title(f"Options Explorer: {self.current_ticker}")
-        win.geometry("1150x700")
+        win.geometry("1200x800")
 
         left_panel = ttk.Frame(win, width=200)
         left_panel.pack(side="left", fill="y", padx=5, pady=5)
@@ -1287,17 +1323,25 @@ class MarketApp:
                     else:
                         safe_price = max(market_price, 0.01)
                         edge_percent = (ev / safe_price) * 100
-                        min_edge_pct = 20.0 if is_earnings else 10.0
-                        min_dollar_edge = 0.05 
+                        # --- Inside your fetch_options_batch loop ---
+                        # (After calculating ev and edge_percent)
 
-                        if edge_percent > min_edge_pct and ev > min_dollar_edge:
+                        # Base requirement (e.g., 10% edge)
+                        base_min_edge = 10.0 if is_earnings else 5.0
+
+                        # Apply the Valuation Multiplier
+                        # For TSLA (Z=2.0), bar becomes 15% (Strict)
+                        # For a Value stock (Z=-2.0), bar becomes 5% (Aggressive Reward)
+                        adjusted_bar = base_min_edge * self.val_multiplier
+
+                        if edge_percent > adjusted_bar and ev > 0.05:
                             verdict = f"Under ({edge_percent:.0f}%)"
-                            if is_earnings: verdict = f"Earn Under ({edge_percent:.0f}%)"
                             tag = "green"
-                        elif edge_percent < -min_edge_pct and ev < -min_dollar_edge:
+                            if is_earnings: verdict = f"Earning Under ({edge_percent:.0f}%)"
+                        elif edge_percent < -adjusted_bar and ev < -0.05:
                             verdict = "Over"
-                            if is_earnings: verdict = f"Earn Over ({edge_percent:.0f}%)"
                             tag = "red"
+                            if is_earnings: verdict = f"Earning Over ({edge_percent:.0f}%)"
 
                     if filter_under_only and "Under" not in verdict:
                         continue
