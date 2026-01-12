@@ -421,10 +421,6 @@ class MarketApp:
         ttk.Label(ctrl_panel, text="Active Model:").pack(side="left")
         
         self.model_var = tk.StringVar(value="FinBERT")
-        self.combo_model = ttk.Combobox(ctrl_panel, textvariable=self.model_var, 
-                                        values=["DistilBERT", "FinBERT"], state="readonly", width=15)
-        self.combo_model.pack(side="left", padx=5)
-        self.combo_model.bind("<<ComboboxSelected>>", self.change_model)
 
         self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="blue")
         self.lbl_model_status.pack(side="left", padx=10)
@@ -477,12 +473,6 @@ class MarketApp:
             
         self.root.after(0, lambda: self.lbl_model_status.config(text=msg))
         self.root.after(0, lambda: self.log(sentiment_engine.status_msg))
-
-    def change_model(self, event):
-        target = self.model_var.get()
-        if target == sentiment_engine.current_model_name: return
-        self.log(f"Switching AI Model to {target}...")
-        threading.Thread(target=self.init_model_bg, args=(target,), daemon=True).start()
 
     def log(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
