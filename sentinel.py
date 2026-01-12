@@ -330,7 +330,7 @@ class MarketApp:
         self.root.title("Sentinel: Stock & Options Analyzer")
         self.root.geometry("1500x900")
 
-        self.headline_limit = 100
+        self.headline_limit = 1000
         self.ev_absolute = True
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
@@ -553,19 +553,44 @@ class MarketApp:
         self.data_cache[key] = (df, time.time())
 
     def get_google_news_rss(self, ticker):
-        self.log(f"Fetching Google RSS for {ticker}...")
-        try:
-            url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            resp = requests.get(url, headers=headers, timeout=5, verify=False) 
-            if resp.status_code == 200:
-                root = ET.fromstring(resp.content)
-                titles = [item.find('title').text for item in root.findall('.//item')][: self.headline_limit]
-                self.log(f"RSS Found {len(titles)} headlines.")
-                return titles
-        except Exception as e:
-             self.log(f"RSS Error: {e}")
-        return []
+        self.log(f"Fetching Google RSS for {ticker} (Multi-Query)...")
+        all_titles = set()
+        
+        # Define search variations to broaden the 100-item limit
+        queries = [
+            f"{ticker}+stock",
+            f"{ticker}+earnings+news",
+            f"{ticker}+market+analysis",
+            f"{ticker}+financial+news"
+        ]
+        
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        for q in queries:
+            try:
+                url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+                # Using verify=False as per your original code to ignore SSL overhead
+                resp = requests.get(url, headers=headers, timeout=5, verify=False) 
+                
+                if resp.status_code == 200:
+                    root = ET.fromstring(resp.content)
+                    items = root.findall('.//item')
+                    for item in items:
+                        title = item.find('title').text
+                        if title:
+                            all_titles.add(title)
+                    
+                    # Safety break if we've already exceeded your headline_limit
+                    if len(all_titles) >= self.headline_limit:
+                        break
+                        
+            except Exception as e:
+                 self.log(f"RSS Variation Error ({q}): {e}")
+        
+        # Convert set back to list and enforce the headline_limit
+        final_titles = list(all_titles)[:self.headline_limit]
+        self.log(f"Total Unique RSS Headlines Found: {len(final_titles)}")
+        return final_titles
 
     def calculate_sentiment(self, ticker, stock_obj):
         if ticker in self.sent_cache:
@@ -577,7 +602,7 @@ class MarketApp:
         current_model = sentiment_engine.models[sentiment_engine.current_model_name]
         if not current_model["loaded"]:
             self.log("Model not ready. Waiting...")
-            return 0.5
+            return 'Pending'
 
         headlines = []
         try:
