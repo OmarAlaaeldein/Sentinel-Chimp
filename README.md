@@ -20,7 +20,7 @@ Sentinel looks beyond simple Historical Volatility (HV).
 * **Smart Blending:** Option pricing inputs are a weighted blend of Market Implied Volatility and the GARCH forecast to find a realistic "fair value".
 
 ### 3. Smart Technical Dashboard
-A threaded, non-blocking GUI providing real-time technicals:
+A threaded, non-blocking GUI featuring a professional Dark Mode interface optimized for low eye strain:
 * **Momentum:** RSI (14), Stoch RSI, MACD.
 * **Trend:** Bollinger Bands, SMA/EMA Ribbons (5, 21, 63, 200).
 * **Risk:** ATR (Average True Range) for volatility-based stop losses.
