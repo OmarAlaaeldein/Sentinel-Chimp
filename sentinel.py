@@ -361,6 +361,7 @@ class MarketApp:
 
         self.grid_frame = ttk.LabelFrame(self.left_frame, text="Technical Analysis", padding=15)
         self.grid_frame.pack(fill="x", pady=5)
+        self.annual_growth_offset = 0
         
         self.lbl_rsi = self.add_row(self.grid_frame, "RSI (14d)", 0, "Relative Strength Index. Range 0-100.")
         self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1, "Stochastic RSI. Range 0-1.")
@@ -628,7 +629,7 @@ class MarketApp:
             self.log(f"[{i+1}] {score:.2f} | {h[:40]}...")
 
         if not scores: 
-            return 0.5
+            return 'Pending'
 
         avg_score = sum(scores) / len(scores)
         self.log(f"FINAL SCORE ({sentiment_engine.current_model_name}): {avg_score:.4f}")
@@ -666,6 +667,8 @@ class MarketApp:
             # 1. Chart Data
             df, is_cached = self.get_cached_df(ticker, period, interval)
             stock = yf.Ticker(ticker)
+            
+            # --- Earnings Cycle Detection (Existing) ---
             try:
                 self.projected_earnings = []
                 cal = stock.calendar
@@ -694,6 +697,7 @@ class MarketApp:
                 self.log(f"Earnings fetch skipped: {e}")
                 self.projected_earnings = []
 
+            # --- Main Price Data Fetching ---
             if df is None:
                 df = self.fetch_history_with_retry(stock, period, interval)
                 if df.empty: 
@@ -701,7 +705,7 @@ class MarketApp:
                     self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                     return
                 
-                # EMAs: Calculate unconditionally (PRESERVED)
+                # EMAs: Calculate unconditionally
                 df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
                 df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
                 df['EMA_63'] = df['Close'].ewm(span=63, adjust=False).mean()
@@ -712,6 +716,7 @@ class MarketApp:
             else:
                 status_msg = f"Cached Data ({interval})"
             
+            # Calculate Period Return for UI
             if not df.empty:
                 start_price = df['Close'].iloc[0]
                 end_price = df['Close'].iloc[-1]
@@ -721,7 +726,27 @@ class MarketApp:
 
             self.root.after(0, lambda: self.lbl_status.config(text=status_msg))
 
-            # 2. Technical Data & GARCH
+            # --- 2. [NEW] 5-Year Growth Drift Calculation ---
+            try:
+                # Using 1mo interval for 5y history to keep it fast
+                df_5y = self.fetch_history_with_retry(stock, "5y", "1mo")
+                if not df_5y.empty and len(df_5y) > 12:
+                    p_start = df_5y['Close'].iloc[0]
+                    p_end = df_5y['Close'].iloc[-1]
+                    
+                    # CAGR Formula: (End/Start)^(1/5) - 1
+                    cagr = ((p_end / p_start) ** (1/5)) - 1
+                    
+                    # Clamp between -5% and +15% to ground the model
+                    self.annual_growth_offset = max(min(cagr*0.5, 0.15), -0.05) # QQQ was crazy the last 5 years, we halve the effect
+                    self.log(f"5Y Historical Drift (CAGR): {self.annual_growth_offset:+.2%}")
+                else:
+                    self.annual_growth_offset = 0.05 # Default Fallback
+            except Exception as e:
+                self.log(f"Growth Offset Error: {e}")
+                self.annual_growth_offset = 0.05
+
+            # --- 3. Technical Data & GARCH (1y Daily) ---
             df_tech, tech_cached = self.get_cached_df(ticker, "1y", "1d")
             if df_tech is None:
                 df_tech = self.fetch_history_with_retry(stock, "1y", "1d")
@@ -730,33 +755,32 @@ class MarketApp:
                 self.save_df_cache(ticker, "1y", "1d", df_tech)
             
             last = df_tech.iloc[-1]
-            if not df.empty: current_price = df['Close'].iloc[-1]
-            else: current_price = last['Close']
+            current_price = df['Close'].iloc[-1] if not df.empty else last['Close']
 
             hv_30 = df_tech['log_ret'].rolling(30).std().iloc[-1] * np.sqrt(252)
             
-            # --- APPLY GARCH(1,1) ---
+            # GARCH(1,1) Forecast
             returns = df_tech['log_ret'].dropna().values
             self.garch_vol = VegaChimpCore.garch_forecast(returns)
-            # ------------------------
 
             self.current_price = current_price
             self.hv_30 = hv_30
             
-            # 3. Sentiment
+            # --- 4. Sentiment Analysis ---
             sentiment_score = self.calculate_sentiment(ticker, stock)
 
+            # --- 5. UI Updates ---
             last_copy = last.copy()
             last_copy['Close'] = current_price 
             
-            # Pass GARCH to UI Update
-            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, self.garch_vol, sentiment_score, period_return))
+            self.root.after(0, lambda: self.update_technicals(
+                last_copy, hv_30, self.garch_vol, sentiment_score, period_return
+            ))
             self.root.after(0, self.update_chart, df, ticker, period)
 
         except Exception as e:
-            self.log(f"CRITICAL ERROR: {e}")
+            self.log(f"CRITICAL ERROR in fetch_and_plot: {e}")
             self.root.after(0, lambda: self.lbl_status.config(text="Error"))
-
     def update_chart(self, df, ticker, period):
         if not hasattr(self, 'ax') or self.ax is None: return
 
@@ -965,9 +989,7 @@ class MarketApp:
             if div is not None and isinstance(div, (int, float)):
                 # If yield is > 0.5 (50%), it's almost certainly a percentage (e.g. 2.94)
                 # We need it to be a decimal (0.0294)
-                if div > 0.5: 
-                    print(f"[DEBUG] Detected Percentage Format ({div}). Fixing to {div/100}...")
-                    div = div / 100
+                div = div / 100
                 
                 print(f"[DEBUG] Found Dividend (Info): {div:.4%}") 
                 return div
@@ -975,7 +997,7 @@ class MarketApp:
             # 2. Try 'trailingAnnualDividendYield'
             div = info.get('trailingAnnualDividendYield')
             if div is not None and isinstance(div, (int, float)):
-                if div > 0.5: div = div / 100 # Apply fix here too
+                div = div / 100 # Apply fix here too
                 print(f"[DEBUG] Found Dividend (Trailing): {div:.4%}")
                 return div
 
@@ -1166,19 +1188,38 @@ class MarketApp:
                     iv = row['impliedVolatility']
                     if not iv or iv < 0.01: continue
 
-                    vol_input = self.garch_vol if self.garch_vol > 0 else self.hv_30
+                    # Blend GARCH with Market IV to prevent extreme outliers
+                    market_iv = row.get('impliedVolatility', self.hv_30)
+                    if self.garch_vol > 0:
+                        # Give the market IV 60% weight and GARCH 40% weight
+                        # This respects market consensus while keeping your "edge"
+                        vol_input = (self.garch_vol * 0.4) + (market_iv * 0.6)
+                    else:
+                        vol_input = market_iv
+
+                    # Sanity Check: Volatility Mean Reversion for LEAPS
+                    # If time to expiry (T) is > 1 year, blend toward historical mean (approx 18%)
+                    if T > 1.0:
+                        vol_input = (vol_input + 0.18) / 2
                     
                     # --- MODEL CALL WITH DYNAMIC RFR ---
+                    
+                    # Indices like QQQ have a historical upward drift (approx 7-8% annually)
+                    # You can add a 'Growth' parameter to offset the dividend drain
+                    growth_offset = self.annual_growth_offset # 5% growth assumption
+
+                    # Use this adjusted RFR to signal that the stock isn't just a falling rock
+                    adjusted_rfr = RFR + growth_offset
+
                     fair = VegaChimpCore.bjerksund_stensland(
                         self.current_price, 
                         row['strike'], 
                         T, 
-                        RFR,        # <--- USED HERE
+                        adjusted_rfr,  # Using RFR + Growth Offset
                         DIV_YIELD,  
                         vol_input, 
                         row['Type'].lower()
                     )
-                    
                     ev = fair - market_price
                     
                     if row['Type'] == "CALL":
