@@ -442,13 +442,15 @@ class MarketApp:
         
         # Track visibility state
         self.log_visible = False
+        
 
         self.current_ticker = None
         self.current_price = 0
         self.hv_30 = 0
         self.garch_vol = 0 # New variable for GARCH
         self.projected_earnings = [] 
-        
+        # Add this line where your other technical labels are initialized
+        self.lbl_pe = self.add_row(self.grid_frame, "P/E Ratio", 8, "Price-to-Earnings Ratio (TTM vs Forward).")
         self.log("App Started. Defaulting to FinBERT.")
         threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         
@@ -592,6 +594,8 @@ class MarketApp:
         final_titles = list(all_titles)[:self.headline_limit]
         self.log(f"Total Unique RSS Headlines Found: {len(final_titles)}")
         return final_titles
+
+
 
     def calculate_sentiment(self, ticker, stock_obj):
         if ticker in self.sent_cache:
@@ -875,6 +879,20 @@ class MarketApp:
         macd_c = "green" if macd_val > 0 else "red"
         self.lbl_macd.config(text=f"{macd_val:.2f}", foreground=macd_c)
         
+        try:
+            stock_info = yf.Ticker(self.current_ticker).info
+            pe_ttm = stock_info.get('trailingPE', 'N/A')
+            pe_fwd = stock_info.get('forwardPE', 'N/A')
+            
+            # Format the text (handling cases where P/E might be missing)
+            pe_ttm_str = f"{pe_ttm:.2f}" if isinstance(pe_ttm, (int, float)) else "N/A"
+            pe_fwd_str = f"{pe_fwd:.2f}" if isinstance(pe_fwd, (int, float)) else "N/A"
+            
+            self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}")
+        except Exception as e:
+            self.log(f"P/E Fetch Error: {e}")
+            self.lbl_pe.config(text="N/A", foreground="gray")
+        
         bb_pos = "Inside"
         bb_c = "black"
         if data['Close'] > data['BB_Upper']: 
@@ -979,6 +997,33 @@ class MarketApp:
             self.log(f"Scanning {len(self.all_exps)} chains for value...")
             threading.Thread(target=self.fetch_options_batch, args=(self.all_exps, True), daemon=True).start()
     
+    
+    
+    def calculate_valuation_penalty(self, ticker_obj):
+        # 1. Get current Forward P/E
+        current_fwd_pe = self.pe_fwd # From your get_info()
+        
+        # 2. Reconstruct Historical Trailing P/E (Proxy for valuation history)
+        # We get 2 years of history to establish a 'normal' range
+        hist = ticker_obj.history(period="5y")
+        eps = ticker_obj.info.get('trailingEps', 1)
+        
+        # Calculate historical P/E series
+        pe_series = hist['Close'] / eps
+        
+        mean_pe = pe_series.mean()
+        std_pe = pe_series.std()
+        
+        # 3. Calculate Z-Score
+        # (Current Fwd PE - Historical Mean) / Historical StdDev
+        z_score = (current_fwd_pe - mean_pe) / std_pe
+        
+        # 4. Define the Penalty/Reward
+        # We cap the multiplier between 0.5 (huge reward) and 2.0 (huge penalty)
+        # A Z-score of 0 means multiplier of 1.0 (no change)
+        penalty_multiplier = 1.0 + (z_score * 0.2) # Adjust 0.2 to change sensitivity
+        return max(0.5, min(penalty_multiplier, 2.0))
+
     def get_smart_dividend(self, stock_obj):
         try:
             # 1. Try 'dividendYield' from info
