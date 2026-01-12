@@ -451,6 +451,9 @@ class MarketApp:
         self.projected_earnings = [] 
         # Add this line where your other technical labels are initialized
         self.lbl_pe = self.add_row(self.grid_frame, "P/E Ratio", 8, "Price-to-Earnings Ratio (TTM vs Forward).")
+        # Add this in your __init__ section
+        self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 9, 
+                                     "How expensive the current P/E is vs the last 5 years (0-100%).")
         self.log("App Started. Defaulting to FinBERT.")
         threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         
@@ -894,15 +897,20 @@ class MarketApp:
         self.lbl_macd.config(text=f"{macd_val:.2f}", foreground=macd_c)
         
         try:
-            stock_info = yf.Ticker(self.current_ticker).info
-            pe_ttm = stock_info.get('trailingPE', 'N/A')
-            pe_fwd = stock_info.get('forwardPE', 'N/A')
-            
-            # Format the text (handling cases where P/E might be missing)
-            pe_ttm_str = f"{pe_ttm:.2f}" if isinstance(pe_ttm, (int, float)) else "N/A"
-            pe_fwd_str = f"{pe_fwd:.2f}" if isinstance(pe_fwd, (int, float)) else "N/A"
+            # Format the text using already-stored fundamental data (No new network call)
+            pe_ttm_str = f"{self.pe_ttm:.2f}" if isinstance(self.pe_ttm, (int, float)) else "N/A"
+            pe_fwd_str = f"{self.pe_fwd:.2f}" if isinstance(self.pe_fwd, (int, float)) else "N/A"
+
+            # Update the display label
+            self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}")
             
             self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}")
+            # Inside your update_technicals method:
+            if hasattr(self, 'pe_percentile'):
+                p_val = self.pe_percentile
+                # Color: Red if > 80% (Expensive), Green if < 20% (Cheap)
+                p_color = "red" if p_val > 80 else "green" if p_val < 20 else "black"
+                self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
         except Exception as e:
             self.log(f"P/E Fetch Error: {e}")
             self.lbl_pe.config(text="N/A", foreground="gray")
@@ -1034,31 +1042,33 @@ class MarketApp:
             self.pe_fwd = self.pe_ttm = self.eps = None
             self.val_multiplier = 1.0
             
+    def calculate_valuation_multiplier(self, ticker_obj):
+        try:
+            if not self.pe_fwd or not self.eps or self.eps <= 0:
+                self.current_z_score = 0
+                self.pe_percentile = 50 # Neutral
+                return 1.0
+                
+            hist = ticker_obj.history(period="5y")
+            if hist.empty: return 1.0
             
-    def calculate_valuation_penalty(self, ticker_obj):
-        # 1. Get current Forward P/E
-        current_fwd_pe = self.pe_fwd # From your get_info()
-        
-        # 2. Reconstruct Historical Trailing P/E (Proxy for valuation history)
-        # We get 2 years of history to establish a 'normal' range
-        hist = ticker_obj.history(period="5y")
-        eps = ticker_obj.info.get('trailingEps', 1)
-        
-        # Calculate historical P/E series
-        pe_series = hist['Close'] / eps
-        
-        mean_pe = pe_series.mean()
-        std_pe = pe_series.std()
-        
-        # 3. Calculate Z-Score
-        # (Current Fwd PE - Historical Mean) / Historical StdDev
-        z_score = (current_fwd_pe - mean_pe) / std_pe
-        
-        # 4. Define the Penalty/Reward
-        # We cap the multiplier between 0.5 (huge reward) and 2.0 (huge penalty)
-        # A Z-score of 0 means multiplier of 1.0 (no change)
-        penalty_multiplier = 1.0 + (z_score * 0.2) # Adjust 0.2 to change sensitivity
-        return max(0.5, min(penalty_multiplier, 2.0))
+            pe_series = hist['Close'] / self.eps
+            
+            # --- NEW PERCENTILE LOGIC ---
+            # Count how many historical P/E days were lower than the current Forward P/E
+            count_lower = (pe_series < self.pe_fwd).sum()
+            self.pe_percentile = (count_lower / len(pe_series)) * 100
+            
+            # Existing Z-Score Logic
+            mean_pe = pe_series.mean()
+            std_pe = pe_series.std()
+            z_score = (self.pe_fwd - mean_pe) / std_pe
+            self.current_z_score = z_score
+            
+            multiplier = 1.0 + (z_score * 0.25)
+            return max(0.1, multiplier)
+        except:
+            return 1.0     
 
     def get_smart_dividend(self, stock_obj):
         try:
