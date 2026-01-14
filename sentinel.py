@@ -8,7 +8,6 @@ import threading
 from datetime import datetime, timedelta
 import time
 import requests
-from requests.adapters import HTTPAdapter
 import xml.etree.ElementTree as ET
 import os
 import urllib3
