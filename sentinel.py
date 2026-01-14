@@ -12,8 +12,10 @@ from requests.adapters import HTTPAdapter
 import xml.etree.ElementTree as ET
 import os
 import urllib3
-from urllib3.util.retry import Retry
+import webbrowser
 import csv
+import re
+import html
 from concurrent.futures import ThreadPoolExecutor, as_completed
 # Put this at the very top of your imports
 try:
@@ -347,7 +349,14 @@ class MarketApp:
         self.entry_ticker.insert(0, "AMD")
         self.entry_ticker.bind('<Return>', lambda e: self.load_data()) 
         
+        
+        
         ttk.Button(input_frame, text="Load Data", command=self.load_data).pack(side="left")
+        
+        # --- [NEW] News Button ---
+        self.btn_news = ttk.Button(input_frame, text="📰 News", command=self.open_news_window, state="disabled")
+        self.btn_news.pack(side="left", padx=10)
+        # -------------------------
 
         self.paned = ttk.PanedWindow(root, orient="horizontal")
         self.paned.pack(fill="both", expand=True, padx=10, pady=5)
@@ -599,14 +608,12 @@ class MarketApp:
         self.data_cache[key] = (df, time.time())
 
     def get_google_news_rss(self, ticker):
-        self.log(f"Fetching Google RSS for {ticker} (Multi-Query)...")
-        all_titles = set()
+        self.log(f"Fetching Google RSS for {ticker} (Rich Data)...")
+        news_items = []
+        seen_titles = set()
         
-        # Define search variations to broaden the 100-item limit
         queries = [
             f"{ticker}+stock",
-            f"{ticker}+earnings+news",
-            f"{ticker}+market+analysis",
             f"{ticker}+financial+news"
         ]
         
@@ -615,7 +622,6 @@ class MarketApp:
         for q in queries:
             try:
                 url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
-                # Using verify=False as per your original code to ignore SSL overhead
                 resp = requests.get(url, headers=headers, timeout=5, verify=False) 
                 
                 if resp.status_code == 200:
@@ -623,68 +629,109 @@ class MarketApp:
                     items = root.findall('.//item')
                     for item in items:
                         title = item.find('title').text
-                        if title:
-                            all_titles.add(title)
+                        link = item.find('link').text
+                        pub_date_str = item.find('pubDate').text
+                        
+                        # --- HTML CLEANUP (The Fix) ---
+                        raw_desc = item.find('description').text or ""
+                        
+                        # 1. Remove all HTML tags (<a href...>, </a>, <font...>)
+                        clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
+                        
+                        # 2. Fix weird symbols (&nbsp; -> space, &amp; -> &)
+                        clean_desc = html.unescape(clean_desc)
+                        
+                        # 3. Clean up whitespace
+                        clean_desc = " ".join(clean_desc.split())
+                        # ------------------------------
+
+                        if title and title not in seen_titles:
+                            seen_titles.add(title)
+                            try:
+                                dt = pd.to_datetime(pub_date_str)
+                            except:
+                                dt = datetime.now()
+
+                            news_items.append({
+                                'title': title,
+                                'link': link,
+                                'published': dt,
+                                'summary': clean_desc,
+                                'source': 'Google RSS'
+                            })
                     
-                    # Safety break if we've already exceeded your headline_limit
-                    if len(all_titles) >= self.headline_limit:
+                    if len(news_items) >= self.headline_limit:
                         break
                         
             except Exception as e:
                  self.log(f"RSS Variation Error ({q}): {e}")
         
-        # Convert set back to list and enforce the headline_limit
-        final_titles = list(all_titles)[:self.headline_limit]
-        self.log(f"Total Unique RSS Headlines Found: {len(final_titles)}")
-        return final_titles
-
-
+        return news_items
 
     def calculate_sentiment(self, ticker, stock_obj):
+        # 1. Check Cache
         if ticker in self.sent_cache:
-            val, ts = self.sent_cache[ticker]
-            if time.time() - ts < self.SENT_CACHE_DURATION:
-                self.log("Using Cached Sentiment.")
-                return val
+            cache_data = self.sent_cache[ticker]
+            if len(cache_data) == 3:
+                val, news_items, ts = cache_data
+                if time.time() - ts < self.SENT_CACHE_DURATION:
+                    self.log("Using Cached News.")
+                    return val, news_items
 
-        current_model = sentiment_engine.models[sentiment_engine.current_model_name]
-        if not current_model["loaded"]:
-            self.log("Model not ready. Waiting...")
-            return 'Pending'
-
-        headlines = []
+        # 2. Gather Headlines
+        all_news = []
+        
+        # A. Yahoo News (Best Quality)
         try:
             ynews = stock_obj.news
             if ynews:
                 for n in ynews:
                     title = n.get('title') or n.get('headline') or ""
-                    if title.strip(): headlines.append(title)
+                    if not title.strip(): continue
+                    
+                    ts = n.get('providerPublishTime', time.time())
+                    dt = datetime.fromtimestamp(ts)
+                    summary = n.get('summary') or f"Source: {n.get('publisher', 'Yahoo')}"
+                    
+                    all_news.append({
+                        'title': title,
+                        'link': n.get('link', ''),
+                        'published': dt,
+                        'summary': summary,
+                        'source': 'Yahoo'
+                    })
         except Exception as e:
             self.log(f"Yahoo news error: {e}")
 
-        if not headlines:
-            headlines = self.get_google_news_rss(ticker)
+        # B. Google RSS (Backup)
+        if len(all_news) < 5:
+            google_news = self.get_google_news_rss(ticker)
+            all_news.extend(google_news)
 
-        if not headlines:
-            self.log("No headlines found.")
-            return None
+        if not all_news:
+            return None, []
 
-        self.log(f"Analyzing {len(headlines)} headlines with {sentiment_engine.current_model_name}...")
-        top_headlines = headlines[: self.headline_limit]
-        scores = sentiment_engine.predict_batch(top_headlines)
-        #for i, (h, score) in enumerate(zip(top_headlines, scores)):
-        #    self.log(f"[{i+1}] {score:.2f} | {h[:40]}...")
-        news_num = len(top_headlines)
-        # indicate how many headlines were analyzed
-        self.log("Retrieved and analyzed {} headlines.".format(news_num))
-        if not scores: 
-            return 'Pending'
+        # 3. Sort: Newest First
+        all_news.sort(key=lambda x: x['published'], reverse=True)
+        all_news = all_news[:self.headline_limit]
 
-        avg_score = sum(scores) / len(scores)
-        self.log(f"FINAL SCORE ({sentiment_engine.current_model_name}): {avg_score:.4f}")
+        # 4. AI Analysis (Uses Titles)
+        avg_score = None
+        headlines_for_ai = [x['title'] for x in all_news]
         
-        self.sent_cache[ticker] = (avg_score, time.time())
-        return avg_score
+        if self.use_sentiment:
+            current_model = sentiment_engine.models[sentiment_engine.current_model_name]
+            if current_model["loaded"]:
+                self.log(f"AI Analyzing {len(headlines_for_ai)} headlines...")
+                scores = sentiment_engine.predict_batch(headlines_for_ai)
+                if scores:
+                    valid_scores = [s for s in scores if isinstance(s, (int, float))]
+                    if valid_scores:
+                        avg_score = sum(valid_scores) / len(valid_scores)
+                        self.log(f"FINAL AI SCORE: {avg_score:.4f}")
+
+        self.sent_cache[ticker] = (avg_score, all_news, time.time())
+        return avg_score, all_news
 
     def treeview_sort_column(self, tv, col, reverse):
         """Sorts the treeview contents when a column header is clicked."""
@@ -710,7 +757,123 @@ class MarketApp:
 
         # Update the heading command to toggle the sort direction next time
         tv.heading(col, command=lambda _col=col: self.treeview_sort_column(tv, _col, not reverse))
+    
+    def open_news_window(self):
+        if not self.current_ticker: return
+        
+        # Retrieve rich data from cache
+        if self.current_ticker not in self.sent_cache:
+            messagebox.showinfo("News", "No news loaded yet for this ticker.")
+            return
 
+        cache_data = self.sent_cache[self.current_ticker]
+        if len(cache_data) == 3:
+            _, news_items, _ = cache_data
+        else:
+            messagebox.showinfo("News", "Old cache format. Please reload data.")
+            return
+        
+        if not news_items:
+            messagebox.showinfo("News", "No headlines found.")
+            return
+
+        win = Toplevel(self.root)
+        win.title(f"News Feed: {self.current_ticker}")
+        win.geometry("900x600")
+        win.configure(bg="#1e1e1e")
+
+        # Header
+        header = ttk.Frame(win)
+        header.pack(fill="x", padx=10, pady=10)
+        ttk.Label(header, text=f"Latest News ({len(news_items)})", 
+                  font=("Arial", 16, "bold"), background="#1e1e1e", foreground="white").pack(side="left")
+        ttk.Label(header, text="(Double-click to read)", 
+                  font=("Arial", 10), background="#1e1e1e", foreground="gray").pack(side="left", padx=10, pady=(5,0))
+
+        # Treeview
+        columns = ("Date", "Source", "Headline")
+        tree = ttk.Treeview(win, columns=columns, show="headings", height=20)
+        
+        tree.heading("Date", text="Date")
+        tree.heading("Source", text="Source")
+        tree.heading("Headline", text="Headline")
+        
+        tree.column("Date", width=120, anchor="center")
+        tree.column("Source", width=100, anchor="center")
+        tree.column("Headline", width=600, anchor="w")
+        
+        scr = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscroll=scr.set)
+        
+        tree.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        scr.pack(side="right", fill="y", pady=10)
+
+        # Styles
+        tree.tag_configure('odd', background='#252526', foreground='white')
+        tree.tag_configure('even', background='#333333', foreground='white')
+
+        # Insert Data (Already sorted)
+        for i, item in enumerate(news_items):
+            tag = 'even' if i % 2 == 0 else 'odd'
+            # Format date for display
+            date_str = item['published'].strftime("%Y-%m-%d %H:%M")
+            tree.insert("", "end", iid=i, values=(date_str, item['source'], item['title']), tags=(tag,))
+
+        # Bind Double Click
+        def on_double_click(event):
+            item_id = tree.selection()[0]
+            news_obj = news_items[int(item_id)]
+            self.view_news_content(news_obj)
+            
+        tree.bind("<Double-1>", on_double_click)
+
+    def view_news_content(self, news_item):
+        """Opens a pane to read the selected news item."""
+        reader = Toplevel(self.root)
+        reader.title("News Reader")
+        reader.geometry("600x450")
+        reader.configure(bg="#1e1e1e")
+
+        # Headline
+        tk.Label(reader, text=news_item['title'], font=("Arial", 14, "bold"), 
+                 bg="#1e1e1e", fg="white", wraplength=550, justify="left").pack(pady=15, padx=15, anchor="w")
+
+        # Metadata
+        meta = tk.Frame(reader, bg="#1e1e1e")
+        meta.pack(fill="x", padx=15)
+        tk.Label(meta, text=f"{news_item['source']}  •  {news_item['published']}", 
+                 bg="#1e1e1e", fg="#00e6ff", font=("Arial", 9)).pack(side="left")
+
+        # Summary Box
+        tk.Label(reader, text="Snippet:", bg="#1e1e1e", fg="gray", anchor="w").pack(fill="x", padx=15, pady=(20, 5))
+        
+        text_box = tk.Text(reader, height=10, bg="#252526", fg="#dddddd", 
+                           font=("Segoe UI", 11), wrap="word", relief="flat", padx=10, pady=10)
+        
+        # If the summary is just the title repeated (Google behavior), show a helpful message
+        display_text = news_item.get('summary', '')
+        if len(display_text) < 10 or display_text == news_item['title']:
+            display_text = "No detailed summary available. Please read the full article below."
+            
+        text_box.insert("1.0", display_text)
+        text_box.config(state="disabled") # Read-only
+        text_box.pack(fill="both", expand=True, padx=15, pady=5)
+
+        # Button
+        btn_frame = tk.Frame(reader, bg="#1e1e1e")
+        btn_frame.pack(fill="x", pady=20, padx=15)
+        
+        def open_link():
+            if news_item['link']:
+                webbrowser.open(news_item['link'])
+            else:
+                messagebox.showerror("Error", "No link found.")
+
+        # Large, clear button
+        btn = tk.Button(btn_frame, text="🌐  Open Full Article in Browser", command=open_link,
+                        bg="#007acc", fg="white", font=("Arial", 11, "bold"), 
+                        relief="flat", pady=8, cursor="hand2")
+        btn.pack(fill="x")
     def fetch_and_plot(self, ticker, period, interval):
         try:
             # 1. Use the shared stock object instead of recreating it
@@ -812,8 +975,19 @@ class MarketApp:
             self.garch_vol = VegaChimpCore.garch_forecast(df_tech['log_ret'].dropna().values)
             
             # --- 4. Sentiment Analysis ---
-            sentiment_score = self.calculate_sentiment(ticker, stock) if self.use_sentiment else None
+            sentiment_result = self.calculate_sentiment(ticker, stock)
+            
+            sentiment_score = None
+            headlines = []
+            
+            if sentiment_result:
+                sentiment_score, headlines = sentiment_result
 
+            # Enable News Button if we have headlines
+            if headlines:
+                self.root.after(0, lambda: self.btn_news.config(state="normal"))
+            else:
+                self.root.after(0, lambda: self.btn_news.config(state="disabled"))
             # --- 5. UI Updates ---
             last_copy = last.copy()
             last_copy['Close'] = current_price 
@@ -1422,8 +1596,6 @@ class MarketApp:
             self.log(f"UI Update Error: {e}")
 
     def fetch_options_batch(self, dates, filter_under_only=False):
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
         # Use the centralized stock object (Performance Fix #1)
         stock = self.stock 
         
@@ -1450,14 +1622,11 @@ class MarketApp:
                 p_str = p_date.strftime("%Y-%m-%d")
                 valid_exps = [e for e in self.all_exps if e >= p_str]
                 if valid_exps: earnings_contracts.add(min(valid_exps))
-
+        seen_entries = set()
         # --- MAIN PARALLEL LOOP (Performance Fix #2) ---
-        # We fetch up to 5 chains simultaneously
         with ThreadPoolExecutor(max_workers=8) as executor:
-            # Submit all tasks
             future_to_date = {executor.submit(fetch_chain, d): d for d in dates}
             
-            # Process results as they arrive
             for future in as_completed(future_to_date):
                 date, chain = future.result()
                 
@@ -1467,20 +1636,23 @@ class MarketApp:
                 try:
                     T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
                     if T <= 0: T=0.001
+
+                    # --- DUPLICATE FIX: Unique Strikes per Expiry ---
+                    # Dropping by 'strike' only because the loop handles 'date'
+                    calls = pd.DataFrame(chain.calls.assign(Type="CALL").sort_values(['strike','volume']))
+                    calls = calls.drop_duplicates(subset=['strike'], keep='last').head(25)
                     
-                    calls = chain.calls.assign(Type="CALL")
-                    puts = chain.puts.assign(Type="PUT")
+                    puts = pd.DataFrame(chain.puts.assign(Type="PUT").sort_values(['strike','volume']))
+                    puts = puts.drop_duplicates(subset=['strike'], keep='last').head(25)
                     
-                    # Merge and filter for liquidity
-                    top = pd.concat([calls, puts]).sort_values('volume', ascending=False).head(20)
+                    top = pd.concat([calls, puts]).sort_values('volume', ascending=False)
                     
                     for _, row in top.iterrows():
                         bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
                         
-                        # Price Logic: Prefer Midpoint, fallback to Last
+                        # Price Logic
                         if bid > 0 and ask > 0:
                             market_price = (bid + ask) / 2
-                            # Skip if spread is massive (>40% wide)
                             if (ask - bid) / market_price > 0.4: continue 
                         elif last > 0:
                             market_price = last
@@ -1490,115 +1662,89 @@ class MarketApp:
                         iv = row['impliedVolatility']
                         if not iv or iv < 0.01: continue
 
-                        # Volatility Blend (GARCH + Market)
+                        # Volatility Blend
                         market_iv = row.get('impliedVolatility', self.hv_30)
-                        if self.garch_vol > 0:
-                            vol_input = (self.garch_vol * 0.4) + (market_iv * 0.6)
-                        else:
-                            vol_input = market_iv
-
-                        # LEAPS Mean Reversion
-                        if T > 1.0:
-                            vol_input = (vol_input + 0.18) / 2
+                        vol_input = (self.garch_vol * 0.4) + (market_iv * 0.6) if self.garch_vol > 0 else market_iv
+                        if T > 1.0: vol_input = (vol_input + 0.18) / 2
                         
-                        # --- GROWTH & DRIFT LOGIC (The "Put Finder" Logic) ---
-                        
-                        # 1. Calculate P/E Percentile Rank Dampener
+                        # --- GROWTH & DRIFT LOGIC ---
                         p_rank = getattr(self, 'pe_percentile', 50.0)
-                        if p_rank <= 50:
-                            dampener = 1.0
-                        elif p_rank >= 90:
-                            dampener = 0.0
-                        else:
-                            dampener = (90 - p_rank) / (90 - 50)
+                        dampener = 1.0 if p_rank <= 50 else (0.0 if p_rank >= 90 else (90 - p_rank) / 40)
 
-                        # 2. BEARISH OVERRIDE (Critical for Overvalued Stocks)
-                        # If Valuation Multiplier is high, force Negative Drift (Bearish)
-                        if self.val_multiplier >= 1.5:
-                            dynamic_growth = -0.05  # Assume 5% drop
-                        elif self.val_multiplier > 1.2:
-                            dynamic_growth = 0.0    # Flat
-                        else:
-                            dynamic_growth = self.annual_growth_offset * dampener
+                        if self.val_multiplier >= 1.5: dynamic_growth = -0.05
+                        elif self.val_multiplier > 1.2: dynamic_growth = 0.0
+                        else: dynamic_growth = self.annual_growth_offset * dampener
 
                         adjusted_rfr = RFR + dynamic_growth
 
                         # --- PRICING MODEL ---
                         fair = VegaChimpCore.bjerksund_stensland(
-                            self.current_price, 
-                            row['strike'], 
-                            T, 
-                            adjusted_rfr,
-                            DIV_YIELD,  
-                            vol_input, 
-                            row['Type'].lower()
+                            self.current_price, row['strike'], T, 
+                            adjusted_rfr, DIV_YIELD, vol_input, row['Type'].lower()
                         )
                         ev = fair - market_price
-                        
-                        if row['Type'] == "CALL":
-                            breakeven = row['strike'] + market_price
-                        else:
-                            breakeven = row['strike'] - market_price
+                        breakeven = row['strike'] + market_price if row['Type'] == "CALL" else row['strike'] - market_price
 
                         verdict = "Fair"
                         tag = ""
                         is_earnings = date in earnings_contracts
                         
-                        # --- 1. ARBITRAGE CHECK ---
-                        is_arbitrage = False
-                        if row['Type'] == "CALL" and breakeven < self.current_price:
-                            is_arbitrage = True
-                        elif row['Type'] == "PUT" and breakeven > self.current_price:
-                            is_arbitrage = True
+                        # --- 1. ARBITRAGE CHECK WITH DATE VERIFICATION ---
+                        is_arb_math = False
+                        if row['Type'] == "CALL" and breakeven < self.current_price: is_arb_math = True
+                        elif row['Type'] == "PUT" and breakeven > self.current_price: is_arb_math = True
 
-                        if is_arbitrage:
-                            verdict = "Arbitrage" 
-                            tag = "gold"
+                        if is_arb_math:
+                            # Verify trade is from today
+                            trade_date = row['lastTradeDate'].date()
+                            today_date = datetime.now().date()
+                            
+                            if trade_date == today_date:
+                                verdict = "Arbitrage" 
+                                tag = "gold"
+                            else:
+                                is_arb_math = False # Demote stale data
                         
                         # --- 2. STANDARD VALUATION ---
-                        elif self.ev_absolute:
-                            threshold = 0.25 if is_earnings else 0.15
-                            if ev > threshold:
-                                verdict = "Earnings Under" if is_earnings else "Under"
-                                tag = "green"
-                            elif ev < -threshold:
-                                verdict = "Earnings Over" if is_earnings else "Over"
-                                tag = "red"
-                                
-                        else:
-                            safe_price = max(market_price, 0.01)
-                            edge_percent = (ev / safe_price) * 100
-                            
-                            base_min_edge = 10.0 if is_earnings else 5.0
-
-                            if row['Type'] == "CALL":
-                                adjusted_bar = base_min_edge * self.val_multiplier
+                        elif not is_arb_math:
+                            if self.ev_absolute:
+                                threshold = 0.25 if is_earnings else 0.15
+                                if ev > threshold:
+                                    verdict = "Earnings Under" if is_earnings else "Under"
+                                    tag = "green"
+                                elif ev < -threshold:
+                                    verdict = "Earnings Over" if is_earnings else "Over"
+                                    tag = "red"
                             else:
-                                safe_mul = max(0.1, self.val_multiplier)
-                                adjusted_bar = base_min_edge / safe_mul
+                                safe_price = max(market_price, 0.01)
+                                edge_percent = (ev / safe_price) * 100
+                                base_min_edge = 10.0 if is_earnings else 5.0
+                                adjusted_bar = base_min_edge * self.val_multiplier if row['Type'] == "CALL" else base_min_edge / max(0.1, self.val_multiplier)
 
-                            if edge_percent > adjusted_bar and ev > 0.05:
-                                verdict = f"Under ({edge_percent:.0f}%)"
-                                tag = "green"
-                                if is_earnings: verdict = f"Earning Under ({edge_percent:.0f}%)"
-                            elif edge_percent < -adjusted_bar and ev < -0.05:
-                                verdict = "Over"
-                                tag = "red"
-                                if is_earnings: verdict = f"Earning Over ({edge_percent:.0f}%)"
+                                if edge_percent > adjusted_bar and ev > 0.05:
+                                    verdict = f"{'Earning ' if is_earnings else ''}Under ({edge_percent:.0f}%)"
+                                    tag = "green"
+                                elif edge_percent < -adjusted_bar and ev < -0.05:
+                                    verdict = f"{'Earning ' if is_earnings else ''}Over"
+                                    tag = "red"
 
                         # Filter Logic
                         if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
                             continue
 
-                        vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), 
+                        # --- NAN VOLUME FIX ---
+                        # Converts NaN to 0 before casting to int to prevent crash
+                        clean_vol = int(row['volume']) if pd.notna(row['volume']) else 0
+
+                        vals = (date, row['Type'], row['strike'], clean_vol, 
                                 f"{market_price:.2f}", f"{breakeven:.2f}", f"{iv:.1%}", 
                                 f"{fair:.2f}", f"{ev:+.2f}", verdict)
                         
-                        # To this safer version:
                         def safe_insert(v, t):
                             if self.tree.winfo_exists():
                                 self.tree.insert("", "end", values=v, tags=(t,))
                         self.root.after(0, lambda: safe_insert(vals, tag))
+
                 except Exception as e:
                     self.log(f"Options fetch error for {date}: {e}")
 
