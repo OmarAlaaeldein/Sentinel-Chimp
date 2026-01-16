@@ -15,7 +15,18 @@ import webbrowser
 import csv
 import re
 import html
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# --- ADD THESE IMPORTS ---
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors # Essential for correct Green/Red coloring
+
+try:
+    import plotly.graph_objects as go
+    from plotly.offline import plot
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
 # Put this at the very top of your imports
 try:
     import pyi_splash
@@ -329,7 +340,7 @@ class MarketApp:
         self.setup_dark_theme() # <--- CALL THEME HERE
 
         self.headline_limit = 1000
-        self.ev_absolute = False
+        self.ev_absolute = True
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
@@ -467,11 +478,6 @@ class MarketApp:
         # Track visibility state
         self.log_visible = False
         
-        self.use_median = tk.BooleanVar(value=False) # Default = False (Mean/Standard)
-        self.chk_valuation = ttk.Checkbutton(self.grid_frame, text="Use Median (Robust)", 
-                                             variable=self.use_median, 
-                                             command=self.refresh_valuation)
-        self.chk_valuation.grid(row=10, column=0, columnspan=2, sticky="w", padx=5, pady=5)
         
         self.current_ticker = None
         self.stock = None  # <--- NEW: Store the object here
@@ -491,8 +497,20 @@ class MarketApp:
         else:
             self.log("AI Sentiment is currently disabled.")
             #self.lbl_model_status.config(text="Status: Disabled", foreground="gray")
-        
+        self.scan_data = []
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(500, self.load_data)
+    def on_close(self):
+        """Force kills the application and all background threads."""
+        print("Shutting down Sentinel...")
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        
+        # Hard exit to kill any lingering threads (like the AI or Scanner)
+        import os
+        os._exit(0)
 
     def init_model_bg(self, model_name):
         self.root.after(0, lambda: self.lbl_model_status.config(text=f"Loading {model_name}..."))
@@ -1230,7 +1248,178 @@ class MarketApp:
         self.lbl_return.config(text=f"{period_return:+.2%}", foreground=ret_c)
 
         self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
+    # ================= 3D VISUALIZATION METHODS =================
+    def visualize_3d(self, option_type):
+        """Generates a rotatable 3D Scatter plot of Date vs Strike vs EV."""
+        if not hasattr(self, 'scan_data') or not self.scan_data:
+            messagebox.showinfo("3D Plot", "No data to plot. Please run a Scan first.")
+            return
 
+        # 1. Filter Data
+        filtered = [row for row in self.scan_data if row['type'] == option_type]
+        
+        if not filtered:
+            messagebox.showinfo("3D Plot", f"No {option_type} data found.")
+            return
+
+        # 2. Extract Axis Data
+        dates_x = []       # Numeric (Days to expiry) for plotting
+        date_labels = []   # String ("2025-01-01") for Tooltip
+        strikes = []
+        evs = []
+        
+        today = datetime.now()
+        
+        for row in filtered:
+            try:
+                # X: Days to Expiry (Float)
+                dt = datetime.strptime(row['date'], "%Y-%m-%d")
+                days_diff = (dt - today).days
+                
+                # Y: Strike
+                strike = float(row['strike'])
+                
+                # Z: EV
+                ev = float(row['ev'])
+                
+                dates_x.append(days_diff)
+                date_labels.append(row['date']) # <--- Store the text date
+                strikes.append(strike)
+                evs.append(ev)
+            except ValueError:
+                continue
+
+        if not dates_x: return
+
+        # 3. Create Window
+        vis_win = Toplevel(self.root)
+        vis_win.title(f"3D Surface: {self.current_ticker} {option_type}s")
+        vis_win.geometry("900x700")
+        vis_win.configure(bg="#1e1e1e")
+
+        # 4. Create Matplotlib 3D Plot
+        fig = plt.figure(figsize=(8, 6), dpi=100, facecolor="#1e1e1e")
+        ax = fig.add_subplot(111, projection='3d')
+        ax.set_facecolor("#1e1e1e")
+        
+        # Color Map
+        try:
+            divnorm = mcolors.TwoSlopeNorm(vmin=min(evs), vcenter=0., vmax=max(evs))
+        except ValueError:
+            divnorm = plt.Normalize(vmin=min(evs), vmax=max(evs))
+        
+        sc = ax.scatter(dates_x, strikes, evs, c=evs, cmap='RdYlGn', norm=divnorm, marker='o', s=40, edgecolors='black', linewidth=0.5)
+
+        # Labels
+        ax.set_xlabel('Days to Expiry', color='white', labelpad=10)
+        ax.set_ylabel('Strike Price', color='white', labelpad=10)
+        ax.set_zlabel('Expected Value (EV)', color='white', labelpad=10)
+        ax.set_title(f"{self.current_ticker} {option_type} EV Landscape", color='white', fontsize=14)
+
+        # Axis Colors
+        ax.tick_params(axis='x', colors='white')
+        ax.tick_params(axis='y', colors='white')
+        ax.tick_params(axis='z', colors='white')
+        ax.xaxis.label.set_color('white')
+        ax.yaxis.label.set_color('white')
+        ax.zaxis.label.set_color('white')
+        
+        # Transparent grid
+        ax.w_xaxis.set_pane_color((0.2, 0.2, 0.2, 1.0))
+        ax.w_yaxis.set_pane_color((0.2, 0.2, 0.2, 1.0))
+        ax.w_zaxis.set_pane_color((0.2, 0.2, 0.2, 1.0))
+        ax.grid(color='gray', linestyle='--', linewidth=0.5)
+
+        # Colorbar
+        cbar = fig.colorbar(sc, ax=ax, pad=0.1, shrink=0.7)
+        cbar.ax.yaxis.set_tick_params(color='white')
+        plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
+        cbar.set_label('EV Profitability', color='white')
+
+        # Embed in Tkinter
+        canvas = FigureCanvasTkAgg(fig, master=vis_win)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        # 5. Save Button (Interactive HTML)
+        btn_frame = ttk.Frame(vis_win)
+        btn_frame.pack(fill="x", pady=10)
+        
+        # Pass the date_labels to the save function
+        def save_html_action():
+            self.save_3d_html(option_type, dates_x, strikes, evs, date_labels)
+            
+        ttk.Button(btn_frame, text="沈 Save Interactive 3D HTML (With Hover Tooltips)", command=save_html_action).pack(fill="x", padx=50)
+
+        # Instructions
+        ttk.Label(btn_frame, text="* Matplotlib (Window): Rotate/Zoom Only", foreground="gray").pack(pady=0)
+        ttk.Label(btn_frame, text="* HTML Export: Hover to see Strike/Date/EV", foreground="#00e6ff").pack(pady=(0,5))
+
+    def save_3d_html(self, option_type, dates, strikes, evs, date_labels):
+        """Saves the current data as an interactive HTML using Plotly."""
+        
+        # Detailed error if library is missing
+        if not PLOTLY_AVAILABLE:
+            messagebox.showerror("Missing Library", "Plotly is not installed.\n\nTo enable HTML export with tooltips, run:\npip install plotly")
+            return
+
+        filename = filedialog.asksaveasfilename(
+            initialfile=f"{self.current_ticker}_{option_type}_3D_Analysis.html",
+            defaultextension=".html",
+            filetypes=[("HTML Files", "*.html")]
+        )
+        if not filename: return
+
+        try:
+            # Create the custom hover text list
+            hover_texts = []
+            for d_str, stk, val in zip(date_labels, strikes, evs):
+                # HTML formatting for the tooltip
+                txt = (f"<b>Date:</b> {d_str}<br>"
+                       f"<b>Strike:</b> ${stk}<br>"
+                       f"<b>EV:</b> {val:+.2f}")
+                hover_texts.append(txt)
+
+            fig = go.Figure(data=[go.Scatter3d(
+                x=dates,
+                y=strikes,
+                z=evs,
+                mode='markers',
+                marker=dict(
+                    size=5,
+                    color=evs,                
+                    colorscale='RdYlGn', 
+                    opacity=0.9,
+                    showscale=True,
+                    colorbar=dict(title="EV Profit")
+                ),
+                text=hover_texts, # <--- Attach the custom text here
+                hoverinfo="text"  # <--- Tell Plotly to use our text
+            )])
+
+            fig.update_layout(
+                title=f"{self.current_ticker} {option_type} Option Surface (EV)",
+                scene=dict(
+                    xaxis_title='Days to Expiry',
+                    yaxis_title='Strike Price',
+                    zaxis_title='Expected Value (EV)',
+                    bgcolor='#1e1e1e',
+                    xaxis=dict(backgroundcolor="#1e1e1e", color="white"),
+                    yaxis=dict(backgroundcolor="#1e1e1e", color="white"),
+                    zaxis=dict(backgroundcolor="#1e1e1e", color="white"),
+                ),
+                paper_bgcolor='#1e1e1e',
+                font=dict(color="white"),
+                margin=dict(l=0, r=0, b=0, t=40)
+            )
+
+            plot(fig, filename=filename, auto_open=True)
+            self.log(f"Saved HTML to {filename}")
+
+        except Exception as e:
+            # Catch errors (like permission denied, or data issues)
+            self.log(f"HTML Export Error: {e}")
+            messagebox.showerror("Export Error", f"Failed to generate HTML.\n\nError: {e}")
     def on_hover(self, event):
         if event.inaxes != self.ax or self.last_plot_df is None or self.last_plot_df.empty:
             if self.hover_annot:
@@ -1360,42 +1549,9 @@ class MarketApp:
                 self.pe_percentile = (pe_series < self.pe_fwd).mean() * 100
                 print(f"[DEBUG] P/E Percentile: {self.pe_percentile:.1f}%")
             else:
-                self.pe_percentile = 50.0
-            # 4. Check Toggle State
-            use_robust = self.use_median.get()
-
-            if use_robust:
-                # --- MODE A: ROBUST (Median + IQR) ---
-                # Good for Tesla, NVDA, skewed data
-                center = pe_series.median()
-                q75 = pe_series.quantile(0.75)
-                q25 = pe_series.quantile(0.25)
-                spread = q75 - q25
-                # Normalize IQR to approx StdDev (IQR / 1.35)
-                denominator = (spread / 1.35) if spread > 0 else max(1.0, center * 0.1)
-                
-                print(f"[VALUATION] Mode: ROBUST (Median) | Center: {center:.2f}")
-
-            else:
-                # --- MODE B: NORMAL (Mean + StdDev) ---
-                # Good for KO, JNJ, normal distributions
-                center = pe_series.mean()
-                spread = pe_series.std()
-                denominator = spread if spread > 0 else max(1.0, center * 0.1)
-
-                print(f"[VALUATION] Mode: NORMAL (Mean) | Center: {center:.2f}")
-
-            # 5. Calculate Z-Score
-            z_score = (self.pe_fwd - center) / denominator
-            self.current_z_score = z_score
-            
-            # 6. Tanh Logic (Universal)
-            raw_mult = 1.0 + (math.tanh(z_score))
-            
-            return max(0.1, raw_mult)
-
+                self.pe_percentile = 'N/A'
         except Exception as e:
-            self.log(f"Valuation Math Error: {e}")
+            self.log(f"P/E Percentile error: {e}")
             return 1.0
 
     def refresh_valuation(self):
@@ -1466,6 +1622,15 @@ class MarketApp:
         
         ttk.Button(left_panel, text="Select Prev 7 Expirations", command=self.filter_expirations).pack(fill="x", pady=5)
         ttk.Button(left_panel, text="⚡ Scan ALL Undervalued", command=self.scan_all_undervalued).pack(fill="x", pady=20)
+        
+        # --- INSERT THIS 3D BLOCK HERE ---
+        viz_frame = ttk.LabelFrame(left_panel, text="3D Visualizer", padding=5)
+        viz_frame.pack(fill="x", pady=20)
+        
+        ttk.Button(viz_frame, text="3D Plot (CALLS)", command=lambda: self.visualize_3d("CALL")).pack(fill="x", pady=2)
+        ttk.Button(viz_frame, text="3D Plot (PUTS)", command=lambda: self.visualize_3d("PUT")).pack(fill="x", pady=2)
+        # ---------------------------------
+        
         ttk.Button(left_panel, text="💾 Export Results to CSV", command=self.export_to_csv).pack(fill="x", pady=5)
           
         self.exp_list = tk.Listbox(left_panel, selectmode="extended", height=25,
@@ -1605,16 +1770,18 @@ class MarketApp:
             self.log(f"UI Update Error: {e}")
 
     def fetch_options_batch(self, dates, filter_under_only=False):
-        stock = yf.Ticker(self.current_ticker)
+        # Clear scan data if this is a fresh batch (optional logic, but safe)
+        if hasattr(self, 'scan_data') and len(dates) == 1: 
+             # Only clear if checking specific dates (manual selection), 
+             # for "Scan All" we usually clear before calling this.
+             pass 
+            
+        stock = self.stock
         
-        # --- DYNAMIC INPUTS ---
+        # 1. PURE INPUTS
         DIV_YIELD = self.get_smart_dividend(stock) 
-        RFR = self.get_risk_free_rate() # <--- NEW DYNAMIC RATE
+        RFR = self.get_risk_free_rate() 
         
-        print(f"[DEBUG] Market Environment | Ticker: {self.current_ticker}")
-        print(f"[DEBUG] Risk-Free Rate: {RFR:.4%}")
-        print(f"[DEBUG] Dividend Yield: {DIV_YIELD:.4%}")
-
         earnings_contracts = set()
         if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
             for p_date in self.projected_earnings:
@@ -1629,76 +1796,59 @@ class MarketApp:
                 chain = stock.option_chain(date)
                 calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
                 
-                top = pd.concat([calls, puts]).sort_values('volume', ascending=False).head(20)
+                # Get ALL options (no .head limit)
+                all_options = pd.concat([calls, puts]).sort_values('volume', ascending=False)
                 
-                for _, row in top.iterrows():
-                    if row['volume'] == 0: continue
-                    bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
+                for _, row in all_options.iterrows():
+                    # Get volume safely
+                    vol = row.get('volume', 0)
                     
+                    # Check if it is NaN (empty) or Zero
+                    if pd.isna(vol) or vol == 0: 
+                        continue
+                    bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
                     if bid > 0 and ask > 0:
                         market_price = (bid + ask) / 2
-                        if (ask - bid) / market_price > 0.4: continue 
                     elif last > 0:
                         market_price = last
                     else:
-                        continue
+                        continue 
                         
+                    # --- VOLATILITY SANITY CHECK ---
                     iv = row['impliedVolatility']
-                    if not iv or iv < 0.01: continue
+                    if not iv or math.isnan(iv) or iv < 0.01: continue
 
-                    # Blend GARCH with Market IV to prevent extreme outliers
-                    market_iv = row.get('impliedVolatility', self.hv_30)
-                    if self.garch_vol > 0:
-                        # Give the market IV 60% weight and GARCH 40% weight
-                        # This respects market consensus while keeping your "edge"
-                        vol_input = (self.garch_vol * 0.) + (market_iv * 0.7)
+                    # Fallback to HV if Yahoo IV is broken (< 20%)
+                    if iv < 0.20:
+                        vol_input = self.hv_30
                     else:
-                        vol_input = market_iv
+                        vol_input = iv 
 
-                    # Sanity Check: Volatility Mean Reversion for LEAPS
-                    # If time to expiry (T) is > 1 year, blend toward historical mean (approx 18%)
-                    if T > 1.0:
-                        vol_input = (vol_input + 0.18) / 2
-                    
-                    # --- MODEL CALL WITH DYNAMIC RFR ---
-                    
-                    # Indices like QQQ have a historical upward drift (approx 7-8% annually)
-                    # You can add a 'Growth' parameter to offset the dividend drain
-                    # If Valuation is > 1.5 (Expensive), kill the growth assumption.
-                    # 1. Get the Percentile (Default to 50 if missing)
-                    p_rank = getattr(self, 'pe_percentile', 'N/A')
-
-                    # 2. Calculate a "Dampener" Factor (0.0 to 1.0)
-                    # If Rank < 50: Factor is 1.0 (Full Growth)
-                    # If Rank > 90: Factor is 0.0 (No Growth)
-                    # In between: It slides linearly
-                    #if p_rank <= 50:
-                    #   dampener = 1.0
-                    #elif p_rank >= 90:
-                    #    dampener = 0.0
-                    #else:
-                        # Example: Rank 71
-                        # (90 - 71) / (90 - 50) = 19 / 40 = 0.475
-                    #    dampener = (90 - p_rank) / (90 - 50)
-
-                    # 3. Apply the Dampener to the Growth Offset
-                    # TSLA Example: 15% Growth * 0.475 = +7.1% Drift (Instead of 15%)
-                    dynamic_growth = self.annual_growth_offset# * dampener
-
-                    # 4. Set the Rate
-                    adjusted_rfr = RFR + dynamic_growth
+                    adjusted_rfr = RFR 
 
                     fair = VegaChimpCore.bjerksund_stensland(
                         self.current_price, 
                         row['strike'], 
                         T, 
-                        adjusted_rfr,  # Using RFR + Growth Offset
+                        adjusted_rfr,
                         DIV_YIELD,  
                         vol_input, 
                         row['Type'].lower()
                     )
                     ev = fair - market_price
                     
+                    # --- SAVE DATA FOR 3D PLOTTER ---
+                    if not hasattr(self, 'scan_data'): self.scan_data = []
+                    self.scan_data.append({
+                        'date': date,
+                        'type': row['Type'],
+                        'strike': row['strike'],
+                        'ev': ev,
+                        'price': market_price,
+                        'vol': row['volume']
+                    })
+                    # -------------------------------
+
                     if row['Type'] == "CALL":
                         breakeven = row['strike'] + market_price
                     else:
@@ -1708,8 +1858,6 @@ class MarketApp:
                     tag = ""
                     is_earnings = date in earnings_contracts
                     
-                    
-                    # --- 2. Standard Valuation (Only run if NOT Arbitrage) ---
                     if self.ev_absolute:
                         threshold = 0.25 if is_earnings else 0.15
                         if ev > threshold:
@@ -1717,25 +1865,19 @@ class MarketApp:
                             tag = "green"
                         elif ev < -threshold:
                             verdict = "Earnings Over" if is_earnings else "Over"
-                            tag = "red"
-                            
+                            tag = "red"     
                     else:
                         safe_price = max(market_price, 0.01)
                         edge_percent = (ev / safe_price) * 100
-                        
                         base_min_edge = 10.0 if is_earnings else 5.0
 
-                        adjusted_bar = base_min_edge# * self.val_multiplier
-
-
-                        if edge_percent > adjusted_bar and ev > 0.05:
+                        if edge_percent > base_min_edge and ev > 0.05:
                             verdict = f"Under ({edge_percent:.0f}%)"
                             tag = "green"
-                            if is_earnings: verdict = f"Earning Under ({edge_percent:.0f}%)"
-                        elif edge_percent < -adjusted_bar and ev < -0.05:
+                        elif edge_percent < -base_min_edge and ev < -0.05:
                             verdict = "Over"
                             tag = "red"
-                            if is_earnings: verdict = f"Earning Over ({edge_percent:.0f}%)"
+                    
                     if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
                         continue
 
