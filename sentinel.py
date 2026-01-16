@@ -1331,121 +1331,149 @@ class MarketApp:
         self.lbl_return.config(text=f"{period_return:+.2%}", foreground=ret_c)
 
         self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
-    # ================= 3D VISUALIZATION METHODS =================
+    
     def visualize_3d(self, option_type):
-        """Generates a rotatable 3D Scatter plot of Date vs Strike vs EV."""
+        """Interactive 3D Plot with Uniform Color Types (Fixes Ragged Array Error)."""
         if not hasattr(self, 'scan_data') or not self.scan_data:
             messagebox.showinfo("3D Plot", "No data to plot. Please run a Scan first.")
             return
 
-        # 1. Filter Data
-        filtered = [row for row in self.scan_data if row['type'] == option_type]
-        
-        if not filtered:
+        base_data = [row for row in self.scan_data if row['type'] == option_type]
+        if not base_data:
             messagebox.showinfo("3D Plot", f"No {option_type} data found.")
             return
 
-        # 2. Extract Axis Data
-        dates_x = []       # Numeric (Days to expiry) for plotting
-        date_labels = []   # String ("2025-01-01") for Tooltip
-        strikes = []
-        evs = []
-        vol = []
-        
-        today = datetime.now()
-        
-        for row in filtered:
-            try:
-                # X: Days to Expiry (Float)
-                dt = datetime.strptime(row['date'], "%Y-%m-%d")
-                days_diff = (dt - today).days
-                
-                # Y: Strike
-                strike = float(row['strike'])
-                
-                # Z: EV
-                ev = float(row['ev'])
-                
-                dates_x.append(days_diff)
-                date_labels.append(row['date']) # <--- Store the text date
-                strikes.append(strike)
-                evs.append(ev)
-                vol.append(row['vol'])
-            except ValueError:
-                continue
-
-        if not dates_x: return
-
-        # 3. Create Window
         vis_win = Toplevel(self.root)
-        vis_win.title(f"3D Surface: {self.current_ticker} {option_type}s")
-        vis_win.geometry("900x700")
+        vis_win.title(f"3D Analysis: {self.current_ticker} {option_type}s")
+        vis_win.geometry("1000x850")
         vis_win.configure(bg="#1e1e1e")
 
-        # 4. Create Matplotlib 3D Plot
-        fig = plt.figure(figsize=(8, 6), dpi=100, facecolor="#1e1e1e")
+        # --- CONTROLS ---
+        ctrl_frame = ttk.LabelFrame(vis_win, text="Filter Conditions", padding=10)
+        ctrl_frame.pack(side="top", fill="x", padx=10, pady=5)
+
+        var_earn_under = tk.BooleanVar(value=True)
+        var_earn_over  = tk.BooleanVar(value=True)
+        var_reg_under  = tk.BooleanVar(value=True)
+        var_reg_over   = tk.BooleanVar(value=True)
+
+        # --- FIGURE ---
+        fig = Figure(figsize=(8, 6), dpi=100, facecolor="#1e1e1e")
         ax = fig.add_subplot(111, projection='3d')
         ax.set_facecolor("#1e1e1e")
         
-        # Color Map
-        try:
-            divnorm = mcolors.TwoSlopeNorm(vmin=min(evs), vcenter=0., vmax=max(evs))
-        except ValueError:
-            divnorm = plt.Normalize(vmin=min(evs), vmax=max(evs))
-        
-        sc = ax.scatter(dates_x, strikes, evs, c=evs, cmap='RdYlGn', norm=divnorm, marker='o', s=40, edgecolors='black', linewidth=0.5)
-
-        # Labels
-        ax.set_xlabel('Days to Expiry', color='white', labelpad=10)
-        ax.set_ylabel('Strike Price', color='white', labelpad=10)
-        ax.set_zlabel('Expected Value (EV)', color='white', labelpad=10)
-        ax.set_title(f"{self.current_ticker} {option_type} EV Landscape", color='white', fontsize=14)
-
-        # Axis Colors
-        ax.tick_params(axis='x', colors='white')
-        ax.tick_params(axis='y', colors='white')
-        ax.tick_params(axis='z', colors='white')
-        ax.xaxis.label.set_color('white')
-        ax.yaxis.label.set_color('white')
-        ax.zaxis.label.set_color('white')
-        
-        # Transparent grid
-        ax.w_xaxis.set_pane_color((0.2, 0.2, 0.2, 1.0))
-        ax.w_yaxis.set_pane_color((0.2, 0.2, 0.2, 1.0))
-        ax.w_zaxis.set_pane_color((0.2, 0.2, 0.2, 1.0))
-        ax.grid(color='gray', linestyle='--', linewidth=0.5)
-
-        # Colorbar
-        cbar = fig.colorbar(sc, ax=ax, pad=0.1, shrink=0.7)
-        cbar.ax.yaxis.set_tick_params(color='white')
-        plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
-        cbar.set_label('EV Profitability', color='white')
-
-        # Embed in Tkinter
         canvas = FigureCanvasTkAgg(fig, master=vis_win)
-        canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        # 5. Save Button (Interactive HTML)
+        # --- BOTTOM BUTTON ---
         btn_frame = ttk.Frame(vis_win)
         btn_frame.pack(fill="x", pady=10)
-        
-        # Pass the date_labels to the save function
-        def save_html_action():
-            self.save_3d_html(option_type, dates_x, strikes, evs, date_labels, vol)
+        btn_export = ttk.Button(btn_frame, text="Save HTML (Current View)", state="normal")
+        btn_export.pack(fill="x", padx=50)
+
+        # --- REFRESH FUNCTION ---
+        def refresh_plot():
+            ax.clear()
             
-        ttk.Button(btn_frame, text="Save Interactive 3D HTML (With Hover Tooltips)", command=save_html_action).pack(fill="x", padx=50)
+            dates_x, strikes, evs, colors, sizes = [], [], [], [], []
+            date_labels, vols = [], []
+            
+            today = datetime.now()
+            
+            try:
+                all_evs = [r['ev'] for r in base_data]
+                if all_evs:
+                    cmap = plt.get_cmap('RdYlGn')
+                    norm = plt.Normalize(vmin=min(all_evs), vmax=max(all_evs))
+            except:
+                pass
 
-        # Instructions
-        ttk.Label(btn_frame, text="* Matplotlib (Window): Rotate/Zoom Only", foreground="gray").pack(pady=0)
-        ttk.Label(btn_frame, text="* HTML Export: Hover to see Strike/Date/EV", foreground="#00e6ff").pack(pady=(0,5))
+            for row in base_data:
+                is_earn = row['is_earnings']
+                is_good = row['is_good']
+                
+                visible = False
+                c = (0.5, 0.5, 0.5, 1.0) # Default gray tuple
+                s = 20
 
-    def save_3d_html(self, option_type, dates, strikes, evs, date_labels, vol):
-        """Saves the current data as an interactive HTML using Plotly."""
-        
-        # Detailed error if library is missing
+                # Filter Logic
+                if is_earn:
+                    if is_good:
+                        if var_earn_under.get():
+                            visible = True
+                            # FIX: Use tuple instead of hex string to match cmap format
+                            c = mcolors.to_rgba('#00ffff') 
+                            s = 50
+                    else:
+                        if var_earn_over.get():
+                            visible = True
+                            # FIX: Use tuple instead of hex string
+                            c = mcolors.to_rgba('#af00ff') 
+                            s = 50
+                else:
+                    if is_good:
+                        if var_reg_under.get():
+                            visible = True
+                            # cmap returns a tuple naturally, so this is fine
+                            c = cmap(norm(row['ev'])) if all_evs else mcolors.to_rgba('green')
+                    else:
+                        if var_reg_over.get():
+                            visible = True
+                            c = cmap(norm(row['ev'])) if all_evs else mcolors.to_rgba('red')
+
+                if visible:
+                    try:
+                        dt = datetime.strptime(row['date'], "%Y-%m-%d")
+                        days = (dt - today).days
+                        
+                        dates_x.append(days)
+                        strikes.append(float(row['strike']))
+                        evs.append(float(row['ev']))
+                        colors.append(c) # Now this list only contains Tuples!
+                        sizes.append(s)
+                        date_labels.append(row['date'])
+                        vols.append(row['vol'])
+                    except:
+                        continue
+
+            # Plotting
+            if dates_x:
+                ax.scatter(dates_x, strikes, evs, c=colors, s=sizes, 
+                           edgecolors='black', linewidth=0.5, alpha=0.9)
+
+            ax.set_xlabel('Days', color='white'); ax.set_ylabel('Strike', color='white'); ax.set_zlabel('EV', color='white')
+            ax.set_title(f"{self.current_ticker} {option_type} Landscape", color='white')
+            ax.tick_params(colors='white'); ax.grid(color='gray', linestyle='--', linewidth=0.5)
+            
+            # --- SNAPSHOT DATA FOR EXPORT ---
+            btn_export.config(command=lambda 
+                d=dates_x, s=strikes, e=evs, dl=date_labels, v=vols, c=colors: 
+                self.save_3d_html(option_type, d, s, e, dl, v, c)
+            )
+
+            canvas.draw()
+
+        # --- CHECKBOXES ---
+        cb_eu = ttk.Checkbutton(ctrl_frame, text="Earnings (Good)", variable=var_earn_under, command=refresh_plot)
+        cb_eo = ttk.Checkbutton(ctrl_frame, text="Earnings (Bad)", variable=var_earn_over, command=refresh_plot)
+        cb_ru = ttk.Checkbutton(ctrl_frame, text="Undervalued (Regular)", variable=var_reg_under, command=refresh_plot)
+        cb_ro = ttk.Checkbutton(ctrl_frame, text="Overvalued (Regular)", variable=var_reg_over, command=refresh_plot)
+
+        ttk.Label(ctrl_frame, text="[Cyan]", foreground="#00ffff").pack(side="left")
+        cb_eu.pack(side="left", padx=10)
+        ttk.Label(ctrl_frame, text="[Purple]", foreground="#af00ff").pack(side="left")
+        cb_eo.pack(side="left", padx=10)
+        ttk.Label(ctrl_frame, text="[Greenish]", foreground="#90ee90").pack(side="left")
+        cb_ru.pack(side="left", padx=10)
+        ttk.Label(ctrl_frame, text="[Reddish]", foreground="#ffcccb").pack(side="left")
+        cb_ro.pack(side="left", padx=10)
+
+        # Initial Render
+        refresh_plot()
+    
+    def save_3d_html(self, option_type, dates, strikes, evs, date_labels, vol, colors_list):
         if not PLOTLY_AVAILABLE:
-            messagebox.showerror("Missing Library", "Plotly is not installed.\n\nTo enable HTML export with tooltips, run:\npip install plotly")
+            messagebox.showerror("Error", "Plotly not installed.")
             return
 
         filename = filedialog.asksaveasfilename(
@@ -1456,56 +1484,59 @@ class MarketApp:
         if not filename: return
 
         try:
-            # Create the custom hover text list
+            # Convert Matplotlib Tuples (0.0-1.0) to Plotly CSS Strings (rgb(0-255))
+            plotly_colors = []
+            for c in colors_list:
+                if isinstance(c, str):
+                    plotly_colors.append(c) 
+                elif hasattr(c, '__iter__'): 
+                    # Convert Tuple to RGB String
+                    r, g, b = int(c[0]*255), int(c[1]*255), int(c[2]*255)
+                    plotly_colors.append(f"rgb({r}, {g}, {b})")
+
             hover_texts = []
-            for d_str, stk, val, vols in zip(date_labels, strikes, evs,vol):
-                # HTML formatting for the tooltip
-                txt = (f"<b>Date:</b> {d_str}<br>"
-                       f"<b>Strike:</b> ${stk}<br>"
-                       f"<b>Vol:</b> {int(vols)}<br>"
-                       f"<b>EV:</b> {val:+.2f}")
+            for d_str, stk, val, vols, c_code in zip(date_labels, strikes, evs, vol, plotly_colors):
+                # Check for Cyan (0, 255, 255)
+                if "0, 255, 255" in str(c_code):
+                    type_str = "<b style='color:cyan'>EARNINGS PLAY (GOOD)</b>"
+                # Check for Purple (175, 0, 255) -> derived from #af00ff
+                elif "175, 0, 255" in str(c_code):
+                    type_str = "<b style='color:magenta'>EARNINGS (BAD VALUE)</b>"
+                else:
+                    type_str = "Regular Option"
+
+                txt = (f"{type_str}<br><b>Date:</b> {d_str}<br>"
+                       f"<b>Strike:</b> ${stk}<br><b>Vol:</b> {int(vols)}<br><b>EV:</b> {val:+.2f}")
                 hover_texts.append(txt)
 
             fig = go.Figure(data=[go.Scatter3d(
-                x=dates,
-                y=strikes,
-                z=evs,
+                x=dates, y=strikes, z=evs,
                 mode='markers',
                 marker=dict(
                     size=5,
-                    color=evs,                
-                    colorscale='RdYlGn', 
-                    opacity=0.9,
-                    showscale=True,
-                    colorbar=dict(title="EV Profit")
+                    color=plotly_colors, 
+                    opacity=0.9
                 ),
-                text=hover_texts, # <--- Attach the custom text here
-                hoverinfo="text"  # <--- Tell Plotly to use our text
+                text=hover_texts, 
+                hoverinfo="text"
             )])
 
             fig.update_layout(
-                title=f"{self.current_ticker} {option_type} Option Surface (EV)",
+                title=f"{self.current_ticker} {option_type} Landscape (Filtered)",
                 scene=dict(
-                    xaxis_title='Days to Expiry',
-                    yaxis_title='Strike Price',
-                    zaxis_title='Expected Value (EV)',
+                    xaxis_title='Days to Expiry', yaxis_title='Strike', zaxis_title='EV',
                     bgcolor='#1e1e1e',
                     xaxis=dict(backgroundcolor="#1e1e1e", color="white"),
                     yaxis=dict(backgroundcolor="#1e1e1e", color="white"),
                     zaxis=dict(backgroundcolor="#1e1e1e", color="white"),
                 ),
-                paper_bgcolor='#1e1e1e',
-                font=dict(color="white"),
-                margin=dict(l=0, r=0, b=0, t=40)
+                paper_bgcolor='#1e1e1e', font=dict(color="white")
             )
 
             plot(fig, filename=filename, auto_open=True)
-            self.log(f"Saved HTML to {filename}")
 
         except Exception as e:
-            # Catch errors (like permission denied, or data issues)
             self.log(f"HTML Export Error: {e}")
-            messagebox.showerror("Export Error", f"Failed to generate HTML.\n\nError: {e}")
     def on_hover(self, event):
         if event.inaxes != self.ax or self.last_plot_df is None or self.last_plot_df.empty:
             if self.hover_annot:
@@ -1842,10 +1873,8 @@ class MarketApp:
             self.log(f"UI Update Error: {e}")
 
     def fetch_options_batch(self, dates, filter_under_only=False):
-        # Clear scan data if this is a fresh batch (optional logic, but safe)
+        # Clear scan data if this is a fresh batch (optional logic)
         if hasattr(self, 'scan_data') and len(dates) == 1: 
-             # Only clear if checking specific dates (manual selection), 
-             # for "Scan All" we usually clear before calling this.
              pass 
             
         stock = self.stock
@@ -1875,7 +1904,6 @@ class MarketApp:
                     # Get volume safely
                     vol = row.get('volume', 0)
                     
-                    # Check if it is NaN (empty) or Zero
                     if pd.isna(vol) or vol == 0: 
                         continue
                     bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
@@ -1890,7 +1918,6 @@ class MarketApp:
                     iv = row['impliedVolatility']
                     if not iv or math.isnan(iv) or iv < 0.01: continue
 
-                    # Fallback to HV if Yahoo IV is broken (< 20%)
                     if iv < 0.20:
                         vol_input = self.hv_30
                     else:
@@ -1910,7 +1937,29 @@ class MarketApp:
                     ev = fair - market_price
                     if fair <= 0:
                         continue
-                    # --- SAVE DATA FOR 3D PLOTTER ---
+
+                    # ======================================================
+                    #  STEP 1: CALCULATE STATUS (Must be done first!)
+                    # ======================================================
+                    is_earnings = date in earnings_contracts
+                    is_undervalued = False
+                    
+                    # Logic to determine if it is "Good" (Undervalued)
+                    if self.ev_absolute:
+                        threshold = 0.25 if is_earnings else 0.15
+                        if ev > threshold:
+                            is_undervalued = True
+                    else:
+                        safe_price = max(market_price, 0.01)
+                        edge_percent = (ev / safe_price) * 100
+                        base_min_edge = 10.0 if is_earnings else 5.0
+
+                        if edge_percent > base_min_edge and ev > 0.05:
+                            is_undervalued = True
+
+                    # ======================================================
+                    #  STEP 2: SAVE TO SCAN DATA (Now safe to do)
+                    # ======================================================
                     if not hasattr(self, 'scan_data'): self.scan_data = []
                     self.scan_data.append({
                         'date': date,
@@ -1918,10 +1967,14 @@ class MarketApp:
                         'strike': row['strike'],
                         'ev': ev,
                         'price': market_price,
-                        'vol': row['volume']
+                        'vol': row['volume'],
+                        'is_earnings': is_earnings,      # Now this variable exists!
+                        'is_good': is_undervalued        # Now this variable exists!
                     })
-                    # -------------------------------
 
+                    # ======================================================
+                    #  STEP 3: PREPARE UI VERDICTS
+                    # ======================================================
                     if row['Type'] == "CALL":
                         breakeven = row['strike'] + market_price
                     else:
@@ -1929,27 +1982,13 @@ class MarketApp:
 
                     verdict = "Fair"
                     tag = ""
-                    is_earnings = date in earnings_contracts
-                    
-                    if self.ev_absolute:
-                        threshold = 0.25 if is_earnings else 0.15
-                        if ev > threshold:
-                            verdict = "Earnings Under" if is_earnings else "Under"
-                            tag = "green"
-                        elif ev < -threshold:
-                            verdict = "Earnings Over" if is_earnings else "Over"
-                            tag = "red"     
-                    else:
-                        safe_price = max(market_price, 0.01)
-                        edge_percent = (ev / safe_price) * 100
-                        base_min_edge = 10.0 if is_earnings else 5.0
 
-                        if edge_percent > base_min_edge and ev > 0.05:
-                            verdict = f"Under ({edge_percent:.0f}%)"
-                            tag = "green"
-                        elif edge_percent < -base_min_edge and ev < -0.05:
-                            verdict = "Over"
-                            tag = "red"
+                    if is_undervalued:
+                        verdict = "Earnings Under" if is_earnings else "Under"
+                        tag = "green"
+                    elif ev < -0.05:
+                        verdict = "Earnings Over" if is_earnings else "Over"
+                        tag = "red"
                     
                     if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
                         continue
