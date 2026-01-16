@@ -13,6 +13,7 @@ Unlike standard calculators that use Black-Scholes, Sentinel uses the **Bjerksun
 * **Log-Space Algebra:** Prevents mathematical overflow/underflow during extreme volatility events.
 * **Dynamic Risk-Free Rate:** Automatically adjusts the risk-free rate based on treasury yields (^IRX) and stock-specific growth drift.
 * **Edge Detection:** Scans option chains to find contracts where the Market Price diverges significantly from the Theoretical Value (EV).
+* **3D Landscape Visualization:** Interactive 3D plotting of "Strike vs. Expiry vs. Expected Value," allowing you to visually spot "islands of value" across the entire option chain.
 
 ### 2. Institutional Volatility Forecasting
 Sentinel looks beyond simple Historical Volatility (HV).
@@ -22,13 +23,14 @@ Sentinel looks beyond simple Historical Volatility (HV).
 ### 3. Smart Technical Dashboard
 A threaded, non-blocking GUI featuring a professional Dark Mode interface optimized for low eye strain:
 * **Momentum:** RSI (14), Stoch RSI, MACD.
-* **Trend:** Bollinger Bands, SMA/EMA Ribbons (5, 21, 63, 200).
+* **Trend Strength:** ADX (Average Directional Index) to distinguish between trending and chopping markets.
+* **Volume Analysis:** OBV (On-Balance Volume) trend detection and **VWAP Gap** analysis (Intraday Bull/Bear control).
 * **Risk:** ATR (Average True Range) for volatility-based stop losses.
 * **Fundamental Context:** Displays P/E Ratios (TTM/Fwd) and calculates a **P/E Percentile** to show if the stock is historically cheap or expensive.
 
 ### 4. AI Sentiment Engine (Source Code Only)
 * **Model:** Powered by `ProsusAI/finbert` (Financial BERT).
-* **Function:** Scrapes news headlines and computes a sentiment score (-1 to +1) using a Transformer model specifically fine-tuned for financial text.
+* **Function:** Scrapes news headlines (Yahoo/Google RSS) and computes a sentiment score (-1 to +1) using a Transformer model specifically fine-tuned for financial text.
 * *Note: Requires PyTorch and Transformers libraries.*
 
 ---
@@ -43,6 +45,7 @@ To ensure this tool works on standard trading laptops without requiring NVIDIA G
 | **Bjerksund-Stensland Math** | ✅ Included | ✅ Included |
 | **GARCH Volatility** | ✅ Included | ✅ Included |
 | **Options Scanner** | ✅ Included | ✅ Included |
+| **3D Visualizer** | ✅ Included | ✅ Included |
 | **AI Sentiment (FinBERT)** | ✅ **Active** | ❌ **Disabled** |
 
 **Why is AI disabled in the release?**
@@ -57,14 +60,14 @@ To use the AI Sentiment engine, you must run from the source:
 
 1.  **Clone the Repo**
     ```bash
-    git clone [https://github.com/yourusername/Sentinel.git](https://github.com/yourusername/Sentinel.git)
+    git clone [https://github.com/omaralaaeldein/Sentinel.git](https://github.com/omaralaaeldein/Sentinel.git)
     cd Sentinel
     ```
 2.  **Install Dependencies**
     ```bash
     pip install -r requirements.txt
     ```
-    *(Ensure `torch`, `transformers`, `yfinance`, `pandas`, `numpy`, `matplotlib` are installed)*
+    *(Ensure `torch`, `transformers`, `yfinance`, `pandas`, `numpy`, `matplotlib`, `plotly` are installed)*
 3.  **Run**
     ```bash
     python Sentinel.py
@@ -81,14 +84,15 @@ To use the AI Sentiment engine, you must run from the source:
 ## 📉 Usage Guide
 
 1.  **Ticker Entry:** Type a ticker (e.g., `NVDA`, `SPY`) and press Enter.
-2.  **Technicals:** Review the left panel for RSI, MACD, and Volatility stats.
+2.  **Technicals:** Review the left panel for RSI, MACD, VWAP Gap, and Volatility stats.
 3.  **Options Scanner:**
     * Click **"Open Options Explorer"**.
-    * Select an expiration date.
+    * Select an expiration date (or multiple).
     * Click **"Scan ALL Undervalued"** to find contracts where `EV > 0`.
     * **Green Rows** indicate "Undervalued" (Potential Buy).
     * **Red Rows** indicate "Overvalued" (Potential Sell/Write).
-4.  **Export:** Save your scan results to CSV for further analysis in Excel.
+    * **3D Plot:** Click the "3D Plot" buttons to visualize the data in an interactive cube.
+4.  **Export:** Save your scan results to CSV or your 3D plots to HTML for sharing.
 
 ---
 
