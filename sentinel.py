@@ -1267,6 +1267,7 @@ class MarketApp:
         date_labels = []   # String ("2025-01-01") for Tooltip
         strikes = []
         evs = []
+        vol = []
         
         today = datetime.now()
         
@@ -1286,6 +1287,7 @@ class MarketApp:
                 date_labels.append(row['date']) # <--- Store the text date
                 strikes.append(strike)
                 evs.append(ev)
+                vol.append(row['vol'])
             except ValueError:
                 continue
 
@@ -1347,15 +1349,15 @@ class MarketApp:
         
         # Pass the date_labels to the save function
         def save_html_action():
-            self.save_3d_html(option_type, dates_x, strikes, evs, date_labels)
+            self.save_3d_html(option_type, dates_x, strikes, evs, date_labels, vol)
             
-        ttk.Button(btn_frame, text="沈 Save Interactive 3D HTML (With Hover Tooltips)", command=save_html_action).pack(fill="x", padx=50)
+        ttk.Button(btn_frame, text="Save Interactive 3D HTML (With Hover Tooltips)", command=save_html_action).pack(fill="x", padx=50)
 
         # Instructions
         ttk.Label(btn_frame, text="* Matplotlib (Window): Rotate/Zoom Only", foreground="gray").pack(pady=0)
         ttk.Label(btn_frame, text="* HTML Export: Hover to see Strike/Date/EV", foreground="#00e6ff").pack(pady=(0,5))
 
-    def save_3d_html(self, option_type, dates, strikes, evs, date_labels):
+    def save_3d_html(self, option_type, dates, strikes, evs, date_labels, vol):
         """Saves the current data as an interactive HTML using Plotly."""
         
         # Detailed error if library is missing
@@ -1373,10 +1375,11 @@ class MarketApp:
         try:
             # Create the custom hover text list
             hover_texts = []
-            for d_str, stk, val in zip(date_labels, strikes, evs):
+            for d_str, stk, val, vols in zip(date_labels, strikes, evs,vol):
                 # HTML formatting for the tooltip
                 txt = (f"<b>Date:</b> {d_str}<br>"
                        f"<b>Strike:</b> ${stk}<br>"
+                       f"<b>Vol:</b> {int(vols)}<br>"
                        f"<b>EV:</b> {val:+.2f}")
                 hover_texts.append(txt)
 
@@ -1822,7 +1825,8 @@ class MarketApp:
                         row['Type'].lower()
                     )
                     ev = fair - market_price
-                    
+                    if fair <= 0:
+                        continue
                     # --- SAVE DATA FOR 3D PLOTTER ---
                     if not hasattr(self, 'scan_data'): self.scan_data = []
                     self.scan_data.append({
