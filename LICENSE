@@ -1,0 +1,51 @@
+MIT License
+
+Copyright (c) 2026 Omar Alaaeldein
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+⚠️ DATA USAGE & LIABILITY DISCLAIMER
+
+1. UNOFFICIAL API USAGE
+   This software ('Sentinel') utilizes the 'yfinance' library to fetch market 
+   data. 'yfinance' is an unofficial library that scrapes data from Yahoo 
+   Finance. This method is subject to rate limiting, potential service 
+   interruptions, and changes to Yahoo's data structure. The authors of 
+   Sentinel have no control over the availability or accuracy of this data.
+
+2. TERMS OF SERVICE COMPLIANCE
+   You (the User) are solely responsible for ensuring your use of the data 
+   retrieved by this software complies with Yahoo Finance's Terms of Service 
+   and acceptable use policies. If you intend to use this software for 
+   commercial, institutional, or high-frequency automated purposes, you 
+   should implement a licensed data provider (e.g., Polygon.io, IBKR) as 
+   discussed in the software documentation.
+
+⚠️ FINANCIAL DISCLAIMER
+
+This software is for educational, research, and informational purposes only. 
+Nothing in this software constitutes financial, investment, or trading advice. 
+The option pricing models (Bjerksund-Stensland) and volatility forecasts 
+(GARCH) included in this tool are theoretical approximations and do not 
+guarantee future market behavior. 
+
+Trade at your own risk. The author (Omar Alaaeldein) is not liable for any 
+financial losses incurred through the use of this software.

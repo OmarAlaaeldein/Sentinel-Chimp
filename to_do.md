@@ -1,76 +1,78 @@
-# 📋 Sentinel 2.0 Upgrade Roadmap
-
-This document outlines the architectural upgrades required to transition Sentinel from a retail dashboard to a high-fidelity quantitative research tool. 
-
-## ⚖️ Licensing Strategy: Business Source License (BSL) 1.1
-
-To balance community contribution with financial sustainability, Sentinel 2.0 will adopt the **Business Source License (BSL) 1.1**.
-
-### Why BSL 1.1?
-* **Monetization & Control**: It allows the developer to control commercialization while providing open access to the community. 
-* **Non-Production Freedom**: Copying, modifying, and non-production use (testing, development, personal hobbies) are free for everyone.
-* **Production Protection**: Organizations intending to use the software for commercial production (e.g., as a managed service or embedded in a competing product) must purchase a commercial license.
-* **Guaranteed Open Source**: The license automatically converts to a fully open-source **GPL-compatible** license after a specified "Change Date" (typically 3–4 years), preventing permanent vendor lock-in.
+# 🛡️ Sentinel 2.0:
+**Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
 
 ---
 
-## Phase 1: Technical Intelligence
+## 🏗️ Track 1: Architecture & Core (The Foundation)
+*Priority: Critical | Status: Pending*
 
-*Goal: Detect regimes of compression and extreme extension.*
+### 1.1 "God Object" Decomposition (MVC Pattern)
+Refactor the monolithic `MarketApp` class into three distinct layers to ensure stability before adding complex features.
+* **Model (`/core`):** Pure logic. Contains `VegaChimpCore` (Options), `GARCH` (Vol), and the new `ArbEngine`. *No UI code allowed here.*
+* **View (`/ui`):** Pure Tkinter. Handles windows, buttons, and charts. It observes the Model but calculates nothing.
+* **Controller (`/main`):** Handles user inputs (e.g., "User clicked Scan") and coordinates data fetching.
 
-### 1. Update `calculate_technicals`
-
-* **TTM Squeeze Indicator**:
-    * Calculate **Keltner Channels** ($20\text{ SMA} \pm 1.5\text{ ATR}$).
-    * Create a boolean column `Squeeze_On`.
-    * **Logic**: `True` if Bollinger Bands are completely *inside* Keltner Channels. This signals a period of volatility compression often followed by an explosive move.
-
-### 2. Charting Upgrades ("Probability Cone")
-
-* **Objective**: Visualize the "Expected Move" on the daily chart.
-* **Logic**:
-    * Take the last known Price and current `GARCH_Vol`.
-    * Project 30 days into the future.
-    * Calculate Upper/Lower bounds: $\text{Price} \cdot e^{\pm \sigma \sqrt{t/252}}$.
-* **Visual**: Plot these bounds as dashed "Cones" overlaying the price action to show if current price action is staying within statistical expectations.
-
-
+### 1.2 Data Abstraction Layer
+* **Objective:** Decouple the app from `yfinance`.
+* **Implementation:** Create a `DataProvider` interface.
+    * *Current:* `YFinanceProvider` (Free, Delayed).
+    * *Future:* `PolygonProvider` or `IBKR_API` (Paid, Real-time).
+    * *Benefit:* Allows the "Arbitrage Engine" to run on real-time data later without rewriting the whole app.
 
 ---
 
-## Phase 2: The Quant Arbitrage Engine (New)
+## 🧠 Track 2: The Quant Engine (New Features)
 
-*Goal: Identify mispricings based on relative value and peer behavior rather than single-ticker technicals.*
+### 2.1 The "Probability Cone" (Vol-Adjusted Charting)
+* **Goal:** Visualize whether current price action is "normal" or "extreme" relative to forecast volatility.
+* **Math:**
+    $$\text{Upper} = P_0 \times \exp(+\sigma \sqrt{t/252})$$
+    $$\text{Lower} = P_0 \times \exp(-\sigma \sqrt{t/252})$$
+* **Visual:** Plot these bounds as a translucent "Cone" extending 30 days right of the current price.
+    * *Signal:* If price breaks the cone **without** news, Mean Reversion is likely.
 
-This module allows users to search for a stock and immediately see "broken correlations" with its peers using two distinct approaches:
+### 2.2 The "Fundamental Bias" Filter (Revised)
+* **Goal:** Use fundamentals to filter/rank option opportunities, rather than distorting the pricing math.
+* **Implementation:**
+    * Calculate a **Fundamental Z-Score** based on 5 factors: `P/E`, `PEG`, `Debt/Eq`, `RevGrowth`, `EarningsAccel`.
+    * **The Logic:**
+        * If `Math_Edge > 0` AND `Fund_Score > 70` → **Strong Buy (🟢)**
+        * If `Math_Edge > 0` AND `Fund_Score < 30` → **Value Trap Warning (⚠️)**
 
-### Approach A: Price Correlation (The "Technical" Cluster)
+### 2.3 The "Semantic Arbitrage" Scanner (The Killer App)
+* **Concept:** Trade a stock against its "True Peers" defined by AI, not rigid sectors.
+* **Workflow:**
+    1.  **Vector Database:** On startup, FinBERT encodes the "Business Summary" of the S&P 500 into 768-dim vectors.
+    2.  **Cluster:** User types "NVDA". System finds the 10 nearest vectors (Cosine Similarity).
+    3.  **Spread Tracking:** Calculate the custom index of that basket.
+    4.  **Signal:** Alert when Target Stock diverges $> 2\sigma$ from its Semantic Basket.
 
-* **Concept**: "Which stocks *move* together?"
-* **Method**:
-    * **Similarity Matrix**: Fetch 1 year of daily returns for a universe of stocks (e.g., S&P 500 or Nasdaq 100).
-    * **Calculation**: Compute a **Pearson Correlation Matrix** between all assets.
-    * **Usage**: When observing Stock A, look up its top 5 correlated peers (correlation $> 0.85$).
-    * **Signal**: If Stock A is down -2% but its highly correlated peers are flat or green, Stock A is statistically "cheap" relative to its own cluster (Mean Reversion trade).
+---
 
-### Approach B: Semantic Embeddings (The "Fundamental" Cluster)
+## 🎨 Track 3: UX & Quality of Life
 
-* **Concept**: "Which stocks *are* the same?" (NLP-Driven Asset Allocation).
-* **Method**:
-    * **Data**: Scrape the "Business Summary" text for the target universe.
-    * **Vectorization**: Feed these summaries into **FinBERT** (using the base model, not the sentiment head) to generate 768-dimensional embeddings.
-    * **Clustering**: Use **Cosine Similarity** to find stocks with the closest vector distance.
-    * **Advantage**: This detects hidden relationships (e.g., companies in different sectors that rely on the same technology) that pure price correlation might miss.
+### 3.1 "Set & Forget" Scanners
+* **Feature:** Automated background scanning.
+* **Logic:** User sets criteria (e.g., "Notify me if SPY Puts > 5% Edge"). The app runs the `scan_options()` subroutine silently every 15 minutes.
+* **Notification:** System Tray bubble or discord webhook.
 
-### **Recommended Hybrid Implementation**
+### 3.2 Economic Context Layer
+* **Feature:** Vertical lines on the chart for key events.
+* **Data:** FOMC Meetings, CPI Releases, Earnings Dates.
+* **Visual:** dashed vertical lines colored by impact (Red = High Impact).
 
-1.  **Filter by Semantics**: Use FinBERT to identify a "Fundamental Basket" of 10–20 truly similar companies.
-2.  **Trade by Correlation**: Inside that basket, calculate the Z-Score of the price spread between the target and the basket average.
-3.  **Trigger**: Buy when the target stock deviates $> 2$ Standard Deviations from the basket's price action.
+### 3.3 Dynamic Watchlist
+* **Feature:** Persistence for tracked opportunities.
+* **Storage:** Simple `watchlist.json` file.
+* **Action:** When app loads, it auto-refreshes data for saved tickers/contracts.
 
+---
 
-### Minor To-Do Items
-1. option for fibbonaci retracements on charts
-2. add option to save an option in a watchlist that is updated everytime the user opens the app
-3. add economic calendar events to the chart (fed announcements, jobs report, cpi, etc)
-4. subroutines to run undervalued scans every x hours automatically and notify the user
+## 🗓️ Execution Phases
+
+| Phase | Name | Focus | Key Deliverable |
+| :--- | :--- | :--- | :--- |
+| **I** | **The Clean Up** | Refactoring | MVC Architecture, `requirements.txt` update. |
+| **II** | **The Eyes** | Charting | Probability Cones, Econ Calendar. |
+| **III** | **The Brain** | Alpha Logic | Semantic Embeddings (FinBERT), Arb Engine. |
+| **IV** | **The Automaton** | Automation | Background Scanning, Watchlists. |
