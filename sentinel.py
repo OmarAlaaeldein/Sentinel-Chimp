@@ -265,34 +265,65 @@ class VegaChimpCore:
             # If math still breaks (e.g. extreme inputs), use Black-Scholes
             print("[Warning] Bjerksund-Stensland calculation failed, falling back to Black-Scholes.")
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
-# ===================== 3. Technicals Logic =====================
+# ===================== 3. Technicals Logic (UPDATED) =====================
 def calculate_technicals(df):
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).ewm(span=14, adjust=False).mean()
-    loss = (-delta.where(delta < 0, 0)).ewm(span=14, adjust=False).mean()
+    
+    # 1. Corrected RSI (Wilder's Smoothing)
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
+    # 2. Standard MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
 
+    # 3. Bollinger Bands
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['STD_20'] = df['Close'].rolling(window=20).std()
     df['BB_Upper'] = df['SMA_20'] + (df['STD_20'] * 2)
     df['BB_Lower'] = df['SMA_20'] - (df['STD_20'] * 2)
 
+    # 4. Corrected ATR (Wilder's Smoothing)
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
     true_range = ranges.max(axis=1)
-    df['ATR'] = true_range.rolling(14).mean()
+    df['ATR'] = true_range.ewm(alpha=1/14, adjust=False).mean()
 
+    # 5. StochRSI
     min_rsi = df['RSI'].rolling(window=14).min()
     max_rsi = df['RSI'].rolling(window=14).max()
     df['StochRSI'] = (df['RSI'] - min_rsi) / (max_rsi - min_rsi)
+
+    # --- NEW INDICATORS ---
+
+    # 6. VWAP (Intraday Benchmark)
+    # We use a simple cumulative approach. Ideally resets daily, but this works for "Period VWAP"
+    df['TP'] = (df['High'] + df['Low'] + df['Close']) / 3
+    df['VWAP'] = (df['TP'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+
+    # 7. OBV (On-Balance Volume)
+    df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
+    # Add an OBV Signal: Is OBV trending up or down compared to its 20-period average?
+    df['OBV_SMA'] = df['OBV'].rolling(20).mean() 
+
+    # 8. ADX (Trend Strength)
+    df['UpMove'] = df['High'] - df['High'].shift(1)
+    df['DownMove'] = df['Low'].shift(1) - df['Low']
+    df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
+    df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
+    
+    # ADX Smoothing
+    df['+DI'] = 100 * (df['+DM'].ewm(alpha=1/14, adjust=False).mean() / df['ATR'])
+    df['-DI'] = 100 * (df['-DM'].ewm(alpha=1/14, adjust=False).mean() / df['ATR'])
+    df['DX'] = 100 * np.abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'])
+    df['ADX'] = df['DX'].ewm(alpha=1/14, adjust=False).mean()
+
     return df
 
 class Tooltip:
@@ -382,7 +413,7 @@ class MarketApp:
         self.annual_growth_offset = 0
         
         self.lbl_rsi = self.add_row(self.grid_frame, "RSI (14d)", 0, "Relative Strength Index. Range 0-100.")
-        self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1, "Stochastic RSI. Range 0-1.")
+        self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1, "Stochastic RSI.\n\nMore sensitive than standard RSI.\nUse this to time specific entries/exits within a trend.\n0.0 = Max Oversold, 1.0 = Max Overbought.")
         self.lbl_macd = self.add_row(self.grid_frame, "MACD", 2, "Moving Average Convergence Divergence.")
         self.lbl_bb = self.add_row(self.grid_frame, "Bollinger Bands", 3, "20-day SMA +/- 2 STDs.")
         self.lbl_atr = self.add_row(self.grid_frame, "ATR (Volatility)", 4, "Average True Range (Daily Move in $).")
@@ -391,8 +422,10 @@ class MarketApp:
         if self.use_sentiment:
             self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6, "Headline sentiment scored 0-1.")
             self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7, "Total return over selected period.")
+            self.lbl_vwap = self.add_row(self.grid_frame, "VWAP Gap", 8, "Volume Weighted Average Price.\n\n'Who is winning today?'\nPrice > VWAP: Buyers are in control (Bullish).\nPrice < VWAP: Sellers are in control (Bearish).")
         else:
             self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 6, "Total return over selected period.")
+            self.lbl_vwap = self.add_row(self.grid_frame, "VWAP Gap", 7, "Volume Weighted Average Price.\n\n'Who is winning today?'\nPrice > VWAP: Buyers are in control (Bullish).\nPrice < VWAP: Sellers are in control (Bearish).")
 
 
         self.btn_opt = ttk.Button(self.left_frame, text="🔎 Options Explorer", command=self.open_options_window, state="disabled")
@@ -486,9 +519,11 @@ class MarketApp:
         self.garch_vol = 0 # New variable for GARCH
         self.projected_earnings = [] 
         # Add this line where your other technical labels are initialized
-        self.lbl_pe = self.add_row(self.grid_frame, "P/E Ratio", 8, "Price-to-Earnings Ratio (TTM vs Forward).")
+        self.lbl_adx = self.add_row(self.grid_frame, "ADX (Trend)", 9, "Trend Strength (0-100).\n\n< 20: Weak/Choppy market. (DANGER: Do not buy options here, theta will kill you).\n> 25: Trending market. (SAFE: Good for directional trades).")
+        self.lbl_obv = self.add_row(self.grid_frame, "OBV Trend", 10, "On-Balance Volume.\n\nTracks 'Smart Money' flow.\nBullish: OBV rising with Price.\nDivergence: If Price rises but OBV falls, the rally is a trap.")
+        self.lbl_pe = self.add_row(self.grid_frame, "P/E Ratio", 11, "Price-to-Earnings Ratio (TTM vs Forward).")
         # Add this in your __init__ section
-        self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 9, 
+        self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 12, 
                                      "How expensive the current P/E is vs the last 5 years (0-100%).")
         # Only initialize the transformer if the toggle is True
         if self.use_sentiment:
@@ -932,6 +967,13 @@ class MarketApp:
                 for span in [5, 21, 63, 200]:
                     df[f'EMA_{span}'] = df['Close'].ewm(span=span, adjust=False).mean()
                 
+                # --- ADD THIS BLOCK FOR CHART VWAP ---
+                try:
+                    df['TP'] = (df['High'] + df['Low'] + df['Close']) / 3
+                    df['VWAP'] = (df['TP'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+                except Exception as e:
+                    print(f"VWAP Calc Error: {e}")
+                # -------------------------------------
                 self.save_df_cache(ticker, period, interval, df)
                 status_msg = f"Live Data ({interval})"
             else:
@@ -1131,6 +1173,10 @@ class MarketApp:
                 if plot_df['EMA_200'].notna().sum() > 0:
                     self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='#ff3333', linewidth=1.5)
 
+            if 'VWAP' in plot_df.columns:
+                 # Check if we have valid VWAP data to plot
+                 if plot_df['VWAP'].notna().sum() > 0:
+                     self.ax.plot(x_vals, plot_df['VWAP'], label='VWAP', color='#ffd700', linewidth=1.5, linestyle='--')
             # 2. Limits & Title
             self.ax.set_xlim(left=x_vals[0], right=x_vals[-1])
             self.ax.set_title(f"{ticker} Price Action ({period})", color="white", fontweight="bold")
@@ -1197,6 +1243,43 @@ class MarketApp:
         macd_val = data['MACD']
         macd_c = "green" if macd_val > 0 else "red"
         self.lbl_macd.config(text=f"{macd_val:.2f}", foreground=macd_c)
+        
+        # 1. VWAP Display
+        # Show percentage distance from VWAP
+        if 'VWAP' in data and not pd.isna(data['VWAP']):
+            vwap = data['VWAP']
+            price = data['Close']
+            diff = ((price - vwap) / vwap) * 100
+            
+            # Green if price is ABOVE VWAP (Bullish), Red if BELOW (Bearish)
+            vwap_c = "green" if diff > 0 else "red"
+            self.lbl_vwap.config(text=f"{diff:+.2f}%", foreground=vwap_c)
+        else:
+            self.lbl_vwap.config(text="N/A", foreground="gray")
+
+        # 2. ADX Display
+        if 'ADX' in data and not pd.isna(data['ADX']):
+            adx = data['ADX']
+            # Gold for Strong Trend (>25), Gray for Weak/Choppy (<20)
+            adx_c = "#ffd700" if adx > 25 else "gray" if adx < 20 else "white"
+            status = "Strong" if adx > 25 else "Weak" if adx < 20 else "Neutral"
+            self.lbl_adx.config(text=f"{adx:.1f} ({status})", foreground=adx_c)
+        else:
+            self.lbl_adx.config(text="N/A", foreground="gray")
+
+        # 3. OBV Display
+        # Compare current OBV to its moving average to determine trend
+        if 'OBV' in data and 'OBV_SMA' in data:
+            obv_val = data['OBV']
+            obv_avg = data['OBV_SMA']
+            
+            if pd.isna(obv_val) or pd.isna(obv_avg):
+                self.lbl_obv.config(text="Wait...", foreground="gray")
+            else:
+                # Green if Volume is supporting price upward
+                obv_c = "green" if obv_val > obv_avg else "red"
+                obv_txt = "Bullish" if obv_val > obv_avg else "Bearish"
+                self.lbl_obv.config(text=obv_txt, foreground=obv_c)
         
         try:
             # Format the text using already-stored fundamental data (No new network call)
