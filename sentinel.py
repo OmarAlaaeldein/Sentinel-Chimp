@@ -1585,20 +1585,6 @@ class MarketApp:
             print(f"[DEBUG] Found Dividend (info): {div:.4%}") 
             return div
             
-            # 3. Fallback: Manual Calculation from Dividend History
-            hist = stock_obj.dividends
-            if not hist.empty:
-                # Sum the last 4 quarterly payments to get an annual estimate
-                recent_total = hist.iloc[-4:].sum()
-                if self.current_price and self.current_price > 0:
-                    yield_calc = recent_total / self.current_price
-                    print(f"[DEBUG] Calculated Dividend (History): {yield_calc:.4%}")
-                    return yield_calc
-                else:
-                    print("[Warning] No valid price to calculate yield from history.")
-
-            return 0.0
-            
         except Exception as e:
             print(f"[DEBUG] Div fetch error: {e}")
             return 0.0
