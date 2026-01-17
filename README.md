@@ -96,5 +96,13 @@ To use the AI Sentiment engine, you must run from the source:
 
 ---
 
+## 💡 Inspiration & Credits
+This project was built with inspiration from the open-source community. Special thanks to the following projects for their foundational concepts and approaches:
+
+* [**Vegachimp**](https://github.com/Orange-The-Fruit/vegachimp/tree/main) by *Orange-The-Fruit*
+* [**PyStock**](https://github.com/ikitcheng/pystock) by *ikitcheng*
+
+---
+
 ## ⚖️ Disclaimer
 *This software is for educational and research purposes only. It is not financial advice. The Bjerksund-Stensland model and GARCH forecasts are theoretical approximations and do not guarantee future market behavior. Always trade at your own risk.*
