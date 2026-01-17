@@ -1,6 +1,6 @@
-# Sentinel 🛡️
+# Sentinel Chimp 🛡️
 
-**Sentinel** is a sophisticated, Python-based market analysis dashboard designed for retail traders who demand institutional-grade mathematics. It bridges the gap between basic charting tools and professional quantitative platforms, featuring advanced options pricing models, volatility forecasting, and real-time technical analysis.
+**Sentinel Chimp** is a sophisticated, Python-based market analysis dashboard designed for retail traders who demand institutional-grade mathematics. It bridges the gap between basic charting tools and professional quantitative platforms, featuring advanced options pricing models, volatility forecasting, and real-time technical analysis.
 
 > **⚠️ Release Note:** The standalone executable (Release Package) operates in **"Lite Mode"** for maximum compatibility. It **does not include** the AI Sentiment Analysis engine to keep file sizes manageable and ensure it runs on any Windows machine without heavy dependencies. To use the AI features, run the application from the source.
 
@@ -60,8 +60,8 @@ To use the AI Sentiment engine, you must run from the source:
 
 1.  **Clone the Repo**
     ```bash
-    git clone [https://github.com/omaralaaeldein/Sentinel.git](https://github.com/omaralaaeldein/Sentinel.git)
-    cd Sentinel
+    git clone [https://github.com/omaralaaeldein/Sentinel-Chimp.git](https://github.com/omaralaaeldein/Sentinel-Chimp.git)
+    cd Sentinel-Chimp
     ```
 2.  **Install Dependencies**
     ```bash
