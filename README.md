@@ -89,10 +89,10 @@ To use the AI Sentiment engine, you must run from the source:
     * Click **"Open Options Explorer"**.
     * Select an expiration date (or multiple).
     * Click **"Scan ALL Undervalued"** to find contracts where `EV > 0`.
-    * **Green Rows** indicate "Undervalued" (Potential Buy).
+    * **Green Rows** indicate "Undervalued" (Potential Buy/Cover).
     * **Red Rows** indicate "Overvalued" (Potential Sell/Write).
     * **3D Plot:** Click the "3D Plot" buttons to visualize the data in an interactive cube.
-4.  **Export:** Save your scan results to CSV or your 3D plots to HTML for sharing.
+4.  **Export:** Save your scan results to CSV or your 3D plots to HTML for sharing and toggling.
 
 ---
 
