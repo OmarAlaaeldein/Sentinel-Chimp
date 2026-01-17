@@ -511,6 +511,8 @@ class MarketApp:
         # Track visibility state
         self.log_visible = False
         
+        self.use_fundamentals = True
+        
         
         self.current_ticker = None
         self.stock = None  # <--- NEW: Store the object here
@@ -1498,12 +1500,12 @@ class MarketApp:
             for d_str, stk, val, vols, c_code in zip(date_labels, strikes, evs, vol, plotly_colors):
                 # Check for Cyan (0, 255, 255)
                 if "0, 255, 255" in str(c_code):
-                    type_str = "<b style='color:cyan'>EARNINGS PLAY (GOOD)</b>"
+                    type_str = "<b style='color:cyan'>EARNINGS (GOOD)</b>"
                 # Check for Purple (175, 0, 255) -> derived from #af00ff
                 elif "175, 0, 255" in str(c_code):
-                    type_str = "<b style='color:magenta'>EARNINGS (BAD VALUE)</b>"
+                    type_str = "<b style='color:magenta'>EARNINGS (BAD)</b>"
                 else:
-                    type_str = "Regular Option"
+                    type_str = "<b>REGULAR</b>"
 
                 txt = (f"{type_str}<br><b>Date:</b> {d_str}<br>"
                        f"<b>Strike:</b> ${stk}<br><b>Vol:</b> {int(vols)}<br><b>EV:</b> {val:+.2f}")
@@ -1918,11 +1920,14 @@ class MarketApp:
                     iv = row['impliedVolatility']
                     if not iv or math.isnan(iv) or iv < 0.01: continue
 
-                    if iv < 0.20:
+                    if iv < 0.05:
                         vol_input = self.hv_30
+                    elif self.use_fundamentals:
+                        vol_input = 0.5 * (iv + self.hv_30)
                     else:
-                        vol_input = iv 
-
+                        vol_input = iv
+                        
+                    
                     adjusted_rfr = RFR 
 
                     fair = VegaChimpCore.bjerksund_stensland(
