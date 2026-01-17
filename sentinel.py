@@ -1126,9 +1126,10 @@ class MarketApp:
             
             plot_df = df.copy()
             interval = getattr(self, "last_interval", None)
+            
+            # --- 1. Intraday Filtering (Keep existing logic) ---
+            # We still filter the DATAFRAME for market hours, even if plotting logic changes
             intraday = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
-
-            # --- Intraday Market Hours Filtering ---
             if interval in intraday:
                 idx = plot_df.index
                 if getattr(idx, "tz", None):
@@ -1142,51 +1143,41 @@ class MarketApp:
                 if not filtered.empty:
                     plot_df = filtered
 
-            # --- X-Axis Logic ---
-            use_compressed = interval in intraday
-            if use_compressed:
-                times_for_labels = plot_df.index
-                if getattr(times_for_labels, "tz", None):
-                    times_for_labels = times_for_labels.tz_convert("America/New_York")
-                else:
-                    times_for_labels = times_for_labels.tz_localize("UTC").tz_convert("America/New_York")
-                x_vals = np.arange(len(plot_df))
+            # --- 2. X-Axis Preparation ---
+            # We now use index-based plotting for ALL charts to control tick counts precisely
+            times_for_labels = plot_df.index
+            if getattr(times_for_labels, "tz", None):
+                times_for_labels = times_for_labels.tz_convert("America/New_York")
             else:
-                times_for_labels = plot_df.index
-                x_vals = mdates.date2num(times_for_labels.to_pydatetime())
+                times_for_labels = times_for_labels.tz_localize("UTC").tz_convert("America/New_York")
+            
+            x_vals = np.arange(len(plot_df))
 
-            # --- PLOTTING & STYLING ---
+            # --- 3. PLOTTING ---
             self.ax.clear()
             self.hover_annot = None 
 
-            # 1. Neon Colors
-            # Price: Neon Cyan
+            # Price
             self.ax.plot(x_vals, plot_df['Close'], label='Price', color='#00e6ff', linewidth=1.5)
             
-            # EMAs: Neon Pink, Yellow, Red
+            # EMAs
             if 'EMA_5' in plot_df.columns: 
                 self.ax.plot(x_vals, plot_df['EMA_5'], label='EMA 5', color='#ff00ff', linewidth=1, alpha=0.8)
             if 'EMA_21' in plot_df.columns: 
                 self.ax.plot(x_vals, plot_df['EMA_21'], label='EMA 21', color='#ffe100', linewidth=1, alpha=0.8)
             if 'EMA_63' in plot_df.columns: 
-                self.ax.plot(x_vals, plot_df['EMA_63'], label='EMA 63', color='#9900ff', linewidth=1, alpha=0.8) # Purple
+                self.ax.plot(x_vals, plot_df['EMA_63'], label='EMA 63', color='#9900ff', linewidth=1, alpha=0.8)
+            if 'EMA_200' in plot_df.columns and plot_df['EMA_200'].notna().sum() > 0:
+                self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='#ff3333', linewidth=1.5)
             
-            if 'EMA_200' in plot_df.columns:
-                if plot_df['EMA_200'].notna().sum() > 0:
-                    self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='#ff3333', linewidth=1.5)
+            # VWAP
+            if 'VWAP' in plot_df.columns and plot_df['VWAP'].notna().sum() > 0:
+                 self.ax.plot(x_vals, plot_df['VWAP'], label='VWAP', color='#ffd700', linewidth=1.5, linestyle='--')
 
-            if 'VWAP' in plot_df.columns:
-                 # Check if we have valid VWAP data to plot
-                 if plot_df['VWAP'].notna().sum() > 0:
-                     self.ax.plot(x_vals, plot_df['VWAP'], label='VWAP', color='#ffd700', linewidth=1.5, linestyle='--')
-            # 2. Limits & Title
+            # Styling
             self.ax.set_xlim(left=x_vals[0], right=x_vals[-1])
             self.ax.set_title(f"{ticker} Price Action ({period})", color="white", fontweight="bold")
-            
-            # 3. Clean Legend (No box, white text)
             self.ax.legend(loc='upper right', fontsize='small', frameon=False, labelcolor='white')
-            
-            # 4. Subtle Grid & Minimal Spines
             self.ax.grid(True, color='#2a2a2a', linestyle='-', linewidth=0.5)
             self.ax.spines['top'].set_visible(False)
             self.ax.spines['right'].set_visible(False)
@@ -1195,37 +1186,64 @@ class MarketApp:
             self.ax.tick_params(axis='x', colors='gray')
             self.ax.tick_params(axis='y', colors='gray')
 
-            # --- Ticks Formatting ---
-            if use_compressed:
-                if len(times_for_labels) > 0:
-                    tick_count = min(6, len(times_for_labels))
-                    tick_idx = np.linspace(0, len(times_for_labels) - 1, tick_count, dtype=int)
+            # --- 4. CUSTOM TICK LOGIC ---
+            if len(times_for_labels) > 0:
+                # A. Determine Target Tick Count based on Period
+                if period == "1mo":
+                    target_count = 21
+                elif period == "3mo":
+                    target_count = 63
+                elif period == "1y":
+                    target_count = 252
+                elif period == "5y" or period == "10y":
+                    target_count = 60
+                elif period == "25y":
+                    target_count = 25
+                elif period == "1d":
+                    target_count = 7
+                else:
+                    # Fallback for 5d, 3m, etc.
+                    target_count = 6
+
+                # Ensure we don't ask for more ticks than data points
+                tick_count = min(target_count, len(times_for_labels))
+                
+                # B. Generate Indices
+                tick_idx = np.linspace(0, len(times_for_labels) - 1, tick_count, dtype=int)
+                self.ax.set_xticks(tick_idx)
+                
+                # C. Generate Labels with Special Logic
+                final_labels = []
+                for i in tick_idx:
+                    ts = times_for_labels[i]
                     
-                    if interval in {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}:
-                        tick_labels = [times_for_labels[i].strftime("%m-%d %H:%M") for i in tick_idx]
-                    elif interval in {"1d", "1wk"}:
-                        tick_labels = [times_for_labels[i].strftime("%Y-%m-%d") for i in tick_idx]
-                    elif interval == "1mo":
-                        tick_labels = [times_for_labels[i].strftime("%Y-%b") for i in tick_idx]
+                    if period == "1d":
+                        # 1D Chart: Show Time
+                        label = ts.strftime("%H:%M")
                     else:
-                        tick_labels = [str(times_for_labels[i]) for i in tick_idx]
+                        # All other charts: Show Date Only
                         
-                    self.ax.set_xticks(tick_idx)
-                    self.ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=8)
-            else:
-                self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-                self.figure.autofmt_xdate()
-            
+                        # logic: if 15:55 -> show next day
+                        if ts.hour == 15 and ts.minute == 55:
+                            ts = ts + timedelta(days=1)
+                        
+                        label = ts.strftime("%Y-%m-%d")
+                        
+                    final_labels.append(label)
+
+                self.ax.set_xticklabels(final_labels, rotation=45, ha='right', fontsize=8)
+
             # --- Finalize ---
-            # Force background color (Fix for clear() resetting it)
             self.ax.set_facecolor('#121212')
             self.figure.patch.set_facecolor('#121212')
 
             self.canvas.draw()
+            
+            # Update state for hover
             self.last_plot_df = plot_df
             self.last_plot_x = x_vals
             self.last_plot_times = times_for_labels
-            self.use_compressed_hover = use_compressed
+            self.use_compressed_hover = True # Always True now due to x_vals = np.arange
 
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
