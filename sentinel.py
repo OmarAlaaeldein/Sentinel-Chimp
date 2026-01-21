@@ -1194,7 +1194,7 @@ class MarketApp:
                 elif period == "3mo":
                     target_count = 63
                 elif period == "1y":
-                    target_count = 252
+                    target_count = 52
                 elif period == "5y" or period == "10y":
                     target_count = 60
                 elif period == "25y":
