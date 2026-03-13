@@ -527,6 +527,7 @@ class MarketApp:
         # Add this in your __init__ section
         self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 12, 
                                      "How expensive the current P/E is vs the last 5 years (0-100%).")
+        self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.")
         # Only initialize the transformer if the toggle is True
         if self.use_sentiment:
             self.log("App Started. Defaulting to FinBERT.")
@@ -618,6 +619,7 @@ class MarketApp:
             self.projected_earnings = []
             
             self.lbl_pe.config(text="Updating...", foreground="orange")
+            self.lbl_peg.config(text="Updating...", foreground="orange")
             
             # Start background fundamental fetch
             threading.Thread(target=self.get_info, daemon=True).start()
@@ -1312,12 +1314,23 @@ class MarketApp:
             # Inside your update_technicals method:
             if hasattr(self, 'pe_percentile'):
                 p_val = self.pe_percentile
-                # Color: Red if > 80% (Expensive), Green if < 20% (Cheap)
-                p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
-                self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
+                if isinstance(p_val, (int, float)):
+                    # Color: Red if > 80% (Expensive), Green if < 20% (Cheap)
+                    p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
+                    self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
+                else:
+                    self.lbl_pe_percentile.config(text="N/A", foreground="gray")
+
+            if hasattr(self, 'peg_ratio') and isinstance(self.peg_ratio, (int, float)):
+                peg_val = self.peg_ratio
+                peg_color = "green" if peg_val < 1.0 else "red" if peg_val > 2.0 else "white"
+                self.lbl_peg.config(text=f"{peg_val:.2f}", foreground=peg_color)
+            else:
+                self.lbl_peg.config(text="Not Calculable", foreground="gray")
         except Exception as e:
-            self.log(f"P/E Fetch Error: {e}")
+            self.log(f"P/E Fetch Error (Technicals): {e}")
             self.lbl_pe.config(text="N/A", foreground="gray")
+            self.lbl_peg.config(text="Not Calculable", foreground="gray")
         
         bb_pos = "Inside"
         bb_c = "white"
@@ -1652,6 +1665,7 @@ class MarketApp:
             self.pe_fwd = info.get('forwardPE')
             self.pe_ttm = info.get('trailingPE')
             self.eps = info.get('trailingEps')
+            self.peg_ratio = info.get('trailingPegRatio')
             self.dividend_yield = info.get('dividendYield', 0.0)
             
             # 2. TRIGGER PERCENTILE CALCULATION (The Missing Link)
@@ -1884,13 +1898,24 @@ class MarketApp:
             # Update Percentile Label
             if hasattr(self, 'pe_percentile'):
                 p_val = self.pe_percentile
-                p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
-                self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
+                if isinstance(p_val, (int, float)):
+                    p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
+                    self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
+                else:
+                    self.lbl_pe_percentile.config(text="N/A", foreground="gray")
             else:
                 self.lbl_pe_percentile.config(text="Loading...", foreground="orange")
+
+            # Update PEG Ratio Label
+            if hasattr(self, 'peg_ratio') and isinstance(self.peg_ratio, (int, float)):
+                peg_val = self.peg_ratio
+                peg_color = "green" if peg_val < 1.0 else "red" if peg_val > 2.0 else "white"
+                self.lbl_peg.config(text=f"{peg_val:.2f}", foreground=peg_color)
+            else:
+                self.lbl_peg.config(text="Not Calculable", foreground="gray")
                 
         except Exception as e:
-            self.log(f"UI Update Error: {e}")
+            self.log(f"UI Update Error (Display): {e}")
 
     def fetch_options_batch(self, dates, filter_under_only=False):
         # Clear scan data if this is a fresh batch (optional logic)
