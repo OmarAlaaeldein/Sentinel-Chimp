@@ -535,8 +535,8 @@ class MarketApp:
         self.lbl_pe = self.add_row(self.grid_frame, "P/E Ratio", 11, "Price-to-Earnings Ratio (TTM vs Forward).")
         # Add this in your __init__ section
         self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 12, 
-                                     "How expensive current TTM P/E is vs 5Y TTM history (0-100%).\n\nBadges:\n[NO_EPS_HIST] missing earnings history\n[EPS_LT4Q] fewer than 4 quarters\n[NO_PE_HIST] no valid positive historical P/E points.")
-        self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.\n\nBadges:\n[NO_INPUT] missing P/E or growth\n[ZERO_GROWTH] denominator is ~0\n[NEG_GROWTH] growth is negative (raw PEG shown).")
+                                     "How expensive the current P/E is vs the last 5 years (0-100%).")
+        self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.")
         # Only initialize the transformer if the toggle is True
         if self.use_sentiment:
             self.log("App Started. Defaulting to FinBERT.")
@@ -718,98 +718,43 @@ class MarketApp:
         }
         return reason_map.get(reason, default)
 
-    def _valuation_reason_badge(self, reason):
-        badge_map = {
-            "NO_EARNINGS_HISTORY": "[NO_EPS_HIST]",
-            "INSUFFICIENT_EARNINGS_HISTORY": "[EPS_LT4Q]",
-            "NO_VALID_PE_HISTORY": "[NO_PE_HIST]",
-            "MISSING_PEG_INPUTS": "[NO_INPUT]",
-            "ZERO_GROWTH": "[ZERO_GROWTH]",
-            "NEGATIVE_GROWTH": "[NEG_GROWTH]",
-        }
-        return badge_map.get(reason, "")
-
-    def _build_ttm_eps_timeline_from_dates(self, earnings_df):
-        """Primary source: earnings dates dataframe with reported EPS column."""
-        if earnings_df is None or earnings_df.empty:
-            return None, "NO_EARNINGS_HISTORY"
-
-        reported_col = None
-        for col in earnings_df.columns:
-            col_name = str(col).lower()
-            if "reported" in col_name and "eps" in col_name:
-                reported_col = col
-                break
-
-        if reported_col is None:
-            return None, "NO_EARNINGS_HISTORY"
-
-        eps_series = pd.to_numeric(earnings_df[reported_col], errors='coerce').dropna()
-        if eps_series.empty:
-            return None, "NO_EARNINGS_HISTORY"
-
-        eps_df = pd.DataFrame({"reported_eps": eps_series})
-        eps_df["report_date"] = pd.to_datetime(eps_df.index, errors='coerce', utc=True)
-        eps_df = eps_df.dropna(subset=["report_date"]).sort_values("report_date")
-        eps_df["report_date"] = eps_df["report_date"].dt.tz_convert(None)
-        eps_df = eps_df.drop_duplicates(subset=["report_date"], keep="last")
-        eps_df["ttm_eps"] = eps_df["reported_eps"].rolling(4).sum()
-        eps_df = eps_df.dropna(subset=["ttm_eps"])
-        if eps_df.empty:
-            return None, "INSUFFICIENT_EARNINGS_HISTORY"
-
-        return eps_df[["report_date", "ttm_eps"]].copy(), None
-
-    def _build_ttm_eps_timeline_from_history(self, earnings_history):
-        """Fallback source: earnings history list with epsActual and quarter/date fields."""
-        if not earnings_history:
-            return None, "NO_EARNINGS_HISTORY"
-
-        records = []
-        for row in earnings_history:
-            if not isinstance(row, dict):
-                continue
-            eps_val = row.get("epsActual")
-            date_val = row.get("quarter") or row.get("date") or row.get("startdatetime")
-            eps_num = self._to_finite_float(eps_val)
-            if eps_num is None or date_val is None:
-                continue
-            records.append({"report_date": date_val, "reported_eps": eps_num})
-
-        if not records:
-            return None, "NO_EARNINGS_HISTORY"
-
-        eps_df = pd.DataFrame(records)
-        eps_df["report_date"] = pd.to_datetime(eps_df["report_date"], errors='coerce', utc=True)
-        eps_df = eps_df.dropna(subset=["report_date"]).sort_values("report_date")
-        eps_df["report_date"] = eps_df["report_date"].dt.tz_convert(None)
-        eps_df = eps_df.drop_duplicates(subset=["report_date"], keep="last")
-        eps_df["ttm_eps"] = eps_df["reported_eps"].rolling(4).sum()
-        eps_df = eps_df.dropna(subset=["ttm_eps"])
-        if eps_df.empty:
-            return None, "INSUFFICIENT_EARNINGS_HISTORY"
-
-        return eps_df[["report_date", "ttm_eps"]].copy(), None
-
     def _get_historical_ttm_eps(self, ticker_obj):
-        """Builds historical TTM EPS timeline from Yahoo earnings sources."""
+        """Builds historical TTM EPS timeline from reported quarterly EPS."""
         cache_key = (self.current_ticker, "hist_ttm_eps")
         cached = self.valuation_cache.get(cache_key)
         if cached and (time.time() - cached[1] < self.VALUATION_CACHE_DURATION):
             return cached[0], None
 
         try:
-            # Source 1 (primary): earnings dates table with reported EPS.
             earnings_df = ticker_obj.get_earnings_dates(limit=80)
-            eps_timeline, eps_reason = self._build_ttm_eps_timeline_from_dates(earnings_df)
-            if eps_timeline is None:
-                # Source 2 (fallback): earnings history list with epsActual.
-                history_data = ticker_obj.get_earnings_history()
-                eps_timeline, eps_reason = self._build_ttm_eps_timeline_from_history(history_data)
+            if earnings_df is None or earnings_df.empty:
+                return None, "NO_EARNINGS_HISTORY"
 
-            if eps_timeline is None or eps_timeline.empty:
-                return None, eps_reason or "NO_EARNINGS_HISTORY"
+            reported_col = None
+            for col in earnings_df.columns:
+                col_name = str(col).lower()
+                if "reported" in col_name and "eps" in col_name:
+                    reported_col = col
+                    break
 
+            if reported_col is None:
+                return None, "NO_EARNINGS_HISTORY"
+
+            eps_series = pd.to_numeric(earnings_df[reported_col], errors='coerce').dropna()
+            if eps_series.empty:
+                return None, "NO_EARNINGS_HISTORY"
+
+            eps_df = pd.DataFrame({"reported_eps": eps_series})
+            eps_df["report_date"] = pd.to_datetime(eps_df.index, errors='coerce', utc=True)
+            eps_df = eps_df.dropna(subset=["report_date"]).sort_values("report_date")
+            eps_df["report_date"] = eps_df["report_date"].dt.tz_convert(None)
+            eps_df = eps_df.drop_duplicates(subset=["report_date"], keep="last")
+            eps_df["ttm_eps"] = eps_df["reported_eps"].rolling(4).sum()
+            eps_df = eps_df.dropna(subset=["ttm_eps"])
+            if eps_df.empty:
+                return None, "INSUFFICIENT_EARNINGS_HISTORY"
+
+            eps_timeline = eps_df[["report_date", "ttm_eps"]].copy()
             self.valuation_cache[cache_key] = (eps_timeline, time.time())
             return eps_timeline, None
         except Exception as e:
@@ -894,9 +839,6 @@ class MarketApp:
             self.peg_ratio = math.inf if pe_for_peg >= 0 else -math.inf
             self.valuation_status["peg_reason"] = "ZERO_GROWTH"
             return
-
-        if growth_pct < 0:
-            self.valuation_status["peg_reason"] = "NEGATIVE_GROWTH"
 
         self.peg_ratio = pe_for_peg / growth_pct
 
@@ -2086,13 +2028,8 @@ class MarketApp:
                 p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
                 self.lbl_pe_percentile.config(text=f"{p_val:.1f}% (TTM)", foreground=p_color)
             else:
-                pe_reason = self.valuation_status.get("pe_percentile_reason")
-                pe_badge = self._valuation_reason_badge(pe_reason)
-                pe_text = self._valuation_status_text("pe_percentile_reason", default="Loading...")
-                if pe_badge:
-                    pe_text = f"{pe_badge} {pe_text}"
                 self.lbl_pe_percentile.config(
-                    text=pe_text,
+                    text=self._valuation_status_text("pe_percentile_reason", default="Loading..."),
                     foreground="gray"
                 )
 
@@ -2105,20 +2042,10 @@ class MarketApp:
                     peg_color = "orange"
                 else:
                     peg_color = "green" if peg_val < 1.0 else "red" if peg_val > 2.0 else "white"
-                peg_reason = self.valuation_status.get("peg_reason")
-                peg_badge = self._valuation_reason_badge(peg_reason)
-                peg_text = self._format_metric(peg_val, decimals=2)
-                if peg_badge:
-                    peg_text = f"{peg_text} {peg_badge}"
-                self.lbl_peg.config(text=peg_text, foreground=peg_color)
+                self.lbl_peg.config(text=self._format_metric(peg_val, decimals=2), foreground=peg_color)
             else:
-                peg_reason = self.valuation_status.get("peg_reason")
-                peg_badge = self._valuation_reason_badge(peg_reason)
-                peg_text = self._valuation_status_text("peg_reason", default="Not Calculable")
-                if peg_badge:
-                    peg_text = f"{peg_badge} {peg_text}"
                 self.lbl_peg.config(
-                    text=peg_text,
+                    text=self._valuation_status_text("peg_reason", default="Not Calculable"),
                     foreground="gray"
                 )
                 
