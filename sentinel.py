@@ -376,6 +376,15 @@ class MarketApp:
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
         self.SENT_CACHE_DURATION = 1800 
+        self.valuation_cache = {}
+        self.VALUATION_CACHE_DURATION = 3600
+        self.pe_fwd = None
+        self.pe_ttm = None
+        self.eps = None
+        self.peg_ratio = None
+        self.pe_percentile = None
+        self.earnings_growth = None
+        self.valuation_status = {}
         
         self.ax = None 
         
@@ -526,8 +535,8 @@ class MarketApp:
         self.lbl_pe = self.add_row(self.grid_frame, "P/E Ratio", 11, "Price-to-Earnings Ratio (TTM vs Forward).")
         # Add this in your __init__ section
         self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 12, 
-                                     "How expensive the current P/E is vs the last 5 years (0-100%).")
-        self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.")
+                                     "How expensive current TTM P/E is vs 5Y TTM history (0-100%).\n\nBadges:\n[NO_EPS_HIST] missing earnings history\n[EPS_LT4Q] fewer than 4 quarters\n[NO_PE_HIST] no valid positive historical P/E points.")
+        self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.\n\nBadges:\n[NO_INPUT] missing P/E or growth\n[ZERO_GROWTH] denominator is ~0\n[NEG_GROWTH] growth is negative (raw PEG shown).")
         # Only initialize the transformer if the toggle is True
         if self.use_sentiment:
             self.log("App Started. Defaulting to FinBERT.")
@@ -619,7 +628,15 @@ class MarketApp:
             self.projected_earnings = []
             
             self.lbl_pe.config(text="Updating...", foreground="orange")
+            self.lbl_pe_percentile.config(text="Updating...", foreground="orange")
             self.lbl_peg.config(text="Updating...", foreground="orange")
+            self.pe_fwd = None
+            self.pe_ttm = None
+            self.eps = None
+            self.peg_ratio = None
+            self.pe_percentile = None
+            self.earnings_growth = None
+            self.valuation_status = {}
             
             # Start background fundamental fetch
             threading.Thread(target=self.get_info, daemon=True).start()
@@ -662,6 +679,226 @@ class MarketApp:
     def save_df_cache(self, ticker, period, interval, df):
         key = (ticker, period, interval)
         self.data_cache[key] = (df, time.time())
+
+    def _to_finite_float(self, value):
+        """Best-effort numeric normalization for provider fields."""
+        try:
+            f_val = float(value)
+            if not math.isfinite(f_val):
+                return None
+            return f_val
+        except (TypeError, ValueError):
+            return None
+
+    def _is_number(self, value):
+        return isinstance(value, (int, float, np.floating)) and not math.isnan(float(value))
+
+    def _is_finite_number(self, value):
+        return self._is_number(value) and math.isfinite(float(value))
+
+    def _format_metric(self, value, decimals=2, fallback="N/A"):
+        if self._is_number(value):
+            if math.isinf(float(value)):
+                return "Inf" if float(value) > 0 else "-Inf"
+            return f"{float(value):.{decimals}f}"
+        return fallback
+
+    def _valuation_status_text(self, key, default="N/A"):
+        reason = self.valuation_status.get(key)
+        if not reason:
+            return default
+        reason_map = {
+            "NO_CURRENT_PE_TTM": "N/A (No TTM P/E)",
+            "NO_PRICE_HISTORY": "N/A (No 5Y Price)",
+            "NO_EARNINGS_HISTORY": "N/A (No EPS History)",
+            "INSUFFICIENT_EARNINGS_HISTORY": "N/A (EPS < 4 Qtrs)",
+            "NO_VALID_PE_HISTORY": "N/A (No Valid P/E)",
+            "MISSING_PEG_INPUTS": "Not Calculable",
+            "ZERO_GROWTH": "Inf (Zero Growth)",
+        }
+        return reason_map.get(reason, default)
+
+    def _valuation_reason_badge(self, reason):
+        badge_map = {
+            "NO_EARNINGS_HISTORY": "[NO_EPS_HIST]",
+            "INSUFFICIENT_EARNINGS_HISTORY": "[EPS_LT4Q]",
+            "NO_VALID_PE_HISTORY": "[NO_PE_HIST]",
+            "MISSING_PEG_INPUTS": "[NO_INPUT]",
+            "ZERO_GROWTH": "[ZERO_GROWTH]",
+            "NEGATIVE_GROWTH": "[NEG_GROWTH]",
+        }
+        return badge_map.get(reason, "")
+
+    def _build_ttm_eps_timeline_from_dates(self, earnings_df):
+        """Primary source: earnings dates dataframe with reported EPS column."""
+        if earnings_df is None or earnings_df.empty:
+            return None, "NO_EARNINGS_HISTORY"
+
+        reported_col = None
+        for col in earnings_df.columns:
+            col_name = str(col).lower()
+            if "reported" in col_name and "eps" in col_name:
+                reported_col = col
+                break
+
+        if reported_col is None:
+            return None, "NO_EARNINGS_HISTORY"
+
+        eps_series = pd.to_numeric(earnings_df[reported_col], errors='coerce').dropna()
+        if eps_series.empty:
+            return None, "NO_EARNINGS_HISTORY"
+
+        eps_df = pd.DataFrame({"reported_eps": eps_series})
+        eps_df["report_date"] = pd.to_datetime(eps_df.index, errors='coerce', utc=True)
+        eps_df = eps_df.dropna(subset=["report_date"]).sort_values("report_date")
+        eps_df["report_date"] = eps_df["report_date"].dt.tz_convert(None)
+        eps_df = eps_df.drop_duplicates(subset=["report_date"], keep="last")
+        eps_df["ttm_eps"] = eps_df["reported_eps"].rolling(4).sum()
+        eps_df = eps_df.dropna(subset=["ttm_eps"])
+        if eps_df.empty:
+            return None, "INSUFFICIENT_EARNINGS_HISTORY"
+
+        return eps_df[["report_date", "ttm_eps"]].copy(), None
+
+    def _build_ttm_eps_timeline_from_history(self, earnings_history):
+        """Fallback source: earnings history list with epsActual and quarter/date fields."""
+        if not earnings_history:
+            return None, "NO_EARNINGS_HISTORY"
+
+        records = []
+        for row in earnings_history:
+            if not isinstance(row, dict):
+                continue
+            eps_val = row.get("epsActual")
+            date_val = row.get("quarter") or row.get("date") or row.get("startdatetime")
+            eps_num = self._to_finite_float(eps_val)
+            if eps_num is None or date_val is None:
+                continue
+            records.append({"report_date": date_val, "reported_eps": eps_num})
+
+        if not records:
+            return None, "NO_EARNINGS_HISTORY"
+
+        eps_df = pd.DataFrame(records)
+        eps_df["report_date"] = pd.to_datetime(eps_df["report_date"], errors='coerce', utc=True)
+        eps_df = eps_df.dropna(subset=["report_date"]).sort_values("report_date")
+        eps_df["report_date"] = eps_df["report_date"].dt.tz_convert(None)
+        eps_df = eps_df.drop_duplicates(subset=["report_date"], keep="last")
+        eps_df["ttm_eps"] = eps_df["reported_eps"].rolling(4).sum()
+        eps_df = eps_df.dropna(subset=["ttm_eps"])
+        if eps_df.empty:
+            return None, "INSUFFICIENT_EARNINGS_HISTORY"
+
+        return eps_df[["report_date", "ttm_eps"]].copy(), None
+
+    def _get_historical_ttm_eps(self, ticker_obj):
+        """Builds historical TTM EPS timeline from Yahoo earnings sources."""
+        cache_key = (self.current_ticker, "hist_ttm_eps")
+        cached = self.valuation_cache.get(cache_key)
+        if cached and (time.time() - cached[1] < self.VALUATION_CACHE_DURATION):
+            return cached[0], None
+
+        try:
+            # Source 1 (primary): earnings dates table with reported EPS.
+            earnings_df = ticker_obj.get_earnings_dates(limit=80)
+            eps_timeline, eps_reason = self._build_ttm_eps_timeline_from_dates(earnings_df)
+            if eps_timeline is None:
+                # Source 2 (fallback): earnings history list with epsActual.
+                history_data = ticker_obj.get_earnings_history()
+                eps_timeline, eps_reason = self._build_ttm_eps_timeline_from_history(history_data)
+
+            if eps_timeline is None or eps_timeline.empty:
+                return None, eps_reason or "NO_EARNINGS_HISTORY"
+
+            self.valuation_cache[cache_key] = (eps_timeline, time.time())
+            return eps_timeline, None
+        except Exception as e:
+            self.log(f"Historical EPS fetch error: {e}")
+            return None, "NO_EARNINGS_HISTORY"
+
+    def calculate_valuation_multiplier(self, ticker_obj):
+        """Computes a strict TTM-based P/E percentile using historical reported EPS."""
+        self.pe_percentile = None
+        self.valuation_status["pe_percentile_reason"] = None
+
+        current_pe_ttm = self._to_finite_float(self.pe_ttm)
+        if current_pe_ttm is None:
+            self.valuation_status["pe_percentile_reason"] = "NO_CURRENT_PE_TTM"
+            return 1.0
+
+        try:
+            hist = ticker_obj.history(period="5y", interval="1d")
+            if hist is None or hist.empty or "Close" not in hist.columns:
+                self.valuation_status["pe_percentile_reason"] = "NO_PRICE_HISTORY"
+                return 1.0
+
+            eps_timeline, eps_reason = self._get_historical_ttm_eps(ticker_obj)
+            if eps_timeline is None or eps_timeline.empty:
+                self.valuation_status["pe_percentile_reason"] = eps_reason or "NO_EARNINGS_HISTORY"
+                return 1.0
+
+            hist_df = hist[["Close"]].copy().dropna()
+            hist_df["date"] = pd.to_datetime(hist_df.index, errors='coerce', utc=True).tz_convert(None)
+            hist_df = hist_df.dropna(subset=["date"]).sort_values("date")
+
+            merged = pd.merge_asof(
+                hist_df[["date", "Close"]],
+                eps_timeline.sort_values("report_date"),
+                left_on="date",
+                right_on="report_date",
+                direction="backward"
+            )
+
+            pe_series = pd.to_numeric(merged["Close"], errors='coerce') / pd.to_numeric(merged["ttm_eps"], errors='coerce')
+            pe_series = pe_series.replace([np.inf, -np.inf], np.nan).dropna()
+
+            # For percentile comparability, use positive P/E history only.
+            pe_series = pe_series[pe_series > 0]
+            if pe_series.empty:
+                self.valuation_status["pe_percentile_reason"] = "NO_VALID_PE_HISTORY"
+                return 1.0
+
+            self.pe_percentile = float((pe_series < current_pe_ttm).mean() * 100.0)
+            self.valuation_status["pe_percentile_reason"] = None
+            return 1.0
+        except Exception as e:
+            self.log(f"P/E Percentile error: {e}")
+            self.valuation_status["pe_percentile_reason"] = "NO_VALID_PE_HISTORY"
+            return 1.0
+
+    def compute_peg_ratio(self):
+        """Computes PEG with provider-first fallback to derived forward PEG."""
+        self.valuation_status["peg_reason"] = None
+
+        provider_peg = self._to_finite_float(self.peg_ratio)
+        if provider_peg is not None:
+            self.peg_ratio = provider_peg
+            self.valuation_status["peg_source"] = "provider"
+            return
+
+        pe_for_peg = self._to_finite_float(self.pe_fwd)
+        if pe_for_peg is None:
+            pe_for_peg = self._to_finite_float(self.pe_ttm)
+            self.valuation_status["peg_source"] = "derived_ttm_fallback"
+        else:
+            self.valuation_status["peg_source"] = "derived_forward"
+
+        growth_dec = self._to_finite_float(self.earnings_growth)
+        if pe_for_peg is None or growth_dec is None:
+            self.peg_ratio = None
+            self.valuation_status["peg_reason"] = "MISSING_PEG_INPUTS"
+            return
+
+        growth_pct = growth_dec * 100.0
+        if abs(growth_pct) < 1e-9:
+            self.peg_ratio = math.inf if pe_for_peg >= 0 else -math.inf
+            self.valuation_status["peg_reason"] = "ZERO_GROWTH"
+            return
+
+        if growth_pct < 0:
+            self.valuation_status["peg_reason"] = "NEGATIVE_GROWTH"
+
+        self.peg_ratio = pe_for_peg / growth_pct
 
     def get_google_news_rss(self, ticker):
         self.log(f"Fetching Google RSS for {ticker} (Rich Data)...")
@@ -1303,34 +1540,7 @@ class MarketApp:
                 obv_txt = "Bullish" if obv_val > obv_avg else "Bearish"
                 self.lbl_obv.config(text=obv_txt, foreground=obv_c)
         
-        try:
-            # Format the text using already-stored fundamental data (No new network call)
-            pe_ttm_str = f"{self.pe_ttm:.2f}" if isinstance(self.pe_ttm, (int, float)) else "N/A"
-            pe_fwd_str = f"{self.pe_fwd:.2f}" if isinstance(self.pe_fwd, (int, float)) else "N/A"
-
-            # Update the display label
-            self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}")
-        
-            # Inside your update_technicals method:
-            if hasattr(self, 'pe_percentile'):
-                p_val = self.pe_percentile
-                if isinstance(p_val, (int, float)):
-                    # Color: Red if > 80% (Expensive), Green if < 20% (Cheap)
-                    p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
-                    self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
-                else:
-                    self.lbl_pe_percentile.config(text="N/A", foreground="gray")
-
-            if hasattr(self, 'peg_ratio') and isinstance(self.peg_ratio, (int, float)):
-                peg_val = self.peg_ratio
-                peg_color = "green" if peg_val < 1.0 else "red" if peg_val > 2.0 else "white"
-                self.lbl_peg.config(text=f"{peg_val:.2f}", foreground=peg_color)
-            else:
-                self.lbl_peg.config(text="Not Calculable", foreground="gray")
-        except Exception as e:
-            self.log(f"P/E Fetch Error (Technicals): {e}")
-            self.lbl_pe.config(text="N/A", foreground="gray")
-            self.lbl_peg.config(text="Not Calculable", foreground="gray")
+        self.update_pe_display()
         
         bb_pos = "Inside"
         bb_c = "white"
@@ -1662,15 +1872,16 @@ class MarketApp:
             info = stock.info
             
             # 1. Basic Fundamental Extraction
-            self.pe_fwd = info.get('forwardPE')
-            self.pe_ttm = info.get('trailingPE')
-            self.eps = info.get('trailingEps')
-            self.peg_ratio = info.get('trailingPegRatio')
+            self.pe_fwd = self._to_finite_float(info.get('forwardPE'))
+            self.pe_ttm = self._to_finite_float(info.get('trailingPE'))
+            self.eps = self._to_finite_float(info.get('trailingEps'))
+            self.peg_ratio = self._to_finite_float(info.get('trailingPegRatio'))
+            self.earnings_growth = self._to_finite_float(info.get('earningsGrowth'))
             self.dividend_yield = info.get('dividendYield', 0.0)
             
-            # 2. TRIGGER PERCENTILE CALCULATION (The Missing Link)
-            # This calls the logic that compares current P/E to 5Y history
+            # 2. Compute derived valuation metrics
             self.calculate_valuation_multiplier(stock)
+            self.compute_peg_ratio()
             
             # 3. Force UI update now that data is ready
             self.root.after(0, self.update_pe_display)
@@ -1678,32 +1889,6 @@ class MarketApp:
         except Exception as e:
             self.log(f"Fundamental fetch error: {e}")
             self.root.after(0, self.update_pe_display)
-            
-    def calculate_valuation_multiplier(self, ticker_obj):
-        try:
-            # 1. Safety Checks
-            if not self.pe_fwd or not self.eps or self.eps <= 0:
-                self.current_z_score = 0
-                return 1.0
-            
-            # 2. Get 5y History
-            hist = ticker_obj.history(period="5y")
-            if hist.empty: return 1.0
-            
-            # 3. Calculate P/E Series (Filter valid only)
-            pe_series = (hist['Close'] / self.eps)
-            pe_series = pe_series[pe_series > 0]
-            if pe_series.empty: return 1.0
-            
-            # Calculate percentage of historical P/Es that are strictly lower than current Forward P/E
-            if self.pe_fwd:
-                self.pe_percentile = (pe_series < self.pe_fwd).mean() * 100
-                print(f"[DEBUG] P/E Percentile: {self.pe_percentile:.1f}%")
-            else:
-                self.pe_percentile = 'N/A'
-        except Exception as e:
-            self.log(f"P/E Percentile error: {e}")
-            return 1.0
 
     def refresh_valuation(self):
         """Called when the Median/Mean toggle is clicked."""
@@ -1829,21 +2014,21 @@ class MarketApp:
             # 3. Write to CSV
             with open(filename, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                
+
                 # Write Headers
                 cols = ("Date", "Type", "Strike", "Vol", "Price", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
                 writer.writerow(cols)
-                
+
                 # Write Rows
                 count = 0
                 for row_id in rows:
                     row_data = self.tree.item(row_id)['values']
                     writer.writerow(row_data)
                     count += 1
-            
+
             messagebox.showinfo("Success", f"Successfully exported {count} rows to:\n{filename}")
             self.log(f"Exported {count} rows to CSV.")
-            
+
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to save CSV:\n{e}")
             self.log(f"Export Error: {e}")
@@ -1891,28 +2076,51 @@ class MarketApp:
         """Updates only the P/E labels. Called when get_info finishes."""
         try:
             # Update TTM/Fwd Label
-            pe_ttm_str = f"{self.pe_ttm:.2f}" if isinstance(self.pe_ttm, (int, float)) else "N/A"
-            pe_fwd_str = f"{self.pe_fwd:.2f}" if isinstance(self.pe_fwd, (int, float)) else "N/A"
+            pe_ttm_str = self._format_metric(self.pe_ttm, decimals=2)
+            pe_fwd_str = self._format_metric(self.pe_fwd, decimals=2)
             self.lbl_pe.config(text=f"TTM: {pe_ttm_str} | Fwd: {pe_fwd_str}", foreground="white")
 
             # Update Percentile Label
-            if hasattr(self, 'pe_percentile'):
-                p_val = self.pe_percentile
-                if isinstance(p_val, (int, float)):
-                    p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
-                    self.lbl_pe_percentile.config(text=f"{p_val:.1f}%", foreground=p_color)
-                else:
-                    self.lbl_pe_percentile.config(text="N/A", foreground="gray")
+            if self._is_finite_number(self.pe_percentile):
+                p_val = float(self.pe_percentile)
+                p_color = "red" if p_val > 80 else "green" if p_val < 20 else "white"
+                self.lbl_pe_percentile.config(text=f"{p_val:.1f}% (TTM)", foreground=p_color)
             else:
-                self.lbl_pe_percentile.config(text="Loading...", foreground="orange")
+                pe_reason = self.valuation_status.get("pe_percentile_reason")
+                pe_badge = self._valuation_reason_badge(pe_reason)
+                pe_text = self._valuation_status_text("pe_percentile_reason", default="Loading...")
+                if pe_badge:
+                    pe_text = f"{pe_badge} {pe_text}"
+                self.lbl_pe_percentile.config(
+                    text=pe_text,
+                    foreground="gray"
+                )
 
             # Update PEG Ratio Label
-            if hasattr(self, 'peg_ratio') and isinstance(self.peg_ratio, (int, float)):
-                peg_val = self.peg_ratio
-                peg_color = "green" if peg_val < 1.0 else "red" if peg_val > 2.0 else "white"
-                self.lbl_peg.config(text=f"{peg_val:.2f}", foreground=peg_color)
+            if self._is_number(self.peg_ratio):
+                peg_val = float(self.peg_ratio)
+                if math.isinf(peg_val):
+                    peg_color = "orange"
+                elif peg_val < 0:
+                    peg_color = "orange"
+                else:
+                    peg_color = "green" if peg_val < 1.0 else "red" if peg_val > 2.0 else "white"
+                peg_reason = self.valuation_status.get("peg_reason")
+                peg_badge = self._valuation_reason_badge(peg_reason)
+                peg_text = self._format_metric(peg_val, decimals=2)
+                if peg_badge:
+                    peg_text = f"{peg_text} {peg_badge}"
+                self.lbl_peg.config(text=peg_text, foreground=peg_color)
             else:
-                self.lbl_peg.config(text="Not Calculable", foreground="gray")
+                peg_reason = self.valuation_status.get("peg_reason")
+                peg_badge = self._valuation_reason_badge(peg_reason)
+                peg_text = self._valuation_status_text("peg_reason", default="Not Calculable")
+                if peg_badge:
+                    peg_text = f"{peg_badge} {peg_text}"
+                self.lbl_peg.config(
+                    text=peg_text,
+                    foreground="gray"
+                )
                 
         except Exception as e:
             self.log(f"UI Update Error (Display): {e}")
