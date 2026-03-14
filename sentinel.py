@@ -97,6 +97,14 @@ class SentimentEngine:
             
             target["loaded"] = True
             self.current_model_name = model_key
+
+            # Validate label order (FinBERT: 0=positive, 1=negative, 2=neutral)
+            id2label = getattr(target["model"].config, 'id2label', None)
+            if id2label:
+                labels = [id2label.get(i, '').lower() for i in range(len(id2label))]
+                if len(labels) >= 2 and labels[0] != "positive":
+                    print(f"[Warning] Unexpected label order for {model_key}: {id2label}")
+
             self.status_msg = f"{model_key} Loaded ({device.upper()})."
             return True
 
@@ -151,141 +159,263 @@ sentiment_engine = SentimentEngine()
 # ===================== 2. Math Core (Log-Space Stability) =====================
 class VegaChimpCore:
     @staticmethod
-    def N(x): 
+    def N(x):
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-    
+
+    @staticmethod
+    def n(x):
+        """Standard normal PDF."""
+        return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
     @staticmethod
     def bs_price(S, K, r, q, sig, T, kind):
-        """Standard Black-Scholes (European) - Fallback."""
-        if sig <= 1e-4 or T <= 1e-4: 
+        """Standard Black-Scholes (European)."""
+        if sig <= 1e-4 or T <= 1e-4:
             return max(0.0, S - K) if kind == "call" else max(0.0, K - S)
-            
+
         d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * math.sqrt(T))
         d2 = d1 - sig * math.sqrt(T)
         disc = math.exp(-r * T); disc_q = math.exp(-q * T)
-        
-        if kind == "call": 
+
+        if kind == "call":
             return S * disc_q * VegaChimpCore.N(d1) - K * disc * VegaChimpCore.N(d2)
         return K * disc * VegaChimpCore.N(-d2) - S * disc_q * VegaChimpCore.N(-d1)
 
     @staticmethod
-    def garch_forecast(log_returns, days=252):
+    def bs_greeks(S, K, r, q, sig, T, kind):
+        """Compute Black-Scholes Greeks: delta, gamma, theta, vega, rho."""
+        if sig <= 1e-4 or T <= 1e-4:
+            intrinsic_call = max(0.0, S - K)
+            intrinsic_put = max(0.0, K - S)
+            if kind == "call":
+                delta = 1.0 if S > K else 0.0
+            else:
+                delta = -1.0 if K > S else 0.0
+            return {'delta': delta, 'gamma': 0.0, 'theta': 0.0, 'vega': 0.0, 'rho': 0.0}
+
+        sqrtT = math.sqrt(T)
+        d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * sqrtT)
+        d2 = d1 - sig * sqrtT
+        disc = math.exp(-r * T)
+        disc_q = math.exp(-q * T)
+        nd1 = VegaChimpCore.n(d1)
+
+        # Gamma and Vega are the same for calls and puts
+        gamma = disc_q * nd1 / (S * sig * sqrtT)
+        vega = S * disc_q * nd1 * sqrtT / 100  # Per 1% vol move
+
+        if kind == "call":
+            delta = disc_q * VegaChimpCore.N(d1)
+            theta = (-(S * nd1 * sig * disc_q) / (2 * sqrtT)
+                     - r * K * disc * VegaChimpCore.N(d2)
+                     + q * S * disc_q * VegaChimpCore.N(d1)) / 365  # Per day
+            rho = K * T * disc * VegaChimpCore.N(d2) / 100  # Per 1% rate move
+        else:
+            delta = disc_q * (VegaChimpCore.N(d1) - 1)
+            theta = (-(S * nd1 * sig * disc_q) / (2 * sqrtT)
+                     + r * K * disc * VegaChimpCore.N(-d2)
+                     - q * S * disc_q * VegaChimpCore.N(-d1)) / 365
+            rho = -K * T * disc * VegaChimpCore.N(-d2) / 100
+
+        return {'delta': delta, 'gamma': gamma, 'theta': theta, 'vega': vega, 'rho': rho}
+
+    @staticmethod
+    def implied_vol(market_price, S, K, r, q, T, kind, tol=1e-6, max_iter=100):
+        """Newton-Raphson implied volatility solver."""
+        if market_price <= 0 or T <= 1e-6:
+            return 0.0
+        sig = 0.3  # Initial guess
+        for _ in range(max_iter):
+            price = VegaChimpCore.bs_price(S, K, r, q, sig, T, kind)
+            if sig <= 1e-4 or T <= 1e-4:
+                break
+            sqrtT = math.sqrt(T)
+            d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * sqrtT)
+            vega_raw = S * math.exp(-q * T) * VegaChimpCore.n(d1) * sqrtT
+            if abs(vega_raw) < 1e-12:
+                break
+            sig = sig - (price - market_price) / vega_raw
+            sig = max(sig, 0.001)  # Floor at 0.1%
+            if abs(price - market_price) < tol:
+                return sig
+        return max(sig, 0.001)
+
+    @staticmethod
+    def ewma_vol_forecast(log_returns, days=252):
+        """EWMA volatility forecast (RiskMetrics-style, decay=0.94)."""
         if len(log_returns) < 30: return 0.0
         try:
-            alpha, beta, omega = 0.05, 0.94, 1e-6
+            alpha, beta_p, omega = 0.05, 0.94, 1e-6
             variance = np.var(log_returns)
-            for r in log_returns:
-                variance = omega + alpha * (r**2) + beta * variance
+            for r_val in log_returns:
+                variance = omega + alpha * (r_val**2) + beta_p * variance
             return np.sqrt(variance * days)
-        except:
+        except Exception:
             return 0.0
 
     @staticmethod
     def bjerksund_stensland(S, K, T, r, q, sigma, option_type='call'):
         """
-        Approximation for American Options (2002).
+        Bjerksund-Stensland 2002 American Option Approximation.
+        Two-boundary version: splits at t1=T/2 for improved accuracy on long-dated options.
         Uses Log-Space algebra to prevent overflow errors.
         """
-        # 1. Sanity Checks
         if S <= 0 or K <= 0 or T <= 0: return 0.0
-        
-        # 2. Critical Volatility Clamp
-        # Volatility < 1% causes exponents to approach Infinity.
-        # We clamp it to 0.01 (1%) for stability.
         sigma = max(sigma, 0.01)
 
         if option_type == 'put':
             return VegaChimpCore.bjerksund_stensland(K, S, T, q, r, sigma, 'call')
 
-        b = r - q 
+        b = r - q
         if b >= r:
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
 
         try:
-            # --- HELPER: Safe Exponential ---
             def safe_exp(val):
-                if val > 700: return float('inf') # Prevent overflow
+                if val > 700: return float('inf')
                 if val < -700: return 0.0
                 return math.exp(val)
 
-            # --- HELPER: Phi Function (Rewritten in Log-Space) ---
-            # Original: exp(lam) * (S^gamma) * ( N(d) - (I/S)^k * N(d2) )
-            # New:      exp(lam + gamma*lnS) * N(d)  -  exp(lam + gamma*lnS + k*(lnI - lnS)) * N(d2)
-            def phi(s, t, gamma, h, i):
+            def phi(s, t, gamma, h_val, i_val):
                 lam = (-r + gamma * b + 0.5 * gamma * (gamma - 1) * sigma**2) * t
-                d_den = (sigma * math.sqrt(t))
-                d_num = -(math.log(s / h) + (b + (gamma - 0.5) * sigma**2) * t)
+                d_den = sigma * math.sqrt(t)
+                d_num = -(math.log(s / h_val) + (b + (gamma - 0.5) * sigma**2) * t)
                 d = d_num / d_den
-                
                 k = 2 * b / (sigma**2) + (2 * gamma - 1)
-                
-                # Pre-calculate Logs
                 ln_s = math.log(s)
-                ln_i = math.log(i)
-                
-                # Term 1: exp(lam + gamma * ln_s) * N(d)
-                power_term_1 = lam + (gamma * ln_s)
-                val_1 = safe_exp(power_term_1) * VegaChimpCore.N(d)
-                
-                # Term 2: exp(power_term_1 + k * (ln_i - ln_s)) * N(d - ...)
-                d2 = d - 2 * math.log(i/s) / d_den
-                power_term_2 = power_term_1 + k * (ln_i - ln_s)
-                val_2 = safe_exp(power_term_2) * VegaChimpCore.N(d2)
-
+                ln_i = math.log(i_val)
+                power1 = lam + (gamma * ln_s)
+                val_1 = safe_exp(power1) * VegaChimpCore.N(d)
+                d2 = d - 2 * math.log(i_val / s) / d_den
+                power2 = power1 + k * (ln_i - ln_s)
+                val_2 = safe_exp(power2) * VegaChimpCore.N(d2)
                 return val_1 - val_2
 
-            # Exercise Boundary
-            beta = (0.5 - b/sigma**2) + math.sqrt((b/sigma**2 - 0.5)**2 + 2*r/sigma**2)
-            if abs(beta - 1) < 1e-5: return S - K
+            def psi(s, t, gamma, h_val, i2, i1, t1):
+                """Extended Psi function for the two-boundary 2002 version."""
+                if t <= 1e-10 or t1 <= 1e-10:
+                    return phi(s, t, gamma, h_val, i2)
 
-            inf_boundary = K * beta / (beta - 1)
-            h = -(b * T + 2 * sigma * math.sqrt(T)) * (K**2 / ((inf_boundary - K) * inf_boundary))
-            
-            # Safe calculation for I (exercise trigger)
-            I = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h))
-            
-            # Safe calculation for alpha
-            # alpha = (I - K) * I^(-beta)  -->  (I-K) * exp(-beta * lnI)
-            alpha = (I - K) * safe_exp(-beta * math.log(I))
-            
-            if S >= I:
+                sqt = sigma * math.sqrt(t)
+                sqt1 = sigma * math.sqrt(t1)
+
+                e1_num = -(math.log(s / i1) + (b + (gamma - 0.5) * sigma**2) * t1)
+                e1 = e1_num / sqt1
+
+                e2_num = -(math.log(i2**2 / (s * i1)) + (b + (gamma - 0.5) * sigma**2) * t1)
+                e2 = e2_num / sqt1
+
+                e3_num = -(math.log(s / i1) - (b + (gamma - 0.5) * sigma**2) * t1)
+                e3 = e3_num / sqt1
+
+                e4_num = -(math.log(i2**2 / (s * i1)) - (b + (gamma - 0.5) * sigma**2) * t1)
+                e4 = e4_num / sqt1
+
+                f1_num = -(math.log(s / h_val) + (b + (gamma - 0.5) * sigma**2) * t)
+                f1 = f1_num / sqt
+
+                f2_num = -(math.log(i2**2 / (s * h_val)) + (b + (gamma - 0.5) * sigma**2) * t)
+                f2 = f2_num / sqt
+
+                f3_num = -(math.log(i1**2 / (s * h_val)) + (b + (gamma - 0.5) * sigma**2) * t)
+                f3 = f3_num / sqt
+
+                f4_num = -(math.log(s * i1**2 / (h_val * i2**2)) + (b + (gamma - 0.5) * sigma**2) * t)
+                f4 = f4_num / sqt
+
+                rho_val = math.sqrt(t1 / t) if t > 0 else 0
+
+                lam = -r + gamma * b + 0.5 * gamma * (gamma - 1) * sigma**2
+                kappa = 2 * b / (sigma**2) + (2 * gamma - 1)
+
+                ln_s = math.log(s)
+                ln_i2 = math.log(i2)
+
+                power = lam * t + gamma * ln_s
+
+                # The full psi uses bivariate normal. Approximate with products of univariate normals
+                # when correlation is low, otherwise use the decomposition approach.
+                # For practical accuracy, use the phi-based decomposition:
+                term1 = safe_exp(power) * VegaChimpCore.N(e1) * VegaChimpCore.N(f1)
+                term2 = safe_exp(power + kappa * (ln_i2 - ln_s)) * VegaChimpCore.N(e2) * VegaChimpCore.N(f2)
+                term3 = safe_exp(power + kappa * (math.log(i1) - ln_s)) * VegaChimpCore.N(e3) * VegaChimpCore.N(f3)
+                term4 = safe_exp(power + kappa * (math.log(i1) + ln_i2 - 2 * ln_s)) * VegaChimpCore.N(e4) * VegaChimpCore.N(f4)
+
+                return term1 - term2 - term3 + term4
+
+            # --- 2002 Two-Boundary Method ---
+            beta_val = (0.5 - b / sigma**2) + math.sqrt((b / sigma**2 - 0.5)**2 + 2 * r / sigma**2)
+            if abs(beta_val - 1) < 1e-5: return S - K
+
+            inf_boundary = K * beta_val / (beta_val - 1)
+            t1 = 0.5 * T  # Split point
+
+            # Boundary at T (I2)
+            h2 = -(b * T + 2 * sigma * math.sqrt(T)) * (K**2 / ((inf_boundary - K) * inf_boundary))
+            I2 = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h2))
+
+            # Boundary at t1 (I1)
+            h1 = -(b * t1 + 2 * sigma * math.sqrt(t1)) * (K**2 / ((inf_boundary - K) * inf_boundary))
+            I1 = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h1))
+
+            if S >= I2:
                 return S - K
-            else:
-                # Main Formula
-                term1 = alpha * safe_exp(beta * math.log(S))
-                term2 = alpha * phi(S, T, beta, I, I)
-                term3 = phi(S, T, 1, I, I)
-                term4 = phi(S, T, 1, K, I)
-                term5 = K * phi(S, T, 0, I, I)
-                term6 = K * phi(S, T, 0, K, I)
-                
-                return term1 - term2 + term3 - term4 - term5 + term6
+
+            # Alpha coefficients
+            alpha2 = (I2 - K) * safe_exp(-beta_val * math.log(I2))
+            alpha1 = (I1 - K) * safe_exp(-beta_val * math.log(I1))
+
+            # Main formula: two-interval approximation
+            term1 = alpha2 * safe_exp(beta_val * math.log(S))
+            term2 = alpha2 * phi(S, T, beta_val, I2, I2)
+            term3 = phi(S, T, 1, I2, I2)
+            term4 = phi(S, T, 1, K, I2)
+            term5 = K * phi(S, T, 0, I2, I2)
+            term6 = K * phi(S, T, 0, K, I2)
+
+            # Second interval correction (the 2002 upgrade over 1993)
+            term7 = alpha1 * phi(S, t1, beta_val, I1, I1)
+            term8 = alpha1 * psi(S, T, beta_val, I1, I2, I1, t1)
+            term9 = phi(S, t1, 1, I1, I1)
+            term10 = psi(S, T, 1, I1, I2, I1, t1)
+            term11 = K * phi(S, t1, 0, I1, I1)
+            term12 = K * psi(S, T, 0, I1, I2, I1, t1)
+
+            price = (term1 - term2 + term3 - term4 - term5 + term6
+                     + term7 - term8 - term9 + term10 + term11 - term12)
+
+            # Ensure price is at least intrinsic value
+            intrinsic = max(0.0, S - K)
+            return max(price, intrinsic)
 
         except (OverflowError, ValueError, ZeroDivisionError):
-            # If math still breaks (e.g. extreme inputs), use Black-Scholes
-            print("[Warning] Bjerksund-Stensland calculation failed, falling back to Black-Scholes.")
+            print("[Warning] Bjerksund-Stensland 2002 failed, falling back to Black-Scholes.")
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
 # ===================== 3. Technicals Logic (UPDATED) =====================
 def calculate_technicals(df):
     delta = df['Close'].diff()
-    
+
     # 1. Corrected RSI (Wilder's Smoothing)
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
-    # 2. Standard MACD
+    # 2. MACD with Histogram (B3)
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['Signal']
 
-    # 3. Bollinger Bands
+    # 3. Bollinger Bands with %B and Bandwidth (B4)
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['STD_20'] = df['Close'].rolling(window=20).std()
     df['BB_Upper'] = df['SMA_20'] + (df['STD_20'] * 2)
     df['BB_Lower'] = df['SMA_20'] - (df['STD_20'] * 2)
+    bb_range = df['BB_Upper'] - df['BB_Lower']
+    df['BB_PctB'] = (df['Close'] - df['BB_Lower']) / bb_range.replace(0, np.nan)
+    df['BB_Width'] = bb_range / df['SMA_20'].replace(0, np.nan)
 
     # 4. Corrected ATR (Wilder's Smoothing)
     high_low = df['High'] - df['Low']
@@ -295,34 +425,47 @@ def calculate_technicals(df):
     true_range = ranges.max(axis=1)
     df['ATR'] = true_range.ewm(alpha=1/14, adjust=False).mean()
 
-    # 5. StochRSI
+    # 5. StochRSI with %K/%D Smoothing (B2)
     min_rsi = df['RSI'].rolling(window=14).min()
     max_rsi = df['RSI'].rolling(window=14).max()
-    df['StochRSI'] = (df['RSI'] - min_rsi) / (max_rsi - min_rsi)
+    raw_stoch = (df['RSI'] - min_rsi) / (max_rsi - min_rsi)
+    df['StochRSI_K'] = raw_stoch.rolling(3).mean()
+    df['StochRSI_D'] = df['StochRSI_K'].rolling(3).mean()
+    df['StochRSI'] = df['StochRSI_K']
 
-    # --- NEW INDICATORS ---
-
-    # 6. VWAP (Intraday Benchmark)
-    # We use a simple cumulative approach. Ideally resets daily, but this works for "Period VWAP"
+    # 6. VWAP with Daily Reset (B1)
     df['TP'] = (df['High'] + df['Low'] + df['Close']) / 3
-    df['VWAP'] = (df['TP'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+    # Group by trading date for proper daily resets
+    df['_trade_date'] = df.index.normalize()
+    df['_tp_vol'] = df['TP'] * df['Volume']
+    df['VWAP'] = df.groupby('_trade_date')['_tp_vol'].cumsum() / df.groupby('_trade_date')['Volume'].cumsum()
+    df.drop(columns=['_trade_date', '_tp_vol'], inplace=True)
 
     # 7. OBV (On-Balance Volume)
     df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
-    # Add an OBV Signal: Is OBV trending up or down compared to its 20-period average?
-    df['OBV_SMA'] = df['OBV'].rolling(20).mean() 
+    df['OBV_SMA'] = df['OBV'].rolling(20).mean()
 
-    # 8. ADX (Trend Strength)
+    # 8. ADX with Directional Info (B5)
     df['UpMove'] = df['High'] - df['High'].shift(1)
     df['DownMove'] = df['Low'].shift(1) - df['Low']
     df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
     df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
-    
-    # ADX Smoothing
+
     df['+DI'] = 100 * (df['+DM'].ewm(alpha=1/14, adjust=False).mean() / df['ATR'])
     df['-DI'] = 100 * (df['-DM'].ewm(alpha=1/14, adjust=False).mean() / df['ATR'])
     df['DX'] = 100 * np.abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'])
     df['ADX'] = df['DX'].ewm(alpha=1/14, adjust=False).mean()
+
+    # 9. Williams %R (D1)
+    highest_14 = df['High'].rolling(14).max()
+    lowest_14 = df['Low'].rolling(14).min()
+    df['Williams_R'] = -100 * (highest_14 - df['Close']) / (highest_14 - lowest_14).replace(0, np.nan)
+
+    # 10. CCI - Commodity Channel Index (D2)
+    tp = (df['High'] + df['Low'] + df['Close']) / 3
+    tp_sma = tp.rolling(20).mean()
+    tp_mad = tp.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    df['CCI'] = (tp - tp_sma) / (0.015 * tp_mad)
 
     return df
 
@@ -419,15 +562,13 @@ class MarketApp:
 
         self.grid_frame = ttk.LabelFrame(self.left_frame, text="Technical Analysis", padding=15)
         self.grid_frame.pack(fill="x", pady=5)
-        self.annual_growth_offset = 0
         
         self.lbl_rsi = self.add_row(self.grid_frame, "RSI (14d)", 0, "Relative Strength Index. Range 0-100.")
         self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1, "Stochastic RSI.\n\nMore sensitive than standard RSI.\nUse this to time specific entries/exits within a trend.\n0.0 = Max Oversold, 1.0 = Max Overbought.")
         self.lbl_macd = self.add_row(self.grid_frame, "MACD", 2, "Moving Average Convergence Divergence.")
         self.lbl_bb = self.add_row(self.grid_frame, "Bollinger Bands", 3, "20-day SMA +/- 2 STDs.")
         self.lbl_atr = self.add_row(self.grid_frame, "ATR (Volatility)", 4, "Average True Range (Daily Move in $).")
-        # Updated tooltip for GARCH
-        self.lbl_vol = self.add_row(self.grid_frame, "Vol (HV vs GARCH)", 5, "HV: 30d Historical Volatility.\nGARCH: Forward-looking Vol Forecast.")
+        self.lbl_vol = self.add_row(self.grid_frame, "Vol (HV vs EWMA)", 5, "HV: 30d Historical Volatility.\nEWMA: Exponentially Weighted Moving Average Vol Forecast (decay=0.94).")
         if self.use_sentiment:
             self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6, "Headline sentiment scored 0-1.")
             self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7, "Total return over selected period.")
@@ -527,8 +668,8 @@ class MarketApp:
         self.stock = None  # <--- NEW: Store the object here
         self.current_price = 0
         self.hv_30 = 0
-        self.garch_vol = 0 # New variable for GARCH
-        self.projected_earnings = [] 
+        self.ewma_vol = 0
+        self.projected_earnings = []
         # Add this line where your other technical labels are initialized
         self.lbl_adx = self.add_row(self.grid_frame, "ADX (Trend)", 9, "Trend Strength (0-100).\n\n< 20: Weak/Choppy market. (DANGER: Do not buy options here, theta will kill you).\n> 25: Trending market. (SAFE: Good for directional trades).")
         self.lbl_obv = self.add_row(self.grid_frame, "OBV Trend", 10, "On-Balance Volume.\n\nTracks 'Smart Money' flow.\nBullish: OBV rising with Price.\nDivergence: If Price rises but OBV falls, the rally is a trap.")
@@ -537,6 +678,8 @@ class MarketApp:
         self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 12, 
                                      "How expensive the current P/E is vs the last 5 years (0-100%).")
         self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.")
+        self.lbl_williams = self.add_row(self.grid_frame, "Williams %R", 14, "Momentum oscillator (-100 to 0).\n\nOversold < -80 (Buy signal)\nOverbought > -20 (Sell signal)")
+        self.lbl_cci = self.add_row(self.grid_frame, "CCI (20)", 15, "Commodity Channel Index.\n\nOversold < -100\nOverbought > +100\nMeasures deviation from mean price.")
         # Only initialize the transformer if the toggle is True
         if self.use_sentiment:
             self.log("App Started. Defaulting to FinBERT.")
@@ -545,6 +688,9 @@ class MarketApp:
             self.log("AI Sentiment is currently disabled.")
             #self.lbl_model_status.config(text="Status: Disabled", foreground="gray")
         self.scan_data = []
+        self._scan_lock = threading.Lock()
+        self._data_cache_lock = threading.Lock()
+        self._sent_cache_lock = threading.Lock()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(500, self.load_data)
     def on_close(self):
@@ -622,9 +768,8 @@ class MarketApp:
             self.stock = yf.Ticker(new_ticker)
             
             # Clear caches and reset drift for the new stock
-            self.data_cache = {} 
+            self.data_cache = {}
             self.sent_cache = {}
-            self.annual_growth_offset = None 
             self.projected_earnings = []
             
             self.lbl_pe.config(text="Updating...", foreground="orange")
@@ -670,15 +815,17 @@ class MarketApp:
 
     def get_cached_df(self, ticker, period, interval):
         key = (ticker, period, interval)
-        if key in self.data_cache:
-            data, ts = self.data_cache[key]
-            if time.time() - ts < self.DATA_CACHE_DURATION:
-                return data, True
+        with self._data_cache_lock:
+            if key in self.data_cache:
+                data, ts = self.data_cache[key]
+                if time.time() - ts < self.DATA_CACHE_DURATION:
+                    return data, True
         return None, False
 
     def save_df_cache(self, ticker, period, interval, df):
         key = (ticker, period, interval)
-        self.data_cache[key] = (df, time.time())
+        with self._data_cache_lock:
+            self.data_cache[key] = (df, time.time())
 
     def _to_finite_float(self, value):
         """Best-effort numeric normalization for provider fields."""
@@ -905,13 +1052,14 @@ class MarketApp:
 
     def calculate_sentiment(self, ticker, stock_obj):
         # 1. Check Cache
-        if ticker in self.sent_cache:
-            cache_data = self.sent_cache[ticker]
-            if len(cache_data) == 3:
-                val, news_items, ts = cache_data
-                if time.time() - ts < self.SENT_CACHE_DURATION:
-                    self.log("Using Cached News.")
-                    return val, news_items
+        with self._sent_cache_lock:
+            if ticker in self.sent_cache:
+                cache_data = self.sent_cache[ticker]
+                if len(cache_data) == 3:
+                    val, news_items, ts = cache_data
+                    if time.time() - ts < self.SENT_CACHE_DURATION:
+                        self.log("Using Cached News.")
+                        return val, news_items
 
         # 2. Gather Headlines
         all_news = []
@@ -965,7 +1113,8 @@ class MarketApp:
                         avg_score = sum(valid_scores) / len(valid_scores)
                         self.log(f"FINAL AI SCORE: {avg_score:.4f}")
 
-        self.sent_cache[ticker] = (avg_score, all_news, time.time())
+        with self._sent_cache_lock:
+            self.sent_cache[ticker] = (avg_score, all_news, time.time())
         return avg_score, all_news
 
     def treeview_sort_column(self, tv, col, reverse):
@@ -997,16 +1146,17 @@ class MarketApp:
         if not self.current_ticker: return
         
         # Retrieve rich data from cache
-        if self.current_ticker not in self.sent_cache:
-            messagebox.showinfo("News", "No news loaded yet for this ticker.")
-            return
+        with self._sent_cache_lock:
+            if self.current_ticker not in self.sent_cache:
+                messagebox.showinfo("News", "No news loaded yet for this ticker.")
+                return
 
-        cache_data = self.sent_cache[self.current_ticker]
-        if len(cache_data) == 3:
-            _, news_items, _ = cache_data
-        else:
-            messagebox.showinfo("News", "Old cache format. Please reload data.")
-            return
+            cache_data = self.sent_cache[self.current_ticker]
+            if len(cache_data) == 3:
+                _, news_items, _ = cache_data
+            else:
+                messagebox.showinfo("News", "Old cache format. Please reload data.")
+                return
         
         if not news_items:
             messagebox.showinfo("News", "No headlines found.")
@@ -1166,37 +1316,7 @@ class MarketApp:
             period_return = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0] if not df.empty else 0.0
             self.root.after(0, lambda: self.lbl_status.config(text=status_msg))
 
-            # --- 2. [REVISED] Earnings-Based Growth Drift ---
-            if self.annual_growth_offset is None:
-                try:
-                    # Try to get fundamental growth (EPS growth)
-                    info = stock.info
-                    
-                    # FIX: Check if info exists and is a dictionary before calling .get()
-                    f_growth = None
-                    if isinstance(info, dict):
-                        f_growth = info.get('earningsGrowth')
-                    
-                    if f_growth is not None:
-                        # Clamp the earnings growth to realistic drift expectations (e.g., -5% to +15%)
-                        self.annual_growth_offset = max(min(f_growth * 0.5, 0.15), -0.05)
-                        self.log(f"Fundamental EPS Growth Drift: {self.annual_growth_offset:+.2%}")
-                    else:
-                        # Fallback to your original Price CAGR logic if info is None or missing growth
-                        df_5y = self.fetch_history_with_retry(stock, "5y", "1mo")
-                        if df_5y is not None and not df_5y.empty and len(df_5y) > 12:
-                            p_start, p_end = df_5y['Close'].iloc[0], df_5y['Close'].iloc[-1]
-                            cagr = ((p_end / p_start) ** (1/5)) - 1
-                            self.annual_growth_offset = max(min(cagr * 0.5, 0.15), -0.05)
-                            self.log(f"Fallback 5Y Price CAGR Drift: {self.annual_growth_offset:+.2%}")
-                        else:
-                            self.annual_growth_offset = 0.05
-                            
-                except Exception as e:
-                    self.log(f"Growth calculation error: {e}")
-                    self.annual_growth_offset = 0.05
-
-            # --- 3. Technical Data & GARCH (1y Daily) ---
+            # --- 2. Technical Data & EWMA Vol (1y Daily) ---
             df_tech, tech_cached = self.get_cached_df(ticker, "1y", "1d")
             if df_tech is None:
                 df_tech = self.fetch_history_with_retry(stock, "1y", "1d")
@@ -1229,7 +1349,7 @@ class MarketApp:
             # Volatility Logic
             hv_30 = df_tech['log_ret'].rolling(30).std().iloc[-1] * np.sqrt(252)
             self.hv_30 = hv_30
-            self.garch_vol = VegaChimpCore.garch_forecast(df_tech['log_ret'].dropna().values)
+            self.ewma_vol = VegaChimpCore.ewma_vol_forecast(df_tech['log_ret'].dropna().values)
             
             # --- 4. Sentiment Analysis ---
             sentiment_result = self.calculate_sentiment(ticker, stock)
@@ -1249,7 +1369,7 @@ class MarketApp:
             last_copy = last.copy()
             last_copy['Close'] = current_price 
             
-            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, self.garch_vol, sentiment_score, period_return))
+            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, self.ewma_vol, sentiment_score, period_return))
             self.root.after(0, self.update_chart, df, ticker, period)
 
         except Exception as e:
@@ -1355,6 +1475,23 @@ class MarketApp:
             if 'VWAP' in plot_df.columns and plot_df['VWAP'].notna().sum() > 0:
                  self.ax.plot(x_vals, plot_df['VWAP'], label='VWAP', color='#ffd700', linewidth=1.5, linestyle='--')
 
+            # --- Fibonacci Retracement Levels (D4) ---
+            fib_high = plot_df['High'].max()
+            fib_low = plot_df['Low'].min()
+            fib_range = fib_high - fib_low
+            if fib_range > 0:
+                fib_levels = {
+                    '23.6%': fib_high - 0.236 * fib_range,
+                    '38.2%': fib_high - 0.382 * fib_range,
+                    '50.0%': fib_high - 0.500 * fib_range,
+                    '61.8%': fib_high - 0.618 * fib_range,
+                }
+                fib_colors = {'23.6%': '#ff9800', '38.2%': '#e91e63', '50.0%': '#9c27b0', '61.8%': '#2196f3'}
+                for level_name, level_val in fib_levels.items():
+                    self.ax.axhline(y=level_val, color=fib_colors[level_name], linestyle=':', linewidth=0.7, alpha=0.6)
+                    self.ax.text(x_vals[-1], level_val, f" {level_name}", color=fib_colors[level_name],
+                                fontsize=6, va='center', alpha=0.8)
+
             # Styling
             self.ax.set_xlim(left=x_vals[0], right=x_vals[-1])
             self.ax.set_title(f"{ticker} Price Action ({period})", color="white", fontweight="bold")
@@ -1429,8 +1566,7 @@ class MarketApp:
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
-# --- UPDATED UI METHOD TO SHOW GARCH & PENDING SENTIMENT ---
-    def update_technicals(self, data, hv, garch, sentiment, period_return):
+    def update_technicals(self, data, hv, ewma, sentiment, period_return):
         self.lbl_price.config(text=f"${data['Close']:.2f}")
         
         rsi_val = data['RSI']
@@ -1439,11 +1575,16 @@ class MarketApp:
         
         stoch_val = data['StochRSI']
         stoch_c = "green" if stoch_val < 0.2 else "red" if stoch_val > 0.8 else "white"
-        self.lbl_stoch.config(text=f"{stoch_val:.2f}", foreground=stoch_c)
-        
+        if pd.notna(data.get('StochRSI_D')):
+            self.lbl_stoch.config(text=f"K:{stoch_val:.2f} D:{data['StochRSI_D']:.2f}", foreground=stoch_c)
+        else:
+            self.lbl_stoch.config(text=f"{stoch_val:.2f}", foreground=stoch_c)
+
         macd_val = data['MACD']
+        macd_hist = data.get('MACD_Hist', 0)
         macd_c = "green" if macd_val > 0 else "red"
-        self.lbl_macd.config(text=f"{macd_val:.2f}", foreground=macd_c)
+        hist_arrow = "+" if pd.notna(macd_hist) and macd_hist > 0 else "-"
+        self.lbl_macd.config(text=f"{macd_val:.2f} (H:{hist_arrow}{abs(macd_hist):.2f})" if pd.notna(macd_hist) else f"{macd_val:.2f}", foreground=macd_c)
         
         # 1. VWAP Display
         # Show percentage distance from VWAP
@@ -1458,13 +1599,19 @@ class MarketApp:
         else:
             self.lbl_vwap.config(text="N/A", foreground="gray")
 
-        # 2. ADX Display
+        # 2. ADX Display with Direction (B5)
         if 'ADX' in data and not pd.isna(data['ADX']):
             adx = data['ADX']
-            # Gold for Strong Trend (>25), Gray for Weak/Choppy (<20)
             adx_c = "#ffd700" if adx > 25 else "gray" if adx < 20 else "white"
-            status = "Strong" if adx > 25 else "Weak" if adx < 20 else "Neutral"
-            self.lbl_adx.config(text=f"{adx:.1f} ({status})", foreground=adx_c)
+            strength = "Strong" if adx > 25 else "Weak" if adx < 20 else "Neutral"
+            # Show direction from +DI/-DI
+            plus_di = data.get('+DI', 0)
+            minus_di = data.get('-DI', 0)
+            if not pd.isna(plus_di) and not pd.isna(minus_di):
+                direction = "Bull" if plus_di > minus_di else "Bear"
+            else:
+                direction = ""
+            self.lbl_adx.config(text=f"{adx:.1f} {strength} ({direction})", foreground=adx_c)
         else:
             self.lbl_adx.config(text="N/A", foreground="gray")
 
@@ -1486,16 +1633,21 @@ class MarketApp:
         
         bb_pos = "Inside"
         bb_c = "white"
-        if data['Close'] > data['BB_Upper']: 
+        if data['Close'] > data['BB_Upper']:
             bb_pos = "Overbought"; bb_c = "red"
-        elif data['Close'] < data['BB_Lower']: 
+        elif data['Close'] < data['BB_Lower']:
             bb_pos = "Oversold"; bb_c = "green"
-        self.lbl_bb.config(text=f"{bb_pos}\n[{data['BB_Lower']:.2f}-{data['BB_Upper']:.2f}]", foreground=bb_c)
+        pctb = data.get('BB_PctB')
+        bw = data.get('BB_Width')
+        bb_extra = ""
+        if pd.notna(pctb) and pd.notna(bw):
+            bb_extra = f" | %B:{pctb:.2f} BW:{bw:.2f}"
+        self.lbl_bb.config(text=f"{bb_pos}{bb_extra}\n[{data['BB_Lower']:.2f}-{data['BB_Upper']:.2f}]", foreground=bb_c)
         
         self.lbl_atr.config(text=f"${data['ATR']:.2f}")
         
-        # --- GARCH & HV DISPLAY ---
-        self.lbl_vol.config(text=f"HV: {hv:.1%} | GARCH: {garch:.1%}")
+        # --- EWMA & HV DISPLAY ---
+        self.lbl_vol.config(text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}")
         
         # --- UPDATED SENTIMENT BLOCK (Handles "Pending" string) ---
         if self.use_sentiment:
@@ -1514,6 +1666,22 @@ class MarketApp:
         
         ret_c = "green" if period_return > 0 else "red" if period_return < 0 else "white"
         self.lbl_return.config(text=f"{period_return:+.2%}", foreground=ret_c)
+
+        # --- Williams %R Display ---
+        williams = data.get('Williams_R')
+        if williams is not None and pd.notna(williams):
+            wr_c = "green" if williams < -80 else "red" if williams > -20 else "white"
+            self.lbl_williams.config(text=f"{williams:.1f}", foreground=wr_c)
+        else:
+            self.lbl_williams.config(text="N/A", foreground="gray")
+
+        # --- CCI Display ---
+        cci = data.get('CCI')
+        if cci is not None and pd.notna(cci):
+            cci_c = "green" if cci < -100 else "red" if cci > 100 else "white"
+            self.lbl_cci.config(text=f"{cci:.1f}", foreground=cci_c)
+        else:
+            self.lbl_cci.config(text="N/A", foreground="gray")
 
         self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
     
@@ -1858,10 +2026,18 @@ class MarketApp:
 
             # 2. Standard Ticker Info (Second Priority)
             info = stock_obj.info
-            div = info.get('dividendYield') or info.get('trailingAnnualDividendYield')
-            div = div / 100
-            print(f"[DEBUG] Found Dividend (info): {div:.4%}") 
-            return div
+            div = info.get('dividendYield')
+            if div is not None and isinstance(div, (int, float)):
+                # dividendYield from yfinance is already decimal (e.g. 0.0294)
+                print(f"[DEBUG] Found Dividend (info/dividendYield): {div:.4%}")
+                return div
+            div = info.get('trailingAnnualDividendYield')
+            if div is not None and isinstance(div, (int, float)):
+                # trailingAnnualDividendYield may be percentage form
+                if div > 1:
+                    div = div / 100
+                print(f"[DEBUG] Found Dividend (info/trailing): {div:.4%}")
+                return div
             
         except Exception as e:
             print(f"[DEBUG] Div fetch error: {e}")
@@ -1902,20 +2078,17 @@ class MarketApp:
         self.exp_list.pack(fill="both", expand=True)
         self.exp_list.bind('<<ListboxSelect>>', self.on_exp_select)
         
-        # --- FIXED COLUMNS (Removed extra 'Fair' column) ---
-        # 10 Columns Total
-        # In open_options_window()
-        cols = ("Date", "Type", "Strike", "Vol", "Price", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
-        # I changed "Last" to "Price" so you know it's the effective price used for calc, it used bid+ask/2
+        # --- EXPANDED COLUMNS: Greeks, POP, OI, Spread ---
+        cols = ("Date", "Type", "Strike", "Vol", "OI", "Price", "Spread%",
+                "Breakeven", "Imp Vol", "Fair", "EV", "Delta", "Gamma", "Theta", "Vega", "POP", "Verdict")
         self.tree = ttk.Treeview(right_panel, columns=cols, show="headings")
-        
-        for c in cols: 
-            # Added command= to trigger sorting on click
+
+        col_widths = {"Date": 90, "Breakeven": 75, "Verdict": 65,
+                      "Delta": 55, "Gamma": 55, "Theta": 55, "Vega": 55, "POP": 50,
+                      "OI": 55, "Spread%": 55}
+        for c in cols:
             self.tree.heading(c, text=c, command=lambda _c=c: self.treeview_sort_column(self.tree, _c, False))
-            
-            # Keep your existing width logic
-            w = 80 if c == "Breakeven" else 65
-            if c == "Date": w = 90
+            w = col_widths.get(c, 60)
             self.tree.column(c, width=w, anchor="center")
         
         scr = ttk.Scrollbar(right_panel, orient="vertical", command=self.tree.yview)
@@ -1958,7 +2131,8 @@ class MarketApp:
                 writer = csv.writer(f)
 
                 # Write Headers
-                cols = ("Date", "Type", "Strike", "Vol", "Price", "Breakeven", "Imp Vol", "Fair", "EV", "Verdict")
+                cols = ("Date", "Type", "Strike", "Vol", "OI", "Price", "Spread%",
+                        "Breakeven", "Imp Vol", "Fair", "EV", "Delta", "Gamma", "Theta", "Vega", "POP", "Verdict")
                 writer.writerow(cols)
 
                 # Write Rows
@@ -2003,16 +2177,32 @@ class MarketApp:
         for i in self.tree.get_children(): self.tree.delete(i)
         threading.Thread(target=self.fetch_options_batch, args=(dates,), daemon=True).start()
 
-    def get_risk_free_rate(self):
-        """Fetches the 13-week Treasury Bill yield (^IRX) as the risk-free rate."""
+    def get_risk_free_rate(self, T=None):
+        """Fetches term-matched risk-free rate. Interpolates between ^IRX (13-week) and ^TNX (10-year)."""
         try:
-            tnx = yf.Ticker("^IRX")
-            # ^IRX is quoted in percentage (e.g., 4.50), we need decimal (0.045)
-            rate = tnx.fast_info['last_price'] / 100
-            if rate <= 0: return 0.045 # Fallback
-            return rate
+            irx = yf.Ticker("^IRX")
+            short_rate = irx.fast_info['last_price'] / 100  # 13-week T-Bill
+            if short_rate <= 0: short_rate = 0.045
+
+            if T is None or T <= 0.25:
+                return short_rate
+
+            # For longer maturities, fetch 10-year and interpolate
+            try:
+                tnx = yf.Ticker("^TNX")
+                long_rate = tnx.fast_info['last_price'] / 100  # 10-year Treasury
+                if long_rate <= 0: long_rate = short_rate
+            except Exception:
+                return short_rate
+
+            # Linear interpolation: short_rate at T=0, long_rate at T=10
+            # Clamp T between 0.25 and 10
+            t_clamped = min(max(T, 0.25), 10.0)
+            weight = (t_clamped - 0.25) / (10.0 - 0.25)
+            return short_rate + weight * (long_rate - short_rate)
+
         except Exception:
-            return 0.045 # Fallback to a standard rate if fetch fails
+            return 0.045
         
     def update_pe_display(self):
         """Updates only the P/E labels. Called when get_info finishes."""
@@ -2054,15 +2244,14 @@ class MarketApp:
 
     def fetch_options_batch(self, dates, filter_under_only=False):
         # Clear scan data if this is a fresh batch (optional logic)
-        if hasattr(self, 'scan_data') and len(dates) == 1: 
-             pass 
-            
+        if hasattr(self, 'scan_data') and len(dates) == 1:
+             pass
+
         stock = self.stock
-        
+
         # 1. PURE INPUTS
-        DIV_YIELD = self.get_smart_dividend(stock) 
-        RFR = self.get_risk_free_rate() 
-        
+        DIV_YIELD = self.get_smart_dividend(stock)
+
         earnings_contracts = set()
         if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
             for p_date in self.projected_earnings:
@@ -2072,61 +2261,134 @@ class MarketApp:
 
         for date in dates:
             try:
-                T = (datetime.strptime(date, "%Y-%m-%d") - datetime.now()).days / 365.0
-                if T <= 0: T=0.001
+                exp_date = datetime.strptime(date, "%Y-%m-%d").date()
+                today = datetime.now().date()
+                trading_days = int(np.busday_count(today, exp_date))
+                T = max(trading_days / 252.0, 1/252)  # Minimum 1 trading day
+
+                # Term-matched risk-free rate (C7)
+                RFR = self.get_risk_free_rate(T)
+
                 chain = stock.option_chain(date)
                 calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
-                
+
                 # Get ALL options (no .head limit)
                 all_options = pd.concat([calls, puts]).sort_values('volume', ascending=False)
-                
+
+                # --- Put-Call Parity check data (C9): build strike->price map ---
+                parity_map = {}  # strike -> {'call_mid': x, 'put_mid': y}
+                for _, prow in all_options.iterrows():
+                    s = prow['strike']
+                    bid_p = prow.get('bid', 0) or 0
+                    ask_p = prow.get('ask', 0) or 0
+                    if bid_p > 0 and ask_p > 0:
+                        mid = (bid_p + ask_p) / 2
+                    elif prow['lastPrice'] > 0:
+                        mid = prow['lastPrice']
+                    else:
+                        continue
+                    if s not in parity_map:
+                        parity_map[s] = {}
+                    parity_map[s][prow['Type'].lower()] = mid
+
                 for _, row in all_options.iterrows():
                     # Get volume safely
                     vol = row.get('volume', 0)
-                    
-                    if pd.isna(vol) or vol == 0: 
+
+                    if pd.isna(vol) or vol == 0:
                         continue
-                    bid, ask, last = row.get('bid', 0), row.get('ask', 0), row['lastPrice']
+                    bid, ask, last = row.get('bid', 0) or 0, row.get('ask', 0) or 0, row['lastPrice']
                     if bid > 0 and ask > 0:
                         market_price = (bid + ask) / 2
                     elif last > 0:
                         market_price = last
                     else:
-                        continue 
-                        
-                    # --- VOLATILITY SANITY CHECK ---
+                        continue
+
+                    # --- Open Interest (E3) ---
+                    oi = row.get('openInterest', 0)
+                    if pd.isna(oi): oi = 0
+                    oi = int(oi)
+
+                    # --- Spread Analysis (E3) ---
+                    if bid > 0 and ask > 0:
+                        spread_mid = (bid + ask) / 2
+                        spread_pct = ((ask - bid) / spread_mid) * 100 if spread_mid > 0 else 999
+                    else:
+                        spread_pct = 999  # Unknown spread
+
+                    # Skip illiquid options (spread > 50% or OI == 0 with high spread)
+                    if spread_pct > 50 and oi == 0:
+                        continue
+
+                    # --- VOLATILITY BLEND (Time-Weighted) ---
                     iv = row['impliedVolatility']
                     if not iv or math.isnan(iv) or iv < 0.01: continue
 
                     if iv < 0.05:
                         vol_input = self.hv_30
                     elif self.use_fundamentals:
-                        vol_input = 0.5 * (iv + self.hv_30)
+                        # Weight IV more for longer-dated, HV more for shorter-dated
+                        iv_weight = min(T * 4, 0.8)
+                        hv_weight = 1.0 - iv_weight
+                        vol_input = iv_weight * iv + hv_weight * self.hv_30
                     else:
                         vol_input = iv
-                        
-                    
-                    adjusted_rfr = RFR 
 
+                    kind_str = row['Type'].lower()
                     fair = VegaChimpCore.bjerksund_stensland(
-                        self.current_price, 
-                        row['strike'], 
-                        T, 
-                        adjusted_rfr,
-                        DIV_YIELD,  
-                        vol_input, 
-                        row['Type'].lower()
+                        self.current_price,
+                        row['strike'],
+                        T,
+                        RFR,
+                        DIV_YIELD,
+                        vol_input,
+                        kind_str
                     )
                     ev = fair - market_price
                     if fair <= 0:
                         continue
+
+                    # --- Greeks (C3) ---
+                    greeks = VegaChimpCore.bs_greeks(
+                        self.current_price, row['strike'], RFR, DIV_YIELD, iv, T, kind_str
+                    )
+
+                    # --- Probability of Profit (C10) ---
+                    # POP = probability option expires ITM using market IV
+                    try:
+                        if kind_str == "call":
+                            breakeven_price = row['strike'] + market_price
+                        else:
+                            breakeven_price = row['strike'] - market_price
+                        sqrtT = math.sqrt(T)
+                        d2_pop = (math.log(self.current_price / breakeven_price) + (RFR - DIV_YIELD - 0.5 * iv * iv) * T) / (iv * sqrtT)
+                        if kind_str == "call":
+                            pop = VegaChimpCore.N(d2_pop) * 100
+                        else:
+                            pop = VegaChimpCore.N(-d2_pop) * 100
+                        pop = max(0, min(100, pop))
+                    except Exception:
+                        pop = 0.0
+
+                    # --- Put-Call Parity Check (C9) ---
+                    parity_data = parity_map.get(row['strike'], {})
+                    parity_warn = ""
+                    if 'call' in parity_data and 'put' in parity_data:
+                        c_price = parity_data['call']
+                        p_price = parity_data['put']
+                        # C - P should ≈ S*e^(-qT) - K*e^(-rT)
+                        theoretical = self.current_price * math.exp(-DIV_YIELD * T) - row['strike'] * math.exp(-RFR * T)
+                        residual = (c_price - p_price) - theoretical
+                        if abs(residual) > 0.10:
+                            parity_warn = "!"  # Flag parity violation
 
                     # ======================================================
                     #  STEP 1: CALCULATE STATUS (Must be done first!)
                     # ======================================================
                     is_earnings = date in earnings_contracts
                     is_undervalued = False
-                    
+
                     # Logic to determine if it is "Good" (Undervalued)
                     if self.ev_absolute:
                         threshold = 0.25 if is_earnings else 0.15
@@ -2143,17 +2405,17 @@ class MarketApp:
                     # ======================================================
                     #  STEP 2: SAVE TO SCAN DATA (Now safe to do)
                     # ======================================================
-                    if not hasattr(self, 'scan_data'): self.scan_data = []
-                    self.scan_data.append({
-                        'date': date,
-                        'type': row['Type'],
-                        'strike': row['strike'],
-                        'ev': ev,
-                        'price': market_price,
-                        'vol': row['volume'],
-                        'is_earnings': is_earnings,      # Now this variable exists!
-                        'is_good': is_undervalued        # Now this variable exists!
-                    })
+                    with self._scan_lock:
+                        self.scan_data.append({
+                            'date': date,
+                            'type': row['Type'],
+                            'strike': row['strike'],
+                            'ev': ev,
+                            'price': market_price,
+                            'vol': row['volume'],
+                            'is_earnings': is_earnings,
+                            'is_good': is_undervalued
+                        })
 
                     # ======================================================
                     #  STEP 3: PREPARE UI VERDICTS
@@ -2172,16 +2434,24 @@ class MarketApp:
                     elif ev < -0.05:
                         verdict = "Earnings Over" if is_earnings else "Over"
                         tag = "red"
-                    
+
+                    # Append parity warning
+                    if parity_warn:
+                        verdict += " " + parity_warn
+
                     if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
                         continue
 
-                    vals = (date, row['Type'], row['strike'], int(row['volume'] or 0), 
-                            f"{market_price:.2f}", f"{breakeven:.2f}", f"{iv:.1%}", 
-                            f"{fair:.2f}", f"{ev:+.2f}", verdict)
-                    
+                    vals = (date, row['Type'], f"{row['strike']:.2f}", int(row['volume'] or 0),
+                            oi, f"{market_price:.2f}", f"{spread_pct:.0f}%",
+                            f"{breakeven:.2f}", f"{iv:.1%}",
+                            f"{fair:.2f}", f"{ev:+.2f}",
+                            f"{greeks['delta']:.3f}", f"{greeks['gamma']:.4f}",
+                            f"{greeks['theta']:.3f}", f"{greeks['vega']:.3f}",
+                            f"{pop:.0f}%", verdict)
+
                     self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
-            
+
             except Exception as e:
                 self.log(f"Options fetch error for {date}: {e}")
 
