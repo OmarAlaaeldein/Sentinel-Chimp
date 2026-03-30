@@ -264,7 +264,10 @@ class VegaChimpCore:
         sigma = max(sigma, 0.01)
 
         if option_type == 'put':
-            return VegaChimpCore.bjerksund_stensland(K, S, T, q, r, sigma, 'call')
+            put_via_transform = VegaChimpCore.bjerksund_stensland(K, S, T, q, r, sigma, 'call')
+            # American put should never price below the corresponding European put.
+            put_euro_floor = VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'put')
+            return max(put_via_transform, put_euro_floor)
 
         b = r - q
         if b >= r:

@@ -11,14 +11,14 @@
 ### 1. Advanced Options Valuation
 Unlike standard calculators that use Black-Scholes, Sentinel uses the **Bjerksund-Stensland (2002)** model to price American options.
 * **Log-Space Algebra:** Prevents mathematical overflow/underflow during extreme volatility events.
-* **Dynamic Risk-Free Rate:** Automatically adjusts the risk-free rate based on treasury yields (^IRX) and stock-specific growth drift.
+* **Dynamic Risk-Free Rate:** Automatically uses term-aware treasury inputs with interpolation between short-end (^IRX) and long-end (^TNX) rates.
 * **Edge Detection:** Scans option chains to find contracts where the Market Price diverges significantly from the Theoretical Value (EV).
 * **3D Landscape Visualization:** Interactive 3D plotting of "Strike vs. Expiry vs. Expected Value," allowing you to visually spot "islands of value" across the entire option chain.
 
 ### 2. Institutional Volatility Forecasting
 Sentinel looks beyond simple Historical Volatility (HV).
-* **GARCH(1,1) Model:** Implements a Generalized Autoregressive Conditional Heteroskedasticity model to forecast *future* volatility rather than just looking at the past.
-* **Smart Blending:** Option pricing inputs are a weighted blend of Market Implied Volatility and the GARCH forecast to find a realistic "fair value".
+* **EWMA Forecasting:** Computes an EWMA volatility estimate (RiskMetrics-style decay) for forward-looking volatility context.
+* **Smart Blending:** Option pricing inputs use market implied volatility blended with 30-day historical volatility (time-weighted by maturity) to estimate fair value.
 
 ### 3. Smart Technical Dashboard
 A threaded, non-blocking GUI featuring a professional Dark Mode interface optimized for low eye strain:
@@ -43,7 +43,7 @@ To ensure this tool works on standard trading laptops without requiring NVIDIA G
 | :--- | :---: | :---: |
 | **Charting & Technicals** | ✅ Included | ✅ Included |
 | **Bjerksund-Stensland Math** | ✅ Included | ✅ Included |
-| **GARCH Volatility** | ✅ Included | ✅ Included |
+| **EWMA/HV Volatility Logic** | ✅ Included | ✅ Included |
 | **Options Scanner** | ✅ Included | ✅ Included |
 | **3D Visualizer** | ✅ Included | ✅ Included |
 | **AI Sentiment (FinBERT)** | ✅ **Active** | ❌ **Disabled** |
@@ -70,7 +70,7 @@ To use the AI Sentiment engine, you must run from the source:
     *(Ensure `torch`, `transformers`, `yfinance`, `pandas`, `numpy`, `matplotlib`, `plotly` are installed)*
 3.  **Run**
     ```bash
-    python Sentinel.py
+    python sentinel.py
     ```
 
 ### Option B: Using the Release Package
@@ -105,4 +105,4 @@ This project was built with inspiration from the open-source community. Special 
 ---
 
 ## ⚖️ Disclaimer
-*This software is for educational and research purposes only. It is not financial advice. The Bjerksund-Stensland model and GARCH forecasts are theoretical approximations and do not guarantee future market behavior. Always trade at your own risk.*
+*This software is for educational and research purposes only. It is not financial advice. The Bjerksund-Stensland model and volatility estimates (EWMA/HV/IV-based) are theoretical approximations and do not guarantee future market behavior. Always trade at your own risk.*

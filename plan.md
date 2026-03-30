@@ -1,7 +1,29 @@
-# PyStock-Sentinel: Technical Indicators & Option Pricing Audit Plan
+# PyStock-Sentinel: Technical Indicators & Option Pricing Audit Plan (Historical Snapshot)
 
-A line-by-line audit of `sentinel.py` identifying every bug, missing feature, and mathematical
-flaw in the technical indicators and option pricing engine.
+This document started as a gap-analysis checklist. It now serves as a historical record of prior
+issues and proposed fixes.
+
+## Current Status (March 2026)
+
+The codebase has already implemented many items that are listed below as "missing" in the older
+sections of this file.
+
+Implemented in current `sentinel.py`:
+- Black-Scholes Greeks (`bs_greeks`) are implemented and shown in the options scanner.
+- Implied volatility solver (`implied_vol`) is implemented.
+- Bjerksund-Stensland 2002 two-boundary implementation is present.
+- VWAP daily reset is implemented in `calculate_technicals()`.
+- StochRSI %K/%D smoothing, MACD histogram, Bollinger %B/width, and ADX directional context are implemented.
+- Williams %R, CCI, and Fibonacci levels are implemented.
+- Time-to-expiry uses trading days (`np.busday_count`) rather than calendar-day/365.
+- Term-aware risk-free rate interpolation (^IRX and ^TNX) is implemented.
+- Scanner includes put-call parity flagging, POP column, open interest, spread%, and thread locks.
+- Tests are present in `tests/test_option_pricing.py` and `tests/test_technicals.py`.
+
+Still open or partial:
+- The app does not implement a fitted GARCH model; it uses EWMA plus IV/HV blend logic.
+- Volatility smile fitting is not implemented.
+- FinBERT label-order safety check is a warning-style validation, not a hard assertion.
 
 ---
 
@@ -355,9 +377,12 @@ Draw as horizontal dashed lines on chart.
 ## PART E: ROBUSTNESS & TESTING
 
 ### E1. Restore and Expand Test Suite
-**Severity:** Critical
+**Severity:** Completed in current repo (historical item)
 
-The test directory is empty (tests removed in last commit). Need tests for:
+The test suite is now present and expanded in `tests/test_option_pricing.py` and
+`tests/test_technicals.py`. Additional cases can still be added as needed.
+
+Suggested further expansions:
 
 **Technical Indicator Tests (known-value checks):**
 ```
@@ -420,41 +445,39 @@ of midpoint price.
 
 ## PART F: EXECUTION PRIORITY
 
-| Priority | Item | Impact | Effort |
-|----------|------|--------|--------|
-| 1 | A1: Fix dividend yield bug | Critical pricing fix | 10 min |
-| 2 | A3: Remove or apply dead drift code | Code hygiene | 5 min |
-| 3 | A4: Guard div/100 None crash | Crash prevention | 5 min |
-| 4 | C3: Add Greeks (Delta, Gamma, Theta, Vega) | Core feature gap | 2-3 hrs |
-| 5 | C8: Fix T calculation (trading days) | Pricing accuracy | 20 min |
-| 6 | E1: Restore test suite | Quality gate | 3-4 hrs |
-| 7 | C1: Upgrade to actual BS2002 | Pricing accuracy | 2-3 hrs |
-| 8 | B1: Fix VWAP daily reset | Indicator correctness | 1 hr |
-| 9 | C2: Rename GARCH to EWMA or fit properly | Honesty/accuracy | 30 min / 2 hrs |
-| 10 | B2: Add StochRSI smoothing | Signal quality | 15 min |
-| 11 | B3: Add MACD Histogram | Easy win | 10 min |
-| 12 | B5: ADX directional display (+DI/-DI) | Easy win | 15 min |
-| 13 | C4: Add IV solver | Advanced pricing | 2 hrs |
-| 14 | C7: Term-matched risk-free rate | Pricing accuracy | 1 hr |
-| 15 | C5: Time-weighted vol blend | Pricing accuracy | 30 min |
-| 16 | C9: Put-call parity check | Data validation | 1 hr |
-| 17 | C10: Add POP column | Trader utility | 30 min |
-| 18 | A2: Validate FinBERT label order | Safety check | 10 min |
-| 19 | E3: Add OI and spread columns | Trader utility | 1 hr |
-| 20 | E2: Add threading locks | Robustness | 30 min |
-| 21 | B4: Bollinger %B and Bandwidth | Signal enhancement | 15 min |
-| 22 | D1-D4: Additional indicators | Feature expansion | 2-3 hrs |
-| 23 | C6: Volatility smile fitting | Advanced pricing | 3-4 hrs |
+| Priority | Item | Status (March 2026) | Notes |
+|----------|------|---------------------|-------|
+| 1 | A1: Fix dividend yield bug | ✅ Done | Smart dividend handling implemented. |
+| 2 | A3: Remove/apply dead drift code | ✅ Done/N.A. | Growth-drift path no longer active in current scanner flow. |
+| 3 | A4: Guard div/100 None crash | ✅ Done | None-safe dividend path implemented. |
+| 4 | C3: Add Greeks | ✅ Done | `bs_greeks` + scanner columns populated. |
+| 5 | C8: Fix T calculation | ✅ Done | Uses trading days / 252 via `np.busday_count`. |
+| 6 | E1: Restore test suite | ✅ Done | Tests present for pricing and technicals. |
+| 7 | C1: Upgrade to BS2002 | ✅ Done | Two-boundary method implemented. |
+| 8 | B1: Fix VWAP daily reset | ✅ Done | Daily group reset logic implemented. |
+| 9 | C2: Rename GARCH to EWMA or fit GARCH | ⚠️ Partial | Engine uses EWMA, not fitted GARCH. Keep docs/code wording aligned. |
+| 10 | B2: Add StochRSI smoothing | ✅ Done | %K/%D smoothing implemented. |
+| 11 | B3: Add MACD Histogram | ✅ Done | `MACD_Hist` implemented. |
+| 12 | B5: ADX direction (+DI/-DI) | ✅ Done | Directional display present. |
+| 13 | C4: Add IV solver | ✅ Done | Newton-Raphson solver implemented. |
+| 14 | C7: Term-matched risk-free rate | ✅ Done | ^IRX/^TNX interpolation present. |
+| 15 | C5: Time-weighted vol blend | ✅ Done | IV/HV maturity-weighted blend implemented. |
+| 16 | C9: Put-call parity check | ✅ Done | Residual warning logic present. |
+| 17 | C10: Add POP column | ✅ Done | POP column implemented in scanner. |
+| 18 | A2: FinBERT label-order validation | ⚠️ Partial | Warning validation exists; hard assert still optional. |
+| 19 | E3: Add OI and spread analysis | ✅ Done | OI and spread% columns plus filtering. |
+| 20 | E2: Add threading locks | ✅ Done | Locking added for shared structures. |
+| 21 | B4: Bollinger %B and bandwidth | ✅ Done | Implemented and displayed. |
+| 22 | D1-D4: Additional indicators | ⚠️ Partial | D1, D2, D4 done; D3 (Ichimoku) still optional backlog. |
+| 23 | C6: Volatility smile fitting | ⏳ Open | Not implemented yet. |
 
 ---
 
 ## Summary
 
-- **3 bugs** that actively cause incorrect results (A1 dividend is the worst)
-- **5 technical indicator flaws** in existing code (VWAP reset is the worst)
-- **10 option pricing gaps**, from missing Greeks to incorrect model version
-- **4 missing indicators** commonly expected in a technical analysis tool
-- **3 robustness items** including the empty test suite
+Most high-impact items in this document are now completed.
 
-Total estimated effort: ~25-30 hours for everything, or ~5-6 hours for just priorities 1-12
-(the highest-impact items).
+Current high-priority remaining work:
+- Align all user-facing wording away from "GARCH" unless fitted GARCH is actually implemented.
+- Add volatility smile/skew fitting if improved strike-level pricing is required.
+- Optionally harden FinBERT label-order validation from warning to strict assertion.
