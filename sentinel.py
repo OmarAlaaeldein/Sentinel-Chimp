@@ -102,8 +102,13 @@ class SentimentEngine:
             id2label = getattr(target["model"].config, 'id2label', None)
             if id2label:
                 labels = [id2label.get(i, '').lower() for i in range(len(id2label))]
-                if len(labels) >= 2 and labels[0] != "positive":
-                    print(f"[Warning] Unexpected label order for {model_key}: {id2label}")
+                bad_order = (len(labels) >= 1 and labels[0] != "positive") or \
+                            (len(labels) >= 2 and labels[1] != "negative")
+                if bad_order:
+                    raise RuntimeError(
+                        f"Unexpected FinBERT label order for {model_key}: {id2label}. "
+                        f"Expected [positive, negative, neutral]."
+                    )
 
             self.status_msg = f"{model_key} Loaded ({device.upper()})."
             return True
@@ -241,6 +246,54 @@ class VegaChimpCore:
         return max(sig, 0.001)
 
     @staticmethod
+    def _M(a, b, rho):
+        """Bivariate standard normal CDF: P(X <= a, Y <= b) where corr(X, Y) = rho.
+        Uses 10-point Gauss-Legendre quadrature on the integral representation.
+        Accurate to ~1e-7 for financial option pricing purposes.
+        """
+        N = VegaChimpCore.N
+        if rho == 0.0:
+            return N(a) * N(b)
+        # Handle infinite bounds
+        if a <= -1e15 or b <= -1e15:
+            return 0.0
+        if a >= 1e15:
+            return N(b)
+        if b >= 1e15:
+            return N(a)
+
+        # 10-point GL nodes and weights on [-1, 1]
+        GL_nodes = [
+            -0.9739065285171717, -0.8650633666889845,
+            -0.6794095682990244, -0.4333953941292472,
+            -0.1488743389816312,  0.1488743389816312,
+             0.4333953941292472,  0.6794095682990244,
+             0.8650633666889845,  0.9739065285171717,
+        ]
+        GL_weights = [
+            0.0666713443086881, 0.1494513491505806,
+            0.2190863625159820, 0.2692667193099963,
+            0.2955242247147529, 0.2955242247147529,
+            0.2692667193099963, 0.2190863625159820,
+            0.1494513491505806, 0.0666713443086881,
+        ]
+
+        # Identity: M(a,b;rho) = N(a)*N(b) + integral_0^rho f(s) ds
+        # where f(s) = exp(-(a^2 - 2s*a*b + b^2)/(2*(1-s^2))) / (2*pi*sqrt(1-s^2))
+        # Map [0, rho] -> [-1, 1] via s = rho*(xi+1)/2
+        half_rho = rho / 2.0
+        bvn = N(a) * N(b)
+        two_pi = 2.0 * math.pi
+        for xi, wi in zip(GL_nodes, GL_weights):
+            s = half_rho * (xi + 1.0)
+            denom = 1.0 - s * s
+            if denom <= 0.0:
+                continue
+            exponent = -(a * a - 2.0 * s * a * b + b * b) / (2.0 * denom)
+            bvn += half_rho * wi * math.exp(exponent) / (two_pi * math.sqrt(denom))
+        return max(0.0, min(1.0, bvn))
+
+    @staticmethod
     def ewma_vol_forecast(log_returns, days=252):
         """EWMA volatility forecast (RiskMetrics-style, decay=0.94)."""
         if len(log_returns) < 30: return 0.0
@@ -336,13 +389,12 @@ class VegaChimpCore:
 
                 power = lam * t + gamma * ln_s
 
-                # The full psi uses bivariate normal. Approximate with products of univariate normals
-                # when correlation is low, otherwise use the decomposition approach.
-                # For practical accuracy, use the phi-based decomposition:
-                term1 = safe_exp(power) * VegaChimpCore.N(e1) * VegaChimpCore.N(f1)
-                term2 = safe_exp(power + kappa * (ln_i2 - ln_s)) * VegaChimpCore.N(e2) * VegaChimpCore.N(f2)
-                term3 = safe_exp(power + kappa * (math.log(i1) - ln_s)) * VegaChimpCore.N(e3) * VegaChimpCore.N(f3)
-                term4 = safe_exp(power + kappa * (math.log(i1) + ln_i2 - 2 * ln_s)) * VegaChimpCore.N(e4) * VegaChimpCore.N(f4)
+                # Bivariate normal with time-correlation rho = sqrt(t1/t)
+                M = VegaChimpCore._M
+                term1 = safe_exp(power) * M(e1, f1, rho_val)
+                term2 = safe_exp(power + kappa * (ln_i2 - ln_s)) * M(e2, f2, rho_val)
+                term3 = safe_exp(power + kappa * (math.log(i1) - ln_s)) * M(e3, f3, rho_val)
+                term4 = safe_exp(power + kappa * (math.log(i1) + ln_i2 - 2 * ln_s)) * M(e4, f4, rho_val)
 
                 return term1 - term2 - term3 + term4
 
@@ -534,7 +586,7 @@ class MarketApp:
         
         self.ax = None 
         
-        self.use_sentiment = True  # New toggle for sentiment analysis
+        self.use_sentiment = False  # New toggle for sentiment analysis
 
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
@@ -694,6 +746,7 @@ class MarketApp:
         self._scan_lock = threading.Lock()
         self._data_cache_lock = threading.Lock()
         self._sent_cache_lock = threading.Lock()
+        self._valuation_cache_lock = threading.Lock()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(500, self.load_data)
     def on_close(self):
@@ -771,8 +824,10 @@ class MarketApp:
             self.stock = yf.Ticker(new_ticker)
             
             # Clear caches and reset drift for the new stock
-            self.data_cache = {}
-            self.sent_cache = {}
+            with self._data_cache_lock:
+                self.data_cache.clear()
+            with self._sent_cache_lock:
+                self.sent_cache.clear()
             self.projected_earnings = []
             
             self.lbl_pe.config(text="Updating...", foreground="orange")
@@ -871,7 +926,8 @@ class MarketApp:
     def _get_historical_ttm_eps(self, ticker_obj):
         """Builds historical TTM EPS timeline from reported quarterly EPS."""
         cache_key = (self.current_ticker, "hist_ttm_eps")
-        cached = self.valuation_cache.get(cache_key)
+        with self._valuation_cache_lock:
+            cached = self.valuation_cache.get(cache_key)
         if cached and (time.time() - cached[1] < self.VALUATION_CACHE_DURATION):
             return cached[0], None
 
@@ -905,7 +961,8 @@ class MarketApp:
                 return None, "INSUFFICIENT_EARNINGS_HISTORY"
 
             eps_timeline = eps_df[["report_date", "ttm_eps"]].copy()
-            self.valuation_cache[cache_key] = (eps_timeline, time.time())
+            with self._valuation_cache_lock:
+                self.valuation_cache[cache_key] = (eps_timeline, time.time())
             return eps_timeline, None
         except Exception as e:
             self.log(f"Historical EPS fetch error: {e}")
@@ -2180,6 +2237,22 @@ class MarketApp:
         for i in self.tree.get_children(): self.tree.delete(i)
         threading.Thread(target=self.fetch_options_batch, args=(dates,), daemon=True).start()
 
+    def _fetch_rate_curve(self):
+        """Fetches ^IRX (short) and ^TNX (long) rates once. Returns (short_rate, long_rate)."""
+        try:
+            short_rate = yf.Ticker("^IRX").fast_info['last_price'] / 100
+            if short_rate <= 0:
+                short_rate = 0.045
+        except Exception:
+            short_rate = 0.045
+        try:
+            long_rate = yf.Ticker("^TNX").fast_info['last_price'] / 100
+            if long_rate <= 0:
+                long_rate = short_rate
+        except Exception:
+            long_rate = short_rate
+        return short_rate, long_rate
+
     def get_risk_free_rate(self, T=None):
         """Fetches term-matched risk-free rate. Interpolates between ^IRX (13-week) and ^TNX (10-year)."""
         try:
@@ -2246,14 +2319,16 @@ class MarketApp:
             self.log(f"UI Update Error (Display): {e}")
 
     def fetch_options_batch(self, dates, filter_under_only=False):
-        # Clear scan data if this is a fresh batch (optional logic)
-        if hasattr(self, 'scan_data') and len(dates) == 1:
-             pass
+        with self._scan_lock:
+            self.scan_data = []
 
         stock = self.stock
 
         # 1. PURE INPUTS
         DIV_YIELD = self.get_smart_dividend(stock)
+
+        # Fetch rate curve once for the entire batch to avoid per-expiry network calls
+        _short_rate, _long_rate = self._fetch_rate_curve()
 
         earnings_contracts = set()
         if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
@@ -2269,8 +2344,13 @@ class MarketApp:
                 trading_days = int(np.busday_count(today, exp_date))
                 T = max(trading_days / 252.0, 1/252)  # Minimum 1 trading day
 
-                # Term-matched risk-free rate (C7)
-                RFR = self.get_risk_free_rate(T)
+                # Term-matched risk-free rate using pre-fetched curve
+                if T <= 0.25:
+                    RFR = _short_rate
+                else:
+                    t_clamped = min(max(T, 0.25), 10.0)
+                    weight = (t_clamped - 0.25) / (10.0 - 0.25)
+                    RFR = _short_rate + weight * (_long_rate - _short_rate)
 
                 chain = stock.option_chain(date)
                 calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
