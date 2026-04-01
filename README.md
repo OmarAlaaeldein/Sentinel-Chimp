@@ -2,7 +2,7 @@
 
 **Sentinel Chimp** is a sophisticated, Python-based market analysis dashboard designed for retail traders who demand institutional-grade mathematics. It bridges the gap between basic charting tools and professional quantitative platforms, featuring advanced options pricing models, volatility forecasting, and real-time technical analysis.
 
-> **⚠️ Release Note:** The standalone executable (Release Package) operates in **"Lite Mode"** for maximum compatibility. It **does not include** the AI Sentiment Analysis engine to keep file sizes manageable and ensure it runs on any Windows machine without heavy dependencies. To use the AI features, run the application from the source.
+> **⚠️ Release Note:** The standalone release package operates in **"Lite Mode"** for maximum compatibility. It **does not include** the AI Sentiment Analysis engine to keep file sizes manageable and ensure it runs smoothly on standard systems. To use AI features, run the application from source.
 
 ---
 
@@ -37,9 +37,11 @@ A threaded, non-blocking GUI featuring a professional Dark Mode interface optimi
 
 ## 📦 Compatibility & Release Info
 
+The app can be used as a prebuilt executable on **Windows** and as a packaged app on **macOS**.
+
 To ensure this tool works on standard trading laptops without requiring NVIDIA GPUs or massive libraries, the **pre-compiled Release Package** differs from the source code:
 
-| Feature | Source Code (`.py`) | Release Package (`.exe`) |
+| Feature | Source Code (`.py`) | Release Package (`.exe` / `.app`) |
 | :--- | :---: | :---: |
 | **Charting & Technicals** | ✅ Included | ✅ Included |
 | **Bjerksund-Stensland Math** | ✅ Included | ✅ Included |
@@ -73,11 +75,22 @@ To use the AI Sentiment engine, you must run from the source:
     python sentinel.py
     ```
 
-### Option B: Using the Release Package
+### Option B: Using the Release Package (Windows)
 1.  Download the latest `.zip` from the **Releases** tab.
 2.  Extract the folder.
 3.  Run `Sentinel.exe`.
 4.  *No Python installation required.*
+
+### Option C: Using the macOS Executable/App Bundle
+1.  Build the macOS app bundle:
+    ```bash
+    ./build_macos.sh --auto --onedir --install-deps
+    ```
+2.  Launch the generated app:
+    ```bash
+    open "dist/Sentinel.app"
+    ```
+3.  You can also run `./build_macos.command` to launch the build script interactively.
 
 ---
 
