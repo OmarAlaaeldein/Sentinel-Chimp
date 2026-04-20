@@ -6,6 +6,7 @@ cd "$ROOT"
 
 APP_SCRIPT="$ROOT/sentinel.py"
 PYTHON_BIN="${PYTHON_BIN:-}"
+PROJECT_VENV_PY="$ROOT/.venv/bin/python"
 MODE_REQUEST="auto"
 MODE=""
 BUNDLE_MODE="onedir"
@@ -103,7 +104,9 @@ else
 fi
 
 if [[ -z "$PYTHON_BIN" ]]; then
-  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+  if [[ -x "$PROJECT_VENV_PY" ]]; then
+    PYTHON_BIN="$PROJECT_VENV_PY"
+  elif [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
     PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
   elif [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
     PYTHON_BIN="${CONDA_PREFIX}/bin/python"
@@ -125,6 +128,8 @@ fi
 echo "[INFO] Using Python: $PYTHON_BIN"
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   echo "[INFO] Active venv: ${VIRTUAL_ENV}"
+elif [[ "$PYTHON_BIN" == "$PROJECT_VENV_PY" ]]; then
+  echo "[INFO] Using project venv by default: $ROOT/.venv"
 elif [[ -n "${CONDA_PREFIX:-}" ]]; then
   echo "[INFO] Active conda env: ${CONDA_PREFIX}"
 else
