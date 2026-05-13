@@ -60,7 +60,9 @@ class SentimentEngine:
                 "dir": "my_finbert_model",
                 "loaded": False,
                 "tokenizer": None,
-                "model": None
+                "model": None,
+                "pos_idx": 0,
+                "neg_idx": 1,
             }
         }
         self.status_msg = "Initializing..."
@@ -95,20 +97,22 @@ class SentimentEngine:
                 target["tokenizer"].save_pretrained(local_path)
                 target["model"].save_pretrained(local_path)
             
-            target["loaded"] = True
-            self.current_model_name = model_key
-
-            # Validate label order (FinBERT: 0=positive, 1=negative, 2=neutral)
+            # Build label index map from id2label (don't assume hardcoded order).
             id2label = getattr(target["model"].config, 'id2label', None)
             if id2label:
-                labels = [id2label.get(i, '').lower() for i in range(len(id2label))]
-                bad_order = (len(labels) >= 1 and labels[0] != "positive") or \
-                            (len(labels) >= 2 and labels[1] != "negative")
-                if bad_order:
+                label2id = {str(v).lower(): int(k) for k, v in id2label.items()}
+                if 'positive' not in label2id or 'negative' not in label2id:
                     raise RuntimeError(
-                        f"Unexpected FinBERT label order for {model_key}: {id2label}. "
-                        f"Expected [positive, negative, neutral]."
+                        f"Unexpected FinBERT labels for {model_key}: {id2label}. "
+                        f"Expected labels containing 'positive' and 'negative'."
                     )
+                target["pos_idx"] = label2id['positive']
+                target["neg_idx"] = label2id['negative']
+
+            # Only mark loaded AFTER successful validation so a failure doesn't
+            # leave the model silently usable with a wrong label mapping.
+            target["loaded"] = True
+            self.current_model_name = model_key
 
             self.status_msg = f"{model_key} Loaded ({device.upper()})."
             return True
@@ -139,9 +143,11 @@ class SentimentEngine:
                 outputs = target["model"](**inputs)
             
             probs = F.softmax(outputs.logits, dim=-1)
-            
-            pos = probs[:, 0]
-            neg = probs[:, 1]
+
+            pos_idx = target.get("pos_idx", 0)
+            neg_idx = target.get("neg_idx", 1)
+            pos = probs[:, pos_idx]
+            neg = probs[:, neg_idx]
             # Convert back to CPU for list conversion
             scores_clean = (0.5 + (pos * 0.5) - (neg * 0.5)).cpu().tolist()
                 
@@ -295,14 +301,15 @@ class VegaChimpCore:
 
     @staticmethod
     def ewma_vol_forecast(log_returns, days=252):
-        """EWMA volatility forecast (RiskMetrics-style, decay=0.94)."""
+        """RiskMetrics EWMA volatility forecast: sigma^2_t = lambda*sigma^2_{t-1} + (1-lambda)*r_{t-1}^2
+        with lambda=0.94. Pure EWMA (omega=0, alpha+beta=1)."""
         if len(log_returns) < 30: return 0.0
         try:
-            alpha, beta_p, omega = 0.05, 0.94, 1e-6
-            variance = np.var(log_returns)
+            lam = 0.94
+            variance = float(np.var(log_returns))
             for r_val in log_returns:
-                variance = omega + alpha * (r_val**2) + beta_p * variance
-            return np.sqrt(variance * days)
+                variance = lam * variance + (1.0 - lam) * (r_val ** 2)
+            return float(np.sqrt(variance * days))
         except Exception:
             return 0.0
 
@@ -400,7 +407,7 @@ class VegaChimpCore:
 
             # --- 2002 Two-Boundary Method ---
             beta_val = (0.5 - b / sigma**2) + math.sqrt((b / sigma**2 - 0.5)**2 + 2 * r / sigma**2)
-            if abs(beta_val - 1) < 1e-5: return S - K
+            if abs(beta_val - 1) < 1e-5: return max(S - K, 0.0)
 
             inf_boundary = K * beta_val / (beta_val - 1)
             t1 = 0.5 * T  # Split point
@@ -414,7 +421,7 @@ class VegaChimpCore:
             I1 = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h1))
 
             if S >= I2:
-                return S - K
+                return max(S - K, 0.0)
 
             # Alpha coefficients
             alpha2 = (I2 - K) * safe_exp(-beta_val * math.log(I2))
@@ -483,7 +490,9 @@ def calculate_technicals(df):
     # 5. StochRSI with %K/%D Smoothing (B2)
     min_rsi = df['RSI'].rolling(window=14).min()
     max_rsi = df['RSI'].rolling(window=14).max()
-    raw_stoch = (df['RSI'] - min_rsi) / (max_rsi - min_rsi)
+    # Guard divide-by-zero when RSI is flat for the full window
+    rsi_range = (max_rsi - min_rsi).replace(0, np.nan)
+    raw_stoch = (df['RSI'] - min_rsi) / rsi_range
     df['StochRSI_K'] = raw_stoch.rolling(3).mean()
     df['StochRSI_D'] = df['StochRSI_K'].rolling(3).mean()
     df['StochRSI'] = df['StochRSI_K']
@@ -508,7 +517,9 @@ def calculate_technicals(df):
 
     df['+DI'] = 100 * (df['+DM'].ewm(alpha=1/14, adjust=False).mean() / df['ATR'])
     df['-DI'] = 100 * (df['-DM'].ewm(alpha=1/14, adjust=False).mean() / df['ATR'])
-    df['DX'] = 100 * np.abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'])
+    # Guard divide-by-zero in flat markets where +DI + -DI == 0
+    di_sum = (df['+DI'] + df['-DI']).replace(0, np.nan)
+    df['DX'] = 100 * np.abs(df['+DI'] - df['-DI']) / di_sum
     df['ADX'] = df['DX'].ewm(alpha=1/14, adjust=False).mean()
 
     # 9. Williams %R (D1)
@@ -521,6 +532,11 @@ def calculate_technicals(df):
     tp_sma = tp.rolling(20).mean()
     tp_mad = tp.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
     df['CCI'] = (tp - tp_sma) / (0.015 * tp_mad)
+
+    # Drop helper/intermediate columns so the cached DataFrame stays clean.
+    # (Keep +DI/-DI/ATR because the UI layer reads them.)
+    df.drop(columns=['UpMove', 'DownMove', '+DM', '-DM', 'DX', 'TP'],
+            inplace=True, errors='ignore')
 
     return df
 
@@ -747,6 +763,7 @@ class MarketApp:
         self._data_cache_lock = threading.Lock()
         self._sent_cache_lock = threading.Lock()
         self._valuation_cache_lock = threading.Lock()
+        self._earnings_lock = threading.Lock()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(500, self.load_data)
     def on_close(self):
@@ -868,8 +885,12 @@ class MarketApp:
             except Exception as e:
                 last_exc = e
                 self.log(f"History fetch error try {attempt+1}/{retries+1}: {e}")
-            time.sleep(delay)
-        raise last_exc if last_exc else RuntimeError("Unknown history fetch failure")
+            # Only sleep between attempts, not after the final one
+            if attempt < retries:
+                time.sleep(delay)
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Unknown history fetch failure")
 
     def get_cached_df(self, ticker, period, interval):
         key = (ticker, period, interval)
@@ -1069,13 +1090,17 @@ class MarketApp:
                 if resp.status_code == 200:
                     root = ET.fromstring(resp.content)
                     items = root.findall('.//item')
+
+                    def _elem_text(elem):
+                        return elem.text if (elem is not None and elem.text) else ""
+
                     for item in items:
-                        title = item.find('title').text
-                        link = item.find('link').text
-                        pub_date_str = item.find('pubDate').text
-                        
+                        title = _elem_text(item.find('title'))
+                        link = _elem_text(item.find('link'))
+                        pub_date_str = _elem_text(item.find('pubDate'))
+
                         # --- HTML CLEANUP (The Fix) ---
-                        raw_desc = item.find('description').text or ""
+                        raw_desc = _elem_text(item.find('description'))
                         
                         # 1. Remove all HTML tags (<a href...>, </a>, <font...>)
                         clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
@@ -1330,23 +1355,26 @@ class MarketApp:
             # --- Earnings Cycle Detection (Optimized) ---
             # We only need to fetch the calendar once per ticker change.
             # If self.projected_earnings is already populated, we skip this.
-            if not self.projected_earnings:
-                try:
-                    cal = stock.calendar
-                    anchor_date = None
-                    if isinstance(cal, dict) and 'Earnings Date' in cal:
-                        dates = cal['Earnings Date']
-                        if dates: anchor_date = pd.to_datetime(dates[0]).date()
-                    elif cal is not None and not cal.empty:
-                        anchor_date = pd.to_datetime(cal.iloc[0].values[0]).date()
+            # Lock so concurrent chart-period clicks don't double-fetch.
+            with self._earnings_lock:
+                if not self.projected_earnings:
+                    try:
+                        cal = stock.calendar
+                        anchor_date = None
+                        if isinstance(cal, dict) and 'Earnings Date' in cal:
+                            dates = cal['Earnings Date']
+                            if dates: anchor_date = pd.to_datetime(dates[0]).date()
+                        elif cal is not None and not cal.empty:
+                            anchor_date = pd.to_datetime(cal.iloc[0].values[0]).date()
 
-                    if anchor_date:
-                        self.projected_earnings = [anchor_date]
-                        for i in range(1, 4):
-                            self.projected_earnings.append(anchor_date + timedelta(days=91*i))
-                        self.log(f"Earnings Cycle Detected: {self.projected_earnings}")
-                except Exception as e:
-                    self.log(f"Earnings fetch skipped: {e}")
+                        if anchor_date:
+                            projected = [anchor_date]
+                            for i in range(1, 4):
+                                projected.append(anchor_date + timedelta(days=91*i))
+                            self.projected_earnings = projected
+                            self.log(f"Earnings Cycle Detected: {self.projected_earnings}")
+                    except Exception as e:
+                        self.log(f"Earnings fetch skipped: {e}")
 
             # --- Main Price Data Fetching ---
             if df is None:
@@ -1360,13 +1388,16 @@ class MarketApp:
                 for span in [5, 21, 63, 200]:
                     df[f'EMA_{span}'] = df['Close'].ewm(span=span, adjust=False).mean()
                 
-                # --- ADD THIS BLOCK FOR CHART VWAP ---
+                # --- CHART VWAP with Daily Reset (matches calculate_technicals) ---
                 try:
-                    df['TP'] = (df['High'] + df['Low'] + df['Close']) / 3
-                    df['VWAP'] = (df['TP'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+                    tp = (df['High'] + df['Low'] + df['Close']) / 3
+                    trade_date = df.index.normalize()
+                    tp_vol = tp * df['Volume']
+                    df['VWAP'] = (tp_vol.groupby(trade_date).cumsum() /
+                                  df['Volume'].groupby(trade_date).cumsum())
                 except Exception as e:
-                    print(f"VWAP Calc Error: {e}")
-                # -------------------------------------
+                    self.log(f"VWAP Calc Error: {e}")
+                # -----------------------------------------------------------------
                 self.save_df_cache(ticker, period, interval, df)
                 status_msg = f"Live Data ({interval})"
             else:
@@ -1747,11 +1778,12 @@ class MarketApp:
     
     def visualize_3d(self, option_type):
         """Interactive 3D Plot with Uniform Color Types (Fixes Ragged Array Error)."""
-        if not hasattr(self, 'scan_data') or not self.scan_data:
-            messagebox.showinfo("3D Plot", "No data to plot. Please run a Scan first.")
-            return
-
-        base_data = [row for row in self.scan_data if row['type'] == option_type]
+        # Snapshot scan_data under the lock since a scan thread may be appending.
+        with self._scan_lock:
+            if not getattr(self, 'scan_data', None):
+                messagebox.showinfo("3D Plot", "No data to plot. Please run a Scan first.")
+                return
+            base_data = [dict(row) for row in self.scan_data if row['type'] == option_type]
         if not base_data:
             messagebox.showinfo("3D Plot", f"No {option_type} data found.")
             return
@@ -2035,6 +2067,24 @@ class MarketApp:
             threading.Thread(target=self.fetch_options_batch, args=(self.all_exps, True), daemon=True).start()
     
     
+    def _normalize_div_yield(self, div):
+        """Normalize a dividend yield to decimal form (e.g. 0.0294 for 2.94%).
+
+        yfinance versions vary: some return decimal (0.0294), others return
+        percent (2.94). Treat any value > 1 as percent and divide by 100.
+        """
+        if div is None:
+            return None
+        try:
+            d = float(div)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(d) or d < 0:
+            return None
+        if d > 1:
+            d = d / 100.0
+        return d
+
     def get_info(self):
         """Consolidated fundamental fetch called when ticker changes."""
         try:
@@ -2047,7 +2097,8 @@ class MarketApp:
             self.eps = self._to_finite_float(info.get('trailingEps'))
             self.peg_ratio = self._to_finite_float(info.get('trailingPegRatio'))
             self.earnings_growth = self._to_finite_float(info.get('earningsGrowth'))
-            self.dividend_yield = info.get('dividendYield', 0.0)
+            div_norm = self._normalize_div_yield(info.get('dividendYield'))
+            self.dividend_yield = div_norm if div_norm is not None else 0.0
             
             # 2. Compute derived valuation metrics
             self.calculate_valuation_multiplier(stock)
@@ -2060,48 +2111,41 @@ class MarketApp:
             self.log(f"Fundamental fetch error: {e}")
             self.root.after(0, self.update_pe_display)
 
-    def refresh_valuation(self):
-        """Called when the Median/Mean toggle is clicked."""
-        if not self.current_ticker: return
-        self.log(f"Switching Valuation Mode... (Median={self.use_median.get()})")
-        
-        # Re-trigger get_info to recalculate Z-score and update labels
-        threading.Thread(target=self.get_info, daemon=True).start()
-        
     def get_smart_dividend(self, stock_obj):
         """
-        Retrieves the dividend yield using a high-performance priority queue:
+        Retrieves the dividend yield (as a decimal) using a priority queue:
         1. fast_info (Fastest, lightest)
-        2. info (Standard, slower)
-        3. Manual calculation from history (Fallback)
+        2. info.dividendYield (Standard)
+        3. info.trailingAnnualDividendYield (Fallback)
+
+        All sources are normalized via _normalize_div_yield so percent/decimal
+        ambiguity across yfinance versions is handled uniformly. Always returns
+        a finite float (0.0 when nothing is available).
         """
         try:
-            # 1. High-Performance Priority: fast_info (Milliseconds)
-            # This is significantly faster as it avoids scraping the full JSON blob.
-            fast_div = stock_obj.fast_info.get('dividend_yield')
-            if fast_div is not None and isinstance(fast_div, (int, float)):
-                # fast_info usually returns decimal (e.g., 0.0294)
+            # 1. fast_info (milliseconds)
+            fast_div = self._normalize_div_yield(stock_obj.fast_info.get('dividend_yield'))
+            if fast_div is not None:
                 print(f"[DEBUG] Found Dividend (fast_info): {fast_div:.4%}")
                 return fast_div
 
-            # 2. Standard Ticker Info (Second Priority)
+            # 2. Full info blob
             info = stock_obj.info
-            div = info.get('dividendYield')
-            if div is not None and isinstance(div, (int, float)):
-                # dividendYield from yfinance is already decimal (e.g. 0.0294)
+            div = self._normalize_div_yield(info.get('dividendYield'))
+            if div is not None:
                 print(f"[DEBUG] Found Dividend (info/dividendYield): {div:.4%}")
                 return div
-            div = info.get('trailingAnnualDividendYield')
-            if div is not None and isinstance(div, (int, float)):
-                # trailingAnnualDividendYield may be percentage form
-                if div > 1:
-                    div = div / 100
+            div = self._normalize_div_yield(info.get('trailingAnnualDividendYield'))
+            if div is not None:
                 print(f"[DEBUG] Found Dividend (info/trailing): {div:.4%}")
                 return div
-            
+
         except Exception as e:
             print(f"[DEBUG] Div fetch error: {e}")
-            return 0.0
+
+        # Fallthrough: no dividend data available (or error). Return 0.0 so
+        # callers that do math.exp(-q*T) don't blow up on None.
+        return 0.0
 
     def open_options_window(self):
         if not self.current_ticker: return
@@ -2253,33 +2297,6 @@ class MarketApp:
             long_rate = short_rate
         return short_rate, long_rate
 
-    def get_risk_free_rate(self, T=None):
-        """Fetches term-matched risk-free rate. Interpolates between ^IRX (13-week) and ^TNX (10-year)."""
-        try:
-            irx = yf.Ticker("^IRX")
-            short_rate = irx.fast_info['last_price'] / 100  # 13-week T-Bill
-            if short_rate <= 0: short_rate = 0.045
-
-            if T is None or T <= 0.25:
-                return short_rate
-
-            # For longer maturities, fetch 10-year and interpolate
-            try:
-                tnx = yf.Ticker("^TNX")
-                long_rate = tnx.fast_info['last_price'] / 100  # 10-year Treasury
-                if long_rate <= 0: long_rate = short_rate
-            except Exception:
-                return short_rate
-
-            # Linear interpolation: short_rate at T=0, long_rate at T=10
-            # Clamp T between 0.25 and 10
-            t_clamped = min(max(T, 0.25), 10.0)
-            weight = (t_clamped - 0.25) / (10.0 - 0.25)
-            return short_rate + weight * (long_rate - short_rate)
-
-        except Exception:
-            return 0.045
-        
     def update_pe_display(self):
         """Updates only the P/E labels. Called when get_info finishes."""
         try:
