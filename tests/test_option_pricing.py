@@ -71,7 +71,8 @@ class TestBSPricing:
     def test_bs_zero_vol(self):
         """Zero vol: call = max(0, S*e^(-qT) - K*e^(-rT))."""
         call = VegaChimpCore.bs_price(105, 100, 0.05, 0.0, 0.0, 1.0, "call")
-        assert abs(call - 5.0) < 1e-6  # Intrinsic
+        expected = 105 - 100 * math.exp(-0.05)
+        assert abs(call - expected) < 1e-6
 
     def test_bs_atm_call_positive(self):
         """ATM call always has positive time value."""
@@ -221,10 +222,20 @@ class TestImpliedVol:
         recovered_sig = VegaChimpCore.implied_vol(price, S, K, r, q, T, "call")
         assert abs(recovered_sig - true_sig) < 0.005
 
-    def test_iv_zero_price(self):
-        """IV for zero-priced option returns 0."""
-        result = VegaChimpCore.implied_vol(0, 100, 100, 0.05, 0.0, 1.0, "call")
+    def test_iv_zero_price_at_lower_bound(self):
+        """A zero-priced option at its no-arbitrage lower bound has zero IV."""
+        result = VegaChimpCore.implied_vol(0, 50, 200, 0.05, 0.0, 1.0, "call")
         assert result == 0.0
+
+    def test_iv_rejects_price_below_no_arbitrage_bound(self):
+        """An impossible market price must not produce a plausible-looking IV."""
+        result = VegaChimpCore.implied_vol(0, 100, 100, 0.05, 0.0, 1.0, "call")
+        assert math.isnan(result)
+
+    def test_iv_rejects_price_at_upper_bound(self):
+        """No finite volatility exists when a call costs the discounted spot."""
+        result = VegaChimpCore.implied_vol(100, 100, 100, 0.05, 0.0, 1.0, "call")
+        assert math.isnan(result)
 
     def test_iv_positive_output(self):
         """IV solver always returns positive value."""
@@ -285,6 +296,25 @@ class TestAmericanPricing:
             price = VegaChimpCore.bjerksund_stensland(100, 100, 1.0, 0.05, 0.02, 0.25, kind)
             assert price > 0, f"American {kind} price should be positive, got {price}"
 
+    @pytest.mark.parametrize("params, kind, lattice_value, tolerance", [
+        ((100, 100, 1.0, 0.05, 0.02, 0.25), "call", 11.12, 0.05),
+        ((100, 100, 5.0, 0.04, 0.03, 0.40), "call", 32.27, 0.30),
+        ((100, 80, 2.0, 0.01, 0.12, 0.20), "put", 8.71, 0.05),
+    ])
+    def test_american_matches_high_resolution_lattice(
+            self, params, kind, lattice_value, tolerance):
+        """Bjerksund-Stensland stays close to CRR lattice benchmarks."""
+        price = VegaChimpCore.bjerksund_stensland(*params, kind)
+        assert abs(price - lattice_value) < tolerance
+
+    def test_american_prices_obey_put_call_parity_bounds(self):
+        """Legitimate early-exercise premia must not be treated as parity errors."""
+        S, K, r, q, sig, T = 100, 100, 0.05, 0.02, 0.25, 1.0
+        call = VegaChimpCore.bjerksund_stensland(S, K, T, r, q, sig, "call")
+        put = VegaChimpCore.bjerksund_stensland(S, K, T, r, q, sig, "put")
+        lower, upper = VegaChimpCore.american_put_call_parity_bounds(S, K, r, q, T)
+        assert lower <= call - put <= upper
+
 
 # ==================== EWMA Vol Forecast ====================
 
@@ -303,6 +333,15 @@ class TestEWMAVol:
         returns = np.random.normal(0, 0.01, 10)
         vol = VegaChimpCore.ewma_vol_forecast(returns)
         assert vol == 0.0
+
+    def test_ewma_ignores_non_finite_observations(self):
+        """A missing return must not poison an otherwise valid forecast."""
+        np.random.seed(42)
+        returns = np.random.normal(0, 0.01, 100)
+        returns[20] = np.nan
+        returns[40] = np.inf
+        vol = VegaChimpCore.ewma_vol_forecast(returns)
+        assert math.isfinite(vol) and vol > 0
 
     def test_ewma_reasonable_range(self):
         """EWMA on typical stock returns should give 10-60% annualized vol."""

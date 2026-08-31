@@ -15,11 +15,8 @@ import webbrowser
 import csv
 import re
 import html
-# --- ADD THESE IMPORTS ---
-from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import matplotlib.colors as mcolors # Essential for correct Green/Red coloring
+import matplotlib.colors as mcolors
 
 try:
     import plotly.graph_objects as go
@@ -27,20 +24,12 @@ try:
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
-# Put this at the very top of your imports
-try:
-    import pyi_splash
-except ImportError:
-    pass
-
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Charting Libraries ---
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.dates as mdates
-import matplotlib.style as mplstyle  # <--- ADD THIS
 # --- TRANSFORMERS SETUP ---
 try:
     import torch
@@ -181,8 +170,19 @@ class VegaChimpCore:
     @staticmethod
     def bs_price(S, K, r, q, sig, T, kind):
         """Standard Black-Scholes (European)."""
-        if sig <= 1e-4 or T <= 1e-4:
+        if kind not in {"call", "put"}:
+            raise ValueError("kind must be 'call' or 'put'")
+        if S <= 0 or K <= 0:
+            raise ValueError("S and K must be positive")
+        if T <= 1e-8:
             return max(0.0, S - K) if kind == "call" else max(0.0, K - S)
+        if sig <= 1e-8:
+            # With deterministic risk-neutral growth, discount the terminal payoff.
+            discounted_spot = S * math.exp(-q * T)
+            discounted_strike = K * math.exp(-r * T)
+            if kind == "call":
+                return max(0.0, discounted_spot - discounted_strike)
+            return max(0.0, discounted_strike - discounted_spot)
 
         d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * math.sqrt(T))
         d2 = d1 - sig * math.sqrt(T)
@@ -196,8 +196,6 @@ class VegaChimpCore:
     def bs_greeks(S, K, r, q, sig, T, kind):
         """Compute Black-Scholes Greeks: delta, gamma, theta, vega, rho."""
         if sig <= 1e-4 or T <= 1e-4:
-            intrinsic_call = max(0.0, S - K)
-            intrinsic_put = max(0.0, K - S)
             if kind == "call":
                 delta = 1.0 if S > K else 0.0
             else:
@@ -232,24 +230,54 @@ class VegaChimpCore:
 
     @staticmethod
     def implied_vol(market_price, S, K, r, q, T, kind, tol=1e-6, max_iter=100):
-        """Newton-Raphson implied volatility solver."""
-        if market_price <= 0 or T <= 1e-6:
+        """Solve European implied volatility with a bracketed bisection method.
+
+        Returns ``nan`` when the supplied price violates Black-Scholes
+        no-arbitrage bounds. Prices at the zero-volatility bound return 0.
+        """
+        if kind not in {"call", "put"}:
+            raise ValueError("kind must be 'call' or 'put'")
+        if S <= 0 or K <= 0:
+            raise ValueError("S and K must be positive")
+        if market_price < 0 or not math.isfinite(market_price):
+            return math.nan
+        if T <= 1e-8:
             return 0.0
-        sig = 0.3  # Initial guess
+
+        discounted_spot = S * math.exp(-q * T)
+        discounted_strike = K * math.exp(-r * T)
+        if kind == "call":
+            lower = max(0.0, discounted_spot - discounted_strike)
+            upper = discounted_spot
+        else:
+            lower = max(0.0, discounted_strike - discounted_spot)
+            upper = discounted_strike
+
+        if market_price < lower - tol or market_price >= upper - tol:
+            return math.nan
+        if market_price <= lower + tol:
+            return 0.0
+
+        low_sig = 0.0
+        high_sig = 1.0
+        while (VegaChimpCore.bs_price(S, K, r, q, high_sig, T, kind)
+               < market_price and high_sig < 16.0):
+            high_sig *= 2.0
+
+        if VegaChimpCore.bs_price(S, K, r, q, high_sig, T, kind) < market_price:
+            return math.nan
+
+        mid_sig = 0.5 * (low_sig + high_sig)
         for _ in range(max_iter):
-            price = VegaChimpCore.bs_price(S, K, r, q, sig, T, kind)
-            if sig <= 1e-4 or T <= 1e-4:
-                break
-            sqrtT = math.sqrt(T)
-            d1 = (math.log(S / K) + (r - q + 0.5 * sig * sig) * T) / (sig * sqrtT)
-            vega_raw = S * math.exp(-q * T) * VegaChimpCore.n(d1) * sqrtT
-            if abs(vega_raw) < 1e-12:
-                break
-            sig = sig - (price - market_price) / vega_raw
-            sig = max(sig, 0.001)  # Floor at 0.1%
-            if abs(price - market_price) < tol:
-                return sig
-        return max(sig, 0.001)
+            mid_sig = 0.5 * (low_sig + high_sig)
+            price = VegaChimpCore.bs_price(S, K, r, q, mid_sig, T, kind)
+            if abs(price - market_price) <= tol:
+                return mid_sig
+            if price < market_price:
+                low_sig = mid_sig
+            else:
+                high_sig = mid_sig
+        return mid_sig
 
     @staticmethod
     def _M(a, b, rho):
@@ -303,25 +331,47 @@ class VegaChimpCore:
     def ewma_vol_forecast(log_returns, days=252):
         """RiskMetrics EWMA volatility forecast: sigma^2_t = lambda*sigma^2_{t-1} + (1-lambda)*r_{t-1}^2
         with lambda=0.94. Pure EWMA (omega=0, alpha+beta=1)."""
-        if len(log_returns) < 30: return 0.0
         try:
+            returns = np.asarray(log_returns, dtype=float).reshape(-1)
+            returns = returns[np.isfinite(returns)]
+            if len(returns) < 30:
+                return 0.0
             lam = 0.94
-            variance = float(np.var(log_returns))
-            for r_val in log_returns:
+            variance = float(np.var(returns))
+            for r_val in returns:
                 variance = lam * variance + (1.0 - lam) * (r_val ** 2)
             return float(np.sqrt(variance * days))
-        except Exception:
+        except (TypeError, ValueError, FloatingPointError):
             return 0.0
+
+    @staticmethod
+    def american_put_call_parity_bounds(S, K, r, q, T):
+        """Return no-arbitrage bounds for American call minus American put.
+
+        American options satisfy an inequality, rather than the European parity
+        equality, because calls and puts can have different early-exercise premia.
+        """
+        bound_a = S * math.exp(-q * T) - K
+        bound_b = S - K * math.exp(-r * T)
+        return min(bound_a, bound_b), max(bound_a, bound_b)
 
     @staticmethod
     def bjerksund_stensland(S, K, T, r, q, sigma, option_type='call'):
         """
         Bjerksund-Stensland 2002 American Option Approximation.
-        Two-boundary version: splits at t1=T/2 for improved accuracy on long-dated options.
+        Two-boundary version using the paper's golden-ratio time split.
         Uses Log-Space algebra to prevent overflow errors.
         """
-        if S <= 0 or K <= 0 or T <= 0: return 0.0
-        sigma = max(sigma, 0.01)
+        if option_type not in {'call', 'put'}:
+            raise ValueError("option_type must be 'call' or 'put'")
+        if S <= 0 or K <= 0:
+            return 0.0
+        if T <= 0:
+            return max(S - K, 0.0) if option_type == 'call' else max(K - S, 0.0)
+        if sigma <= 1e-8:
+            european = VegaChimpCore.bs_price(S, K, r, q, sigma, T, option_type)
+            intrinsic = max(S - K, 0.0) if option_type == 'call' else max(K - S, 0.0)
+            return max(european, intrinsic)
 
         if option_type == 'put':
             put_via_transform = VegaChimpCore.bjerksund_stensland(K, S, T, q, r, sigma, 'call')
@@ -400,8 +450,8 @@ class VegaChimpCore:
                 M = VegaChimpCore._M
                 term1 = safe_exp(power) * M(e1, f1, rho_val)
                 term2 = safe_exp(power + kappa * (ln_i2 - ln_s)) * M(e2, f2, rho_val)
-                term3 = safe_exp(power + kappa * (math.log(i1) - ln_s)) * M(e3, f3, rho_val)
-                term4 = safe_exp(power + kappa * (math.log(i1) + ln_i2 - 2 * ln_s)) * M(e4, f4, rho_val)
+                term3 = safe_exp(power + kappa * (math.log(i1) - ln_s)) * M(e3, f3, -rho_val)
+                term4 = safe_exp(power + kappa * (math.log(i1) - ln_i2)) * M(e4, f4, -rho_val)
 
                 return term1 - term2 - term3 + term4
 
@@ -409,19 +459,24 @@ class VegaChimpCore:
             beta_val = (0.5 - b / sigma**2) + math.sqrt((b / sigma**2 - 0.5)**2 + 2 * r / sigma**2)
             if abs(beta_val - 1) < 1e-5: return max(S - K, 0.0)
 
-            inf_boundary = K * beta_val / (beta_val - 1)
-            t1 = 0.5 * T  # Split point
+            boundary_inf = K * beta_val / (beta_val - 1)
+            boundary_zero = max(K, (r / (r - b)) * K)
+            t1 = 0.5 * (math.sqrt(5.0) - 1.0) * T
 
-            # Boundary at T (I2)
-            h2 = -(b * T + 2 * sigma * math.sqrt(T)) * (K**2 / ((inf_boundary - K) * inf_boundary))
-            I2 = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h2))
+            def exercise_boundary(remaining_time):
+                h_val = (-(b * remaining_time + 2 * sigma * math.sqrt(remaining_time))
+                         * K**2 / ((boundary_inf - boundary_zero) * boundary_zero))
+                return (boundary_zero + (boundary_inf - boundary_zero)
+                        * (1 - safe_exp(h_val)))
 
-            # Boundary at t1 (I1)
-            h1 = -(b * t1 + 2 * sigma * math.sqrt(t1)) * (K**2 / ((inf_boundary - K) * inf_boundary))
-            I1 = inf_boundary + (K - inf_boundary) * (1 - safe_exp(h1))
+            # I2 applies before the split; I1 applies from the split to expiry.
+            I2 = exercise_boundary(T)
+            I1 = exercise_boundary(T - t1)
 
             if S >= I2:
-                return max(S - K, 0.0)
+                intrinsic = max(S - K, 0.0)
+                european = VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
+                return max(intrinsic, european)
 
             # Alpha coefficients
             alpha2 = (I2 - K) * safe_exp(-beta_val * math.log(I2))
@@ -429,31 +484,33 @@ class VegaChimpCore:
 
             # Main formula: two-interval approximation
             term1 = alpha2 * safe_exp(beta_val * math.log(S))
-            term2 = alpha2 * phi(S, T, beta_val, I2, I2)
-            term3 = phi(S, T, 1, I2, I2)
-            term4 = phi(S, T, 1, K, I2)
-            term5 = K * phi(S, T, 0, I2, I2)
-            term6 = K * phi(S, T, 0, K, I2)
+            term2 = alpha2 * phi(S, t1, beta_val, I2, I2)
+            term3 = phi(S, t1, 1, I2, I2)
+            term4 = phi(S, t1, 1, I1, I2)
+            term5 = K * phi(S, t1, 0, I2, I2)
+            term6 = K * phi(S, t1, 0, I1, I2)
 
             # Second interval correction (the 2002 upgrade over 1993)
-            term7 = alpha1 * phi(S, t1, beta_val, I1, I1)
+            term7 = alpha1 * phi(S, t1, beta_val, I1, I2)
             term8 = alpha1 * psi(S, T, beta_val, I1, I2, I1, t1)
-            term9 = phi(S, t1, 1, I1, I1)
-            term10 = psi(S, T, 1, I1, I2, I1, t1)
-            term11 = K * phi(S, t1, 0, I1, I1)
-            term12 = K * psi(S, T, 0, I1, I2, I1, t1)
+            term9 = psi(S, T, 1, I1, I2, I1, t1)
+            term10 = psi(S, T, 1, K, I2, I1, t1)
+            term11 = K * psi(S, T, 0, I1, I2, I1, t1)
+            term12 = K * psi(S, T, 0, K, I2, I1, t1)
 
             price = (term1 - term2 + term3 - term4 - term5 + term6
-                     + term7 - term8 - term9 + term10 + term11 - term12)
+                     + term7 - term8 + term9 - term10 - term11 + term12)
 
-            # Ensure price is at least intrinsic value
+            # The approximation is a feasible exercise strategy, so numerical
+            # quadrature noise must not push it below European or intrinsic value.
             intrinsic = max(0.0, S - K)
-            return max(price, intrinsic)
+            european = VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
+            return max(price, intrinsic, european)
 
         except (OverflowError, ValueError, ZeroDivisionError):
             print("[Warning] Bjerksund-Stensland 2002 failed, falling back to Black-Scholes.")
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
-# ===================== 3. Technicals Logic (UPDATED) =====================
+# ===================== 3. Technicals Logic =====================
 def calculate_technicals(df):
     delta = df['Close'].diff()
 
@@ -582,10 +639,9 @@ class MarketApp:
         self.root = root
         self.root.title("Sentinel: Stock & Options Analyzer")
         self.root.geometry("1450x900")
-        self.setup_dark_theme() # <--- CALL THEME HERE
+        self.setup_dark_theme()
 
         self.headline_limit = 1000
-        self.ev_absolute = True
         self.data_cache = {}
         self.DATA_CACHE_DURATION = 60 
         self.sent_cache = {}
@@ -594,15 +650,12 @@ class MarketApp:
         self.VALUATION_CACHE_DURATION = 3600
         self.pe_fwd = None
         self.pe_ttm = None
-        self.eps = None
         self.peg_ratio = None
         self.pe_percentile = None
         self.earnings_growth = None
         self.valuation_status = {}
         
-        self.ax = None 
-        
-        self.use_sentiment = False  # New toggle for sentiment analysis
+        self.use_sentiment = False
 
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
@@ -617,10 +670,8 @@ class MarketApp:
         
         ttk.Button(input_frame, text="Load Data", command=self.load_data).pack(side="left")
         
-        # --- [NEW] News Button ---
         self.btn_news = ttk.Button(input_frame, text="📰 News", command=self.open_news_window, state="disabled")
         self.btn_news.pack(side="left", padx=10)
-        # -------------------------
 
         self.paned = ttk.PanedWindow(root, orient="horizontal")
         self.paned.pack(fill="both", expand=True, padx=10, pady=5)
@@ -678,8 +729,6 @@ class MarketApp:
         self.lbl_status = ttk.Label(ctrl_frame, text="", foreground="gray", font=("Arial", 8))
         self.lbl_status.pack(side="right", padx=10)
 
-        # --- MODIFIED: Create Figure with Dark Background ---
-        # facecolor='#121212' matches a dark UI better than pure black
         self.figure = Figure(figsize=(5, 4), dpi=120, facecolor='#121212') 
         
         self.ax = self.figure.add_subplot(111) 
@@ -694,9 +743,6 @@ class MarketApp:
         self.canvas.get_tk_widget().configure(bg='#121212')
         self.hover_annot = None
         self.last_plot_df = None
-        self.last_plot_x = None
-        self.last_plot_times = None
-        self.use_compressed_hover = False
         self.canvas.mpl_connect('motion_notify_event', self.on_hover)
 
 # --- SYSTEM LOG & CONTROLS ---
@@ -711,18 +757,14 @@ class MarketApp:
         ctrl_panel = ttk.Frame(log_frame)
         ctrl_panel.pack(fill="x", pady=2)
         
-        # [NEW] Toggle Button (Right Side)
         self.btn_log = ttk.Button(ctrl_panel, text="Show Log", command=self.toggle_log, width=10)
         self.btn_log.pack(side="right", padx=5)
         if self.use_sentiment:
             ttk.Label(ctrl_panel, text="Active Model:").pack(side="left")
         
-            self.model_var = tk.StringVar(value="FinBERT")
-
             self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="orange")
             self.lbl_model_status.pack(side="left", padx=10)
 
-        # [MODIFIED] Create widgets but DO NOT pack them yet (Hidden by default)
         self.log_box = tk.Text(log_frame, height=6, font=("Consolas", 9), 
                                bg="#1e1e1e", fg="#00ff00", # Matrix Green Text
                                insertbackground="white") # Cursor color
@@ -732,20 +774,14 @@ class MarketApp:
         # Track visibility state
         self.log_visible = False
         
-        self.use_fundamentals = True
-        
-        
         self.current_ticker = None
-        self.stock = None  # <--- NEW: Store the object here
+        self.stock = None
         self.current_price = 0
         self.hv_30 = 0
-        self.ewma_vol = 0
         self.projected_earnings = []
-        # Add this line where your other technical labels are initialized
         self.lbl_adx = self.add_row(self.grid_frame, "ADX (Trend)", 9, "Trend Strength (0-100).\n\n< 20: Weak/Choppy market. (DANGER: Do not buy options here, theta will kill you).\n> 25: Trending market. (SAFE: Good for directional trades).")
         self.lbl_obv = self.add_row(self.grid_frame, "OBV Trend", 10, "On-Balance Volume.\n\nTracks 'Smart Money' flow.\nBullish: OBV rising with Price.\nDivergence: If Price rises but OBV falls, the rally is a trap.")
         self.lbl_pe = self.add_row(self.grid_frame, "P/E Ratio", 11, "Price-to-Earnings Ratio (TTM vs Forward).")
-        # Add this in your __init__ section
         self.lbl_pe_percentile = self.add_row(self.grid_frame, "P/E Percentile", 12, 
                                      "How expensive the current P/E is vs the last 5 years (0-100%).")
         self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.")
@@ -757,13 +793,13 @@ class MarketApp:
             threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
         else:
             self.log("AI Sentiment is currently disabled.")
-            #self.lbl_model_status.config(text="Status: Disabled", foreground="gray")
         self.scan_data = []
         self._scan_lock = threading.Lock()
         self._data_cache_lock = threading.Lock()
         self._sent_cache_lock = threading.Lock()
         self._valuation_cache_lock = threading.Lock()
         self._earnings_lock = threading.Lock()
+        self._chart_request_id = 0
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(500, self.load_data)
     def on_close(self):
@@ -775,7 +811,6 @@ class MarketApp:
             pass
         
         # Hard exit to kill any lingering threads (like the AI or Scanner)
-        import os
         os._exit(0)
 
     def init_model_bg(self, model_name):
@@ -828,7 +863,7 @@ class MarketApp:
         lbl.grid(row=row, column=1, sticky="e", padx=10, pady=5)
         return lbl
 
-    def load_data(self):
+    def load_data(self, period="5d", interval="5m"):
         """Refreshes chart data and updates fundamentals only on ticker change."""
         new_ticker = self.entry_ticker.get().upper().strip()
         if not new_ticker: return
@@ -852,27 +887,46 @@ class MarketApp:
             self.lbl_peg.config(text="Updating...", foreground="orange")
             self.pe_fwd = None
             self.pe_ttm = None
-            self.eps = None
             self.peg_ratio = None
             self.pe_percentile = None
             self.earnings_growth = None
             self.valuation_status = {}
+            self.current_price = 0.0
+            self.hv_30 = 0.0
+            self.btn_opt.config(state="disabled", text="🔎 Options Explorer")
+            self.btn_news.config(state="disabled")
             
             # Start background fundamental fetch
             threading.Thread(target=self.get_info, daemon=True).start()
             self.log(f"Ticker changed: {new_ticker}. Session reused.")
 
         # Always refresh the chart (light logic)
-        self.load_chart("5d", "5m")
+        self.load_chart(period, interval)
 
     def load_chart(self, period, interval):
         ticker = self.entry_ticker.get().upper().strip()
         if not ticker: return
-        self.current_ticker = ticker
+
+        # A timeframe button can be clicked after editing the entry without
+        # pressing Enter. Initialize the matching Ticker object before fetching.
+        if ticker != self.current_ticker or self.stock is None:
+            self.load_data(period, interval)
+            return
+
         self.last_interval = interval
-        self.root.after(0, lambda: self.lbl_status.config(text=f"Loading {ticker} ({period})..."))
+        self._chart_request_id += 1
+        request_id = self._chart_request_id
+        stock = self.stock
+        self.lbl_status.config(text=f"Loading {ticker} ({period})...")
         self.log(f"Requesting Chart: {ticker} ({period})")
-        threading.Thread(target=self.fetch_and_plot, args=(ticker, period, interval), daemon=True).start()
+        threading.Thread(
+            target=self.fetch_and_plot,
+            args=(ticker, period, interval, stock, request_id),
+            daemon=True
+        ).start()
+
+    def _is_current_chart_request(self, ticker, request_id):
+        return ticker == self.current_ticker and request_id == self._chart_request_id
 
     def fetch_history_with_retry(self, stock, period, interval, retries=2, delay=1.0):
         last_exc = None
@@ -989,7 +1043,7 @@ class MarketApp:
             self.log(f"Historical EPS fetch error: {e}")
             return None, "NO_EARNINGS_HISTORY"
 
-    def calculate_valuation_multiplier(self, ticker_obj):
+    def calculate_pe_percentile(self, ticker_obj):
         """Computes a strict TTM-based P/E percentile using historical reported EPS."""
         self.pe_percentile = None
         self.valuation_status["pe_percentile_reason"] = None
@@ -997,18 +1051,18 @@ class MarketApp:
         current_pe_ttm = self._to_finite_float(self.pe_ttm)
         if current_pe_ttm is None:
             self.valuation_status["pe_percentile_reason"] = "NO_CURRENT_PE_TTM"
-            return 1.0
+            return
 
         try:
             hist = ticker_obj.history(period="5y", interval="1d")
             if hist is None or hist.empty or "Close" not in hist.columns:
                 self.valuation_status["pe_percentile_reason"] = "NO_PRICE_HISTORY"
-                return 1.0
+                return
 
             eps_timeline, eps_reason = self._get_historical_ttm_eps(ticker_obj)
             if eps_timeline is None or eps_timeline.empty:
                 self.valuation_status["pe_percentile_reason"] = eps_reason or "NO_EARNINGS_HISTORY"
-                return 1.0
+                return
 
             hist_df = hist[["Close"]].copy().dropna()
             hist_df["date"] = pd.to_datetime(hist_df.index, errors='coerce', utc=True).tz_convert(None)
@@ -1029,15 +1083,13 @@ class MarketApp:
             pe_series = pe_series[pe_series > 0]
             if pe_series.empty:
                 self.valuation_status["pe_percentile_reason"] = "NO_VALID_PE_HISTORY"
-                return 1.0
+                return
 
             self.pe_percentile = float((pe_series < current_pe_ttm).mean() * 100.0)
             self.valuation_status["pe_percentile_reason"] = None
-            return 1.0
         except Exception as e:
             self.log(f"P/E Percentile error: {e}")
             self.valuation_status["pe_percentile_reason"] = "NO_VALID_PE_HISTORY"
-            return 1.0
 
     def compute_peg_ratio(self):
         """Computes PEG with provider-first fallback to derived forward PEG."""
@@ -1046,15 +1098,11 @@ class MarketApp:
         provider_peg = self._to_finite_float(self.peg_ratio)
         if provider_peg is not None:
             self.peg_ratio = provider_peg
-            self.valuation_status["peg_source"] = "provider"
             return
 
         pe_for_peg = self._to_finite_float(self.pe_fwd)
         if pe_for_peg is None:
             pe_for_peg = self._to_finite_float(self.pe_ttm)
-            self.valuation_status["peg_source"] = "derived_ttm_fallback"
-        else:
-            self.valuation_status["peg_source"] = "derived_forward"
 
         growth_dec = self._to_finite_float(self.earnings_growth)
         if pe_for_peg is None or growth_dec is None:
@@ -1099,7 +1147,6 @@ class MarketApp:
                         link = _elem_text(item.find('link'))
                         pub_date_str = _elem_text(item.find('pubDate'))
 
-                        # --- HTML CLEANUP (The Fix) ---
                         raw_desc = _elem_text(item.find('description'))
                         
                         # 1. Remove all HTML tags (<a href...>, </a>, <font...>)
@@ -1139,12 +1186,10 @@ class MarketApp:
         # 1. Check Cache
         with self._sent_cache_lock:
             if ticker in self.sent_cache:
-                cache_data = self.sent_cache[ticker]
-                if len(cache_data) == 3:
-                    val, news_items, ts = cache_data
-                    if time.time() - ts < self.SENT_CACHE_DURATION:
-                        self.log("Using Cached News.")
-                        return val, news_items
+                val, news_items, ts = self.sent_cache[ticker]
+                if time.time() - ts < self.SENT_CACHE_DURATION:
+                    self.log("Using Cached News.")
+                    return val, news_items
 
         # 2. Gather Headlines
         all_news = []
@@ -1221,7 +1266,7 @@ class MarketApp:
         l.sort(key=sort_key, reverse=reverse)
 
         # Rearrange items in sorted order
-        for index, (val, k) in enumerate(l):
+        for index, (_, k) in enumerate(l):
             tv.move(k, '', index)
 
         # Update the heading command to toggle the sort direction next time
@@ -1236,12 +1281,7 @@ class MarketApp:
                 messagebox.showinfo("News", "No news loaded yet for this ticker.")
                 return
 
-            cache_data = self.sent_cache[self.current_ticker]
-            if len(cache_data) == 3:
-                _, news_items, _ = cache_data
-            else:
-                messagebox.showinfo("News", "Old cache format. Please reload data.")
-                return
+            _, news_items, _ = self.sent_cache[self.current_ticker]
         
         if not news_items:
             messagebox.showinfo("News", "No headlines found.")
@@ -1344,13 +1384,16 @@ class MarketApp:
                         bg="#007acc", fg="white", font=("Arial", 11, "bold"), 
                         relief="flat", pady=8, cursor="hand2")
         btn.pack(fill="x")
-    def fetch_and_plot(self, ticker, period, interval):
+    def fetch_and_plot(self, ticker, period, interval, stock=None, request_id=None):
         try:
-            # 1. Use the shared stock object instead of recreating it
-            stock = self.stock 
+            # Keep a request-local stock snapshot so a ticker change cannot make
+            # this worker fetch another symbol under the old cache key.
+            stock = stock or self.stock
+            if request_id is not None and not self._is_current_chart_request(ticker, request_id):
+                return
             
             # Chart Data - check cache first
-            df, is_cached = self.get_cached_df(ticker, period, interval)
+            df, _ = self.get_cached_df(ticker, period, interval)
             
             # --- Earnings Cycle Detection (Optimized) ---
             # We only need to fetch the calendar once per ticker change.
@@ -1367,7 +1410,8 @@ class MarketApp:
                         elif cal is not None and not cal.empty:
                             anchor_date = pd.to_datetime(cal.iloc[0].values[0]).date()
 
-                        if anchor_date:
+                        if (anchor_date and
+                                (request_id is None or self._is_current_chart_request(ticker, request_id))):
                             projected = [anchor_date]
                             for i in range(1, 4):
                                 projected.append(anchor_date + timedelta(days=91*i))
@@ -1381,7 +1425,8 @@ class MarketApp:
                 df = self.fetch_history_with_retry(stock, period, interval)
                 if df.empty: 
                     self.log("No price data found.")
-                    self.root.after(0, lambda: self.lbl_status.config(text="No data"))
+                    if request_id is None or self._is_current_chart_request(ticker, request_id):
+                        self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                     return
                 
                 # Vectorized EMA calculations
@@ -1405,17 +1450,14 @@ class MarketApp:
             
             # Calculate Period Return
             period_return = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0] if not df.empty else 0.0
-            self.root.after(0, lambda: self.lbl_status.config(text=status_msg))
-
             # --- 2. Technical Data & EWMA Vol (1y Daily) ---
-            df_tech, tech_cached = self.get_cached_df(ticker, "1y", "1d")
+            df_tech, _ = self.get_cached_df(ticker, "1y", "1d")
             if df_tech is None:
                 df_tech = self.fetch_history_with_retry(stock, "1y", "1d")
                 df_tech = calculate_technicals(df_tech)
                 df_tech['log_ret'] = np.log(df_tech['Close'] / df_tech['Close'].shift(1))
                 self.save_df_cache(ticker, "1y", "1d", df_tech)
             
-            # --- NEW CODE: Prioritize Real-Time Tick Price ---
             last = df_tech.iloc[-1]
             
             # 1. Try to get the absolute latest tick from fast_info
@@ -1427,45 +1469,56 @@ class MarketApp:
                 pass
 
             # 2. Assign Current Price (Priority: Fast Info -> Intraday Chart -> Daily Cache)
-            if real_time_price and not math.isnan(real_time_price):
+            real_time_price = self._to_finite_float(real_time_price)
+            if real_time_price is not None and real_time_price > 0:
                 current_price = real_time_price
             elif not df.empty:
                 current_price = df['Close'].iloc[-1]
             else:
                 current_price = last['Close']
 
-            # Update the class variable so the Option Scanner sees the real price
-            self.current_price = current_price
+            if request_id is not None and not self._is_current_chart_request(ticker, request_id):
+                return
 
             # Volatility Logic
-            hv_30 = df_tech['log_ret'].rolling(30).std().iloc[-1] * np.sqrt(252)
-            self.hv_30 = hv_30
-            self.ewma_vol = VegaChimpCore.ewma_vol_forecast(df_tech['log_ret'].dropna().values)
+            recent_returns = df_tech['log_ret'].dropna().tail(30)
+            hv_30 = (float(recent_returns.std()) * np.sqrt(252)
+                     if len(recent_returns) >= 2 else 0.0)
+            ewma_vol = VegaChimpCore.ewma_vol_forecast(df_tech['log_ret'].dropna().values)
             
             # --- 4. Sentiment Analysis ---
-            sentiment_result = self.calculate_sentiment(ticker, stock)
-            
-            sentiment_score = None
-            headlines = []
-            
-            if sentiment_result:
-                sentiment_score, headlines = sentiment_result
+            sentiment_score, headlines = self.calculate_sentiment(ticker, stock)
 
-            # Enable News Button if we have headlines
-            if headlines:
-                self.root.after(0, lambda: self.btn_news.config(state="normal"))
-            else:
-                self.root.after(0, lambda: self.btn_news.config(state="disabled"))
             # --- 5. UI Updates ---
             last_copy = last.copy()
-            last_copy['Close'] = current_price 
+            last_copy['Close'] = current_price
+
+            # A daily-reset VWAP on one-row-per-day data is just that candle's
+            # typical price, not a useful session VWAP. Use the active intraday
+            # chart's latest VWAP and suppress the metric on non-intraday views.
+            intraday_intervals = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
+            chart_vwap = (df['VWAP'].iloc[-1]
+                          if interval in intraday_intervals and 'VWAP' in df
+                          else np.nan)
+            last_copy['VWAP'] = chart_vwap if self._is_finite_number(chart_vwap) else np.nan
             
-            self.root.after(0, lambda: self.update_technicals(last_copy, hv_30, self.ewma_vol, sentiment_score, period_return))
-            self.root.after(0, self.update_chart, df, ticker, period)
+            def publish_result():
+                if request_id is not None and not self._is_current_chart_request(ticker, request_id):
+                    return
+                self.current_price = current_price
+                self.hv_30 = hv_30
+                self.lbl_status.config(text=status_msg)
+                self.btn_news.config(state="normal" if headlines else "disabled")
+                self.update_technicals(
+                    last_copy, hv_30, ewma_vol, sentiment_score, period_return)
+                self.update_chart(df, ticker, period)
+
+            self.root.after(0, publish_result)
 
         except Exception as e:
             self.log(f"CRITICAL ERROR in fetch_and_plot: {e}")
-            self.root.after(0, lambda: self.lbl_status.config(text="Error"))
+            if request_id is None or self._is_current_chart_request(ticker, request_id):
+                self.root.after(0, lambda: self.lbl_status.config(text="Error"))
             
     def setup_dark_theme(self):
         # 1. Main Window & Common Backgrounds
@@ -1504,8 +1557,6 @@ class MarketApp:
 
         # 4. Standard Tkinter Widgets (Text, Listbox need manual config)
         self.root.configure(bg=dark_bg)
-        # We also need to configure the specific widgets created in __init__
-        # (See Step 2 below for where to apply this)        
             
     def update_chart(self, df, ticker, period):
         if not hasattr(self, 'ax') or self.ax is None: return
@@ -1650,9 +1701,6 @@ class MarketApp:
             
             # Update state for hover
             self.last_plot_df = plot_df
-            self.last_plot_x = x_vals
-            self.last_plot_times = times_for_labels
-            self.use_compressed_hover = True # Always True now due to x_vals = np.arange
 
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
@@ -1740,11 +1788,8 @@ class MarketApp:
         # --- EWMA & HV DISPLAY ---
         self.lbl_vol.config(text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}")
         
-        # --- UPDATED SENTIMENT BLOCK (Handles "Pending" string) ---
         if self.use_sentiment:
-            if sentiment == "Pending":
-                self.lbl_sent.config(text="Pending", foreground="gray")
-            elif sentiment is not None:
+            if sentiment is not None:
                 try:
                 # Ensure it's treated as a float for comparison
                     val = float(sentiment)
@@ -1824,14 +1869,9 @@ class MarketApp:
             date_labels, vols = [], []
             
             today = datetime.now()
-            
-            try:
-                all_evs = [r['ev'] for r in base_data]
-                if all_evs:
-                    cmap = plt.get_cmap('RdYlGn')
-                    norm = plt.Normalize(vmin=min(all_evs), vmax=max(all_evs))
-            except:
-                pass
+            all_evs = [r['ev'] for r in base_data]
+            cmap = plt.get_cmap('RdYlGn')
+            norm = plt.Normalize(vmin=min(all_evs), vmax=max(all_evs))
 
             for row in base_data:
                 is_earn = row['is_earnings']
@@ -1846,25 +1886,22 @@ class MarketApp:
                     if is_good:
                         if var_earn_under.get():
                             visible = True
-                            # FIX: Use tuple instead of hex string to match cmap format
                             c = mcolors.to_rgba('#00ffff') 
                             s = 50
                     else:
                         if var_earn_over.get():
                             visible = True
-                            # FIX: Use tuple instead of hex string
                             c = mcolors.to_rgba('#af00ff') 
                             s = 50
                 else:
                     if is_good:
                         if var_reg_under.get():
                             visible = True
-                            # cmap returns a tuple naturally, so this is fine
-                            c = cmap(norm(row['ev'])) if all_evs else mcolors.to_rgba('green')
+                            c = cmap(norm(row['ev']))
                     else:
                         if var_reg_over.get():
                             visible = True
-                            c = cmap(norm(row['ev'])) if all_evs else mcolors.to_rgba('red')
+                            c = cmap(norm(row['ev']))
 
                 if visible:
                     try:
@@ -1932,12 +1969,8 @@ class MarketApp:
             # Convert Matplotlib Tuples (0.0-1.0) to Plotly CSS Strings (rgb(0-255))
             plotly_colors = []
             for c in colors_list:
-                if isinstance(c, str):
-                    plotly_colors.append(c) 
-                elif hasattr(c, '__iter__'): 
-                    # Convert Tuple to RGB String
-                    r, g, b = int(c[0]*255), int(c[1]*255), int(c[2]*255)
-                    plotly_colors.append(f"rgb({r}, {g}, {b})")
+                r, g, b = int(c[0] * 255), int(c[1] * 255), int(c[2] * 255)
+                plotly_colors.append(f"rgb({r}, {g}, {b})")
 
             hover_texts = []
             for d_str, stk, val, vols, c_code in zip(date_labels, strikes, evs, vol, plotly_colors):
@@ -1990,19 +2023,9 @@ class MarketApp:
             return
 
         try:
-            # --- FIND THE DATA POINT ---
-            if self.use_compressed_hover:
-                xdata = self.last_plot_x
-                if xdata is None or len(xdata) == 0: return
-                idx = int(round(event.xdata))
-                idx = np.clip(idx, 0, len(xdata) - 1)
-                xval = xdata[idx]
-            else:
-                xdata = mdates.date2num(self.last_plot_times.to_pydatetime()) if self.last_plot_times is not None else []
-                if len(xdata) == 0: return
-                idx = np.searchsorted(xdata, event.xdata)
-                idx = np.clip(idx, 0, len(xdata) - 1)
-                xval = xdata[idx]
+            idx = int(round(event.xdata))
+            idx = int(np.clip(idx, 0, len(self.last_plot_df) - 1))
+            xval = idx
 
             row = self.last_plot_df.iloc[idx]
             yval = row['Close']
@@ -2037,10 +2060,9 @@ class MarketApp:
                     xytext=(10, 10),      # Reduced offset (closer to cursor)
                     textcoords="offset points",
                     color="white",        # Keep your Dark Mode text color
-                    fontsize=8,           # <--- SMALLER FONT (Default is ~10)
+                    fontsize=8,
                     fontweight="bold",
                     bbox=dict(
-                        # <--- SMALLER PADDING (pad=0.3 makes the box tighter)
                         boxstyle="round,pad=0.3", 
                         fc="#252526", 
                         ec="#00e6ff", 
@@ -2094,14 +2116,11 @@ class MarketApp:
             # 1. Basic Fundamental Extraction
             self.pe_fwd = self._to_finite_float(info.get('forwardPE'))
             self.pe_ttm = self._to_finite_float(info.get('trailingPE'))
-            self.eps = self._to_finite_float(info.get('trailingEps'))
             self.peg_ratio = self._to_finite_float(info.get('trailingPegRatio'))
             self.earnings_growth = self._to_finite_float(info.get('earningsGrowth'))
-            div_norm = self._normalize_div_yield(info.get('dividendYield'))
-            self.dividend_yield = div_norm if div_norm is not None else 0.0
             
             # 2. Compute derived valuation metrics
-            self.calculate_valuation_multiplier(stock)
+            self.calculate_pe_percentile(stock)
             self.compute_peg_ratio()
             
             # 3. Force UI update now that data is ready
@@ -2152,7 +2171,7 @@ class MarketApp:
         win = Toplevel(self.root)
         win.title(f"Options Explorer: {self.current_ticker}")
         win.geometry("1200x800")
-        win.configure(bg="#1e1e1e") # <--- Dark Background for Pop-up
+        win.configure(bg="#1e1e1e")
 
         left_panel = ttk.Frame(win, width=200)
         left_panel.pack(side="left", fill="y", padx=5, pady=5)
@@ -2167,7 +2186,6 @@ class MarketApp:
         ttk.Button(left_panel, text="Select Prev 7 Expirations", command=self.filter_expirations).pack(fill="x", pady=5)
         ttk.Button(left_panel, text="⚡ Scan ALL Undervalued", command=self.scan_all_undervalued).pack(fill="x", pady=20)
         
-        # --- INSERT THIS 3D BLOCK HERE ---
         viz_frame = ttk.LabelFrame(left_panel, text="3D Visualizer", padding=5)
         viz_frame.pack(fill="x", pady=20)
         
@@ -2202,16 +2220,10 @@ class MarketApp:
         # Old: #d4f8d4 (Too bright)
         self.tree.tag_configure("green", background="#8fbc8f", foreground="black")
         
-        # Arbitrage breakevev < price
-        self.tree.tag_configure("gold", background="#ffd700", foreground="black")
-    
         # Red (Overvalued): "Muted Salmon"
         # Old: #f8d4d4 (Too bright)
         self.tree.tag_configure("red", background="#e57373", foreground="black")   
     
-        # Blue (Info/Neutral): "Steel Blue"
-        # Old: #d4eef8 (Too bright)
-        self.tree.tag_configure("blue", background="#90caf9", foreground="black")
         threading.Thread(target=self.load_expirations, daemon=True).start()
 
     def export_to_csv(self):
@@ -2425,15 +2437,17 @@ class MarketApp:
                     iv = row['impliedVolatility']
                     if not iv or math.isnan(iv) or iv < 0.01: continue
 
+                    historical_vol = self._to_finite_float(self.hv_30)
+                    if historical_vol is None or historical_vol <= 0:
+                        historical_vol = iv
+
                     if iv < 0.05:
-                        vol_input = self.hv_30
-                    elif self.use_fundamentals:
+                        vol_input = historical_vol
+                    else:
                         # Weight IV more for longer-dated, HV more for shorter-dated
                         iv_weight = min(T * 4, 0.8)
                         hv_weight = 1.0 - iv_weight
-                        vol_input = iv_weight * iv + hv_weight * self.hv_30
-                    else:
-                        vol_input = iv
+                        vol_input = iv_weight * iv + hv_weight * historical_vol
 
                     kind_str = row['Type'].lower()
                     fair = VegaChimpCore.bjerksund_stensland(
@@ -2471,55 +2485,33 @@ class MarketApp:
                     except Exception:
                         pop = 0.0
 
-                    # --- Put-Call Parity Check (C9) ---
+                    # --- American Put-Call Parity Bounds (C9) ---
                     parity_data = parity_map.get(row['strike'], {})
                     parity_warn = ""
                     if 'call' in parity_data and 'put' in parity_data:
                         c_price = parity_data['call']
                         p_price = parity_data['put']
-                        # C - P should ≈ S*e^(-qT) - K*e^(-rT)
-                        theoretical = self.current_price * math.exp(-DIV_YIELD * T) - row['strike'] * math.exp(-RFR * T)
-                        residual = (c_price - p_price) - theoretical
-                        if abs(residual) > 0.10:
+                        lower, upper = VegaChimpCore.american_put_call_parity_bounds(
+                            self.current_price, row['strike'], RFR, DIV_YIELD, T)
+                        observed = c_price - p_price
+                        if observed < lower - 0.10 or observed > upper + 0.10:
                             parity_warn = "!"  # Flag parity violation
 
-                    # ======================================================
-                    #  STEP 1: CALCULATE STATUS (Must be done first!)
-                    # ======================================================
                     is_earnings = date in earnings_contracts
-                    is_undervalued = False
+                    threshold = 0.25 if is_earnings else 0.15
+                    is_undervalued = ev > threshold
 
-                    # Logic to determine if it is "Good" (Undervalued)
-                    if self.ev_absolute:
-                        threshold = 0.25 if is_earnings else 0.15
-                        if ev > threshold:
-                            is_undervalued = True
-                    else:
-                        safe_price = max(market_price, 0.01)
-                        edge_percent = (ev / safe_price) * 100
-                        base_min_edge = 10.0 if is_earnings else 5.0
-
-                        if edge_percent > base_min_edge and ev > 0.05:
-                            is_undervalued = True
-
-                    # ======================================================
-                    #  STEP 2: SAVE TO SCAN DATA (Now safe to do)
-                    # ======================================================
                     with self._scan_lock:
                         self.scan_data.append({
                             'date': date,
                             'type': row['Type'],
                             'strike': row['strike'],
                             'ev': ev,
-                            'price': market_price,
                             'vol': row['volume'],
                             'is_earnings': is_earnings,
                             'is_good': is_undervalued
                         })
 
-                    # ======================================================
-                    #  STEP 3: PREPARE UI VERDICTS
-                    # ======================================================
                     if row['Type'] == "CALL":
                         breakeven = row['strike'] + market_price
                     else:
@@ -2539,7 +2531,7 @@ class MarketApp:
                     if parity_warn:
                         verdict += " " + parity_warn
 
-                    if filter_under_only and "Under" not in verdict and "Arbitrage" not in verdict:
+                    if filter_under_only and "Under" not in verdict:
                         continue
 
                     vals = (date, row['Type'], f"{row['strike']:.2f}", int(row['volume'] or 0),
