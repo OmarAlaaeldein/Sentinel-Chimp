@@ -78,7 +78,7 @@ Pricing semantics (fair value, EV threshold, vol blend weights, dividend handlin
 
 ## Deferred
 
-- Peel chart/options UI out of `main/app.py` (Phase I follow-up) — still open.
+- Peel chart/options UI out of `main/app.py` — **done** (`ui/chart.py`, `ui/news.py`, `ui/options_explorer.py`).
 - Analytic BS2002 Greeks from the 2002 paper (paper omitted them; we ship FD instead).
 - Cross-expiry mega-batch (currently batch-per-expiry with n≥64 threshold).
 - Full SVI / local-vol smile (quadratic OLS kept as the practical lite path).
@@ -125,9 +125,10 @@ GARCH fit cost ≈ 8 ms / 252 returns (coarse grid + coordinate refine; no Sci
 - Bench n=200: American batch FD ~25 ms vs scalar FD ~82 ms (~3.3×); European
   analytic still ~0.2 ms if flag off.
 
-### 4. Further UI peel — **dropped (time)**
+### 4. Further UI peel — **done (2026-09-05)**
 
-Left for a later Phase I follow-up; did not block 1–3.
+Chart render + probability cone → `ui/chart.py`; news feed/reader → `ui/news.py`;
+options explorer chrome → `ui/options_explorer.py`. `MarketApp` remains the controller.
 
 ### How to exercise
 
@@ -145,10 +146,20 @@ VegaChimpCore.american_greeks(100, 100, 0.05, 0.02, 0.25, 1.0, 'put')
 vol, info = garch11_vol_forecast(log_returns)
 coef = fit_quadratic_smile(strikes, ivs, forward=100.0)
 
-# In the GUI (after Load Data):
-#   app.use_garch_blend = True
-#   app.use_smile_vol = True
-#   app.use_american_greeks = True  # default
+# In the GUI: checkbuttons "GARCH blend" / "Smile vol" / "Prob Cone"
+# (persisted lightly via user_prefs.json). American Greeks remain default on.
 ```
 
-Tests: `tests/test_vol_models_and_batch.py` (+ prior suite) — 129 passed.
+Tests: core suite + cone/prefs helpers — see latest pytest count on `main`.
+
+
+## Phase II / QoL status (2026-09-05)
+
+| Item | Status |
+| :--- | :--- |
+| Probability cone (`probability_cone`, chart overlay, Prob Cone toggle) | Landed |
+| GUI toggles for `use_garch_blend` / `use_smile_vol` + vol-label hint | Landed |
+| GitHub Actions CI (`requirements-ci.txt`, no torch) | Landed |
+| UI peel (chart / news / options) | Landed |
+
+Cone σ uses EWMA by default; when GARCH blend is on, same 50/50 blend as the options FV path (`blend_forecast_vol`).

@@ -4,7 +4,7 @@
 ---
 
 ## 🏗️ Track 1: Architecture & Core (The Foundation)
-*Priority: Critical | Status: Pending*
+*Priority: Critical | Status: Partial (MVC + UI peel landed; DataProvider interface still future)*
 
 ### 1.1 "God Object" Decomposition (MVC Pattern)
 Refactor the monolithic `MarketApp` class into three distinct layers to ensure stability before adding complex features.
@@ -24,6 +24,7 @@ Refactor the monolithic `MarketApp` class into three distinct layers to ensure s
 ## 🧠 Track 2: The Quant Engine (New Features)
 
 ### 2.1 The "Probability Cone" (Vol-Adjusted Charting)
+* **Status (2026-09-05):** Implemented on `main` (math helper + chart cone + toggle).
 * **Goal:** Visualize whether current price action is "normal" or "extreme" relative to forecast volatility.
 * **Math:**
     $$\text{Upper} = P_0 \times \exp(+\sigma \sqrt{t/252})$$
@@ -73,6 +74,6 @@ Refactor the monolithic `MarketApp` class into three distinct layers to ensure s
 | Phase | Name | Focus | Key Deliverable |
 | :--- | :--- | :--- | :--- |
 | **I** | **The Clean Up** | Refactoring | MVC Architecture, `requirements.txt` update. |
-| **II** | **The Eyes** | Charting | Probability Cones, Econ Calendar. |
+| **II** | **The Eyes** | Charting | Probability Cones (**done**), Econ Calendar (pending). |
 | **III** | **The Brain** | Alpha Logic | Semantic Embeddings (FinBERT), Arb Engine. |
 | **IV** | **The Automaton** | Automation | Background Scanning, Watchlists. |
