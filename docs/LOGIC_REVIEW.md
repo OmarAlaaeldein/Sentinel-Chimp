@@ -43,7 +43,7 @@ No fabricated citations were introduced.
 | Technicals | `core/technicals.py` | Wilder / Appel / Bollinger / StochRSI / VWAP daily reset / OBV / ADX / %R / CCI |
 | FinBERT | `core/sentiment.py` | Lazy load; `id2label` → pos/neg indices; `eval()` + `no_grad` |
 | Term RFR | `main/app.py` + `YFinanceProvider.fetch_rate_curve` | ^IRX / ^TNX interpolate by T |
-| Vol blend for fair value | `fetch_options_batch` | Time-weighted IV/HV; **pricing semantics unchanged** unless smile/GARCH flags on |
+| Fair vol (options scan) | `fetch_options_batch` + `core/options_scan` | Forecast vol only (EWMA ± GARCH blend); contract IV is display/Greeks only |
 | Batch BS2002 | `bjerksund_stensland_batch` | Vectorized φ/Ψ/M; scanner uses when n≥64 |
 | American FD Greeks | `american_greeks(_batch)` | Δ/Γ/ν/Θ on BS2002; default in scanner |
 | GARCH(1,1) | `core/vol_models.py` | Optional; display always when fit ok |
@@ -69,7 +69,7 @@ No fabricated citations were introduced.
 | Options scan | Vectorized mid/spread; index loop vs `iterrows`; batched `tree.insert` (40) | Lower CPU + far fewer UI-thread callbacks |
 | FinBERT | `model.eval()` after load (with existing `no_grad`) | Avoids dropout / train-mode overhead |
 
-Pricing semantics (fair value, EV threshold, vol blend weights, dividend handling) were **not** altered for speed.
+Pricing semantics for the options scan were later reworked (see “Options scan definition” below); dividend handling unchanged for speed work.
 
 ## Tests
 
@@ -163,3 +163,22 @@ Tests: core suite + cone/prefs helpers — see latest pytest count on `main`.
 | UI peel (chart / news / options) | Landed |
 
 Cone σ uses EWMA by default; when GARCH blend is on, same 50/50 blend as the options FV path (`blend_forecast_vol`).
+
+## Options scan definition (2026-09-05)
+
+Reworked so “Under/Over” means a **tradeable** edge, not a circular mid-vs-blended-IV gap.
+
+| Rule | Detail |
+| :--- | :--- |
+| Liquidity (hard) | `bid>0` and `ask>0` (no last-only); `ask≥bid`; mid≥$0.05; `(ask−bid)/mid ≤ 20%`; OI≥10 **or** volume≥5 |
+| Moneyness | Prefilter `\|K/S−1\| ≤ 12%`; keep if `\|Δ\| ∈ [0.20, 0.65]` after Greeks |
+| Fair vol | **Forecast only**: EWMA, or 50/50 EWMA+GARCH when `use_garch_blend` — **not** blended with contract IV |
+| Display IV | Chain Imp Vol still shown; `use_smile_vol` may smooth **display** only (cross-check) |
+| Pricing | American BS2002 + American FD Greeks (unchanged) |
+| Under | `fair − ask > max($0.10, ½spread + $0.05)` **and** `(fair−ask)/mid ≥ 8%` |
+| Over | Same structure vs bid: `bid − fair` beats the same hurdles |
+| Earnings | Absolute buffers +$0.05; same structure |
+| EV column | **EV@Ask** = `fair − ask` (buy-side tradeable edge) |
+| Undervalued scan | Candidates sorted by `edge_pct` descending before UI flush |
+
+Helpers live in `core/options_scan.py` (`tradeable_edge`, `scan_verdict`, liquidity/moneyness filters).

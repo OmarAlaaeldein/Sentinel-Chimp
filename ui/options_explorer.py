@@ -17,7 +17,7 @@ from ui.theme import (
 
 OPTION_COLS = (
     "Date", "Type", "Strike", "Vol", "OI", "Price", "Spread%",
-    "Breakeven", "Imp Vol", "Fair", "EV", "Delta", "Gamma", "Theta", "Vega", "POP", "Verdict",
+    "Breakeven", "Imp Vol", "Fair", "EV@Ask", "Delta", "Gamma", "Theta", "Vega", "POP", "Verdict",
 )
 
 

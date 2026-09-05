@@ -41,7 +41,14 @@ from core.technicals import calculate_technicals
 from core.sentiment import sentiment_engine
 from core.data import YFinanceProvider
 from core.vol_models import (
-    garch11_vol_forecast, fit_quadratic_smile, smile_vol_arr,
+    garch11_vol_forecast, fit_quadratic_smile, smile_vol_arr, blend_forecast_vol,
+)
+from core.options_scan import (
+    quote_passes_liquidity,
+    near_atm_strike,
+    delta_in_band,
+    scan_verdict,
+    SCAN_RULES_LOG,
 )
 from ui.tooltip import Tooltip
 from ui.theme import (
@@ -56,7 +63,6 @@ from ui.chart import prepare_plot_frame, draw_main_chart
 from ui.news import open_news_feed, open_news_reader
 from ui.options_explorer import build_options_explorer, OPTION_COLS
 from ui.prefs import load_prefs, save_prefs
-from core.vol_models import blend_forecast_vol
 
 
 class MarketApp:
@@ -90,6 +96,7 @@ class MarketApp:
         self.use_garch_blend = bool(_prefs.get("use_garch_blend", False))
         self.use_smile_vol = bool(_prefs.get("use_smile_vol", False))
         self.show_prob_cone = bool(_prefs.get("show_prob_cone", True))
+        self.show_fib = bool(_prefs.get("show_fib", False))
         self.use_american_greeks = True  # FD Greeks on BS2002 (else European BS)
         self.garch_vol = 0.0
         self.garch_info = {}
@@ -194,6 +201,11 @@ class MarketApp:
             ctrl_frame, text="Prob Cone", variable=self.var_show_cone,
             command=self._on_cone_toggle,
         ).pack(side="left", padx=(10, 0))
+        self.var_show_fib = tk.BooleanVar(value=self.show_fib)
+        ttk.Checkbutton(
+            ctrl_frame, text="Fib", variable=self.var_show_fib,
+            command=self._on_fib_toggle,
+        ).pack(side="left", padx=(8, 0))
 
         self.lbl_status = ttk.Label(ctrl_frame, text="", style="Status.TLabel")
         self.lbl_status.pack(side="right", padx=10)
@@ -296,10 +308,10 @@ class MarketApp:
             lines.append("GARCH blend OFF: GARCH shown for reference only.")
         if self.use_smile_vol:
             lines.append(
-                "Smile vol ON: scanner replaces raw IVs with quadratic log-moneyness fit."
+                "Smile vol ON: display IV may be smile-smoothed (cross-check only; FV uses forecast vol)."
             )
         else:
-            lines.append("Smile vol OFF: scanner uses listed contract IVs.")
+            lines.append("Smile vol OFF: Imp Vol column shows listed contract IVs.")
         if getattr(self, "show_prob_cone", True):
             lines.append("Prob cone: ±σ√(t/252) bands ~30 trading days ahead.")
         return "\n".join(lines)
@@ -310,6 +322,7 @@ class MarketApp:
             use_garch_blend=self.use_garch_blend,
             use_smile_vol=self.use_smile_vol,
             show_prob_cone=self.show_prob_cone,
+            show_fib=self.show_fib,
         )
 
     def _refresh_vol_label(self):
@@ -359,6 +372,12 @@ class MarketApp:
         # Schedule redraw so ax.clear() + canvas flush run on the idle UI cycle
         self.root.after(0, self._redraw_chart_now)
         self.log(f"Probability cone {'shown' if self.show_prob_cone else 'hidden'}")
+
+    def _on_fib_toggle(self):
+        self.show_fib = bool(self.var_show_fib.get())
+        self._persist_vol_prefs()
+        self.root.after(0, self._redraw_chart_now)
+        self.log(f"Fibonacci levels {'shown' if self.show_fib else 'hidden'}")
 
     def on_close(self):
         """Force kills the application and all background threads."""
@@ -1018,6 +1037,7 @@ class MarketApp:
             draw_main_chart(
                 self.ax, self.figure, plot_df, times_for_labels, x_vals,
                 ticker, period, cone=cone,
+                show_fib=bool(getattr(self, "show_fib", False)),
             )
             self.canvas.draw_idle()
             self.last_plot_df = plot_df
@@ -1651,11 +1671,22 @@ class MarketApp:
                 if valid_exps:
                     earnings_contracts.add(min(valid_exps))
 
-        historical_vol_base = self._to_finite_float(self.hv_30)
+        # Fair vol = forecast only (EWMA ± optional GARCH). Never blend contract IV.
+        forecast_vol = blend_forecast_vol(
+            getattr(self, "ewma_vol", 0.0),
+            getattr(self, "garch_vol", 0.0),
+            getattr(self, "use_garch_blend", False),
+        )
+        if forecast_vol is None or forecast_vol <= 0:
+            hv = self._to_finite_float(self.hv_30)
+            forecast_vol = hv if hv and hv > 0 else 0.25
+
         today = datetime.now().date()
         ui_batch = []
         UI_BATCH_SIZE = 40
         scan_buf = []
+        under_rows = []  # (edge_pct, vals, tag) when filter_under_only
+        rules_logged = False
 
         def flush_ui():
             nonlocal ui_batch
@@ -1667,6 +1698,10 @@ class MarketApp:
 
         for date in dates:
             try:
+                if not rules_logged:
+                    self.log(SCAN_RULES_LOG)
+                    rules_logged = True
+
                 exp_date = datetime.strptime(date, "%Y-%m-%d").date()
                 trading_days = int(np.busday_count(today, exp_date))
                 T = max(trading_days / 252.0, 1 / 252)
@@ -1687,52 +1722,55 @@ class MarketApp:
                 if 'volume' in all_options.columns:
                     all_options = all_options.sort_values('volume', ascending=False, kind='mergesort')
 
-                # Vectorized mid prices for parity map + scan filters
                 bid = pd.to_numeric(all_options.get('bid', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
                 ask = pd.to_numeric(all_options.get('ask', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
-                last = pd.to_numeric(all_options.get('lastPrice', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
                 vol = pd.to_numeric(all_options.get('volume', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
                 oi_arr = pd.to_numeric(all_options.get('openInterest', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
                 iv_arr = pd.to_numeric(all_options.get('impliedVolatility', 0), errors='coerce').to_numpy(dtype=float)
                 strikes = pd.to_numeric(all_options['strike'], errors='coerce').to_numpy(dtype=float)
                 types = all_options['Type'].to_numpy()
 
-                has_ba = (bid > 0) & (ask > 0)
-                mid = np.where(has_ba, 0.5 * (bid + ask), last)
-                spread_pct = np.where(
+                # Hard BBO: no last-only fallback
+                has_ba = (bid > 0) & (ask > 0) & (ask >= bid)
+                mid = np.where(has_ba, 0.5 * (bid + ask), np.nan)
+                spread_frac = np.where(
                     has_ba & (mid > 0),
-                    ((ask - bid) / mid) * 100.0,
-                    999.0,
+                    (ask - bid) / mid,
+                    np.nan,
                 )
+                spread_pct = np.where(np.isfinite(spread_frac), spread_frac * 100.0, 999.0)
 
-                # Parity map from vectorized mids
+                # Parity map from liquid mids only
                 parity_map = {}
                 for i in range(len(strikes)):
-                    if mid[i] <= 0 or not np.isfinite(mid[i]):
+                    if not has_ba[i] or not np.isfinite(mid[i]) or mid[i] <= 0:
                         continue
                     s = float(strikes[i])
                     bucket = parity_map.setdefault(s, {})
                     bucket[str(types[i]).lower()] = float(mid[i])
 
-                iv_weight = min(T * 4.0, 0.8)
-                hv_weight = 1.0 - iv_weight
                 sqrtT = math.sqrt(T)
                 is_earnings = date in earnings_contracts
-                threshold = 0.25 if is_earnings else 0.15
                 parity_bounds = VegaChimpCore.american_put_call_parity_bounds
                 Ncdf = VegaChimpCore.N
 
-                # ---- Filter eligible contracts (vector masks) ----
                 kind_is_call = (types == "CALL")
+                oi_int = np.where(np.isfinite(oi_arr), oi_arr, 0.0)
+
+                # Liquidity + near-ATM strike prefilter (vector)
+                liquid = np.array([
+                    quote_passes_liquidity(bid[i], ask[i], oi_int[i], vol[i])
+                    for i in range(len(strikes))
+                ], dtype=bool)
+                atm = np.array([
+                    near_atm_strike(strikes[i], spot) for i in range(len(strikes))
+                ], dtype=bool)
                 valid = (
-                    (vol > 0) & np.isfinite(vol)
-                    & (mid > 0) & np.isfinite(mid)
+                    liquid & atm
+                    & np.isfinite(mid) & (mid > 0)
                     & np.isfinite(iv_arr) & (iv_arr >= 0.01)
                     & np.isfinite(strikes) & (strikes > 0)
                 )
-                # Wide spread + zero OI filter (match prior scalar rule)
-                oi_int = np.where(np.isfinite(oi_arr), oi_arr, 0.0)
-                valid &= ~((spread_pct > 50.0) & (oi_int == 0))
 
                 idx = np.flatnonzero(valid)
                 if idx.size == 0:
@@ -1740,6 +1778,8 @@ class MarketApp:
 
                 strikes_v = strikes[idx]
                 mid_v = mid[idx]
+                bid_v = bid[idx]
+                ask_v = ask[idx]
                 iv_v = iv_arr[idx]
                 vol_v = vol[idx]
                 oi_v = oi_int[idx]
@@ -1747,31 +1787,17 @@ class MarketApp:
                 is_call_v = kind_is_call[idx]
                 types_v = types[idx]
 
-                historical_vol = historical_vol_base
-                if historical_vol is None or historical_vol <= 0:
-                    historical_vol = float(np.nanmedian(iv_v)) if iv_v.size else 0.25
-                # Optional GARCH blend into the historical leg (default off)
-                if self.use_garch_blend and getattr(self, 'garch_vol', 0) > 0:
-                    historical_vol = 0.5 * historical_vol + 0.5 * float(self.garch_vol)
-
-                # Optional quadratic smile smoother for the IV leg
-                iv_for_blend = iv_v.copy()
+                # Display IV: optional smile smoother (cross-check only; NOT used for FV)
+                iv_display = iv_v.copy()
                 forward = spot * math.exp((RFR - DIV_YIELD) * T)
-                smile_coef = None
                 if self.use_smile_vol:
                     smile_coef = fit_quadratic_smile(strikes_v, iv_v, forward)
                     if smile_coef is not None:
-                        iv_for_blend = smile_vol_arr(strikes_v, forward, smile_coef)
+                        iv_display = smile_vol_arr(strikes_v, forward, smile_coef)
 
-                vol_input = np.where(
-                    iv_for_blend < 0.05,
-                    historical_vol,
-                    iv_weight * iv_for_blend + hv_weight * historical_vol,
-                )
-
+                # Single forecast vol for all contracts (non-circular fair value)
+                vol_input = np.full(idx.size, float(forecast_vol), dtype=float)
                 kinds = np.where(is_call_v, 'call', 'put')
-                # Batch numpy path wins above ~64 contracts; below that scalar
-                # BS2002 is faster (numpy overhead dominates small n).
                 _BATCH_N = 64
                 if idx.size >= _BATCH_N:
                     fair_v = VegaChimpCore.bjerksund_stensland_batch(
@@ -1786,7 +1812,7 @@ class MarketApp:
                         for j in range(idx.size)
                     ], dtype=float)
 
-                # Greeks: American FD (batch when large) or European BS
+                # Greeks on market IV (American FD default)
                 greeks_map = None
                 if self.use_american_greeks and idx.size >= _BATCH_N:
                     greeks_map = VegaChimpCore.american_greeks_batch(
@@ -1799,9 +1825,11 @@ class MarketApp:
                         continue
                     market_price = float(mid_v[j])
                     strike = float(strikes_v[j])
-                    iv = float(iv_v[j])
+                    iv = float(iv_display[j])
+                    iv_mkt = float(iv_v[j])
                     kind_str = kinds[j]
-                    ev = fair - market_price
+                    b = float(bid_v[j])
+                    a = float(ask_v[j])
                     oi = int(oi_v[j])
                     sp = float(sp_v[j])
 
@@ -1814,12 +1842,20 @@ class MarketApp:
                         }
                     elif self.use_american_greeks:
                         greeks = VegaChimpCore.american_greeks(
-                            spot, strike, RFR, DIV_YIELD, iv, T, kind_str,
+                            spot, strike, RFR, DIV_YIELD, iv_mkt, T, kind_str,
                         )
                     else:
                         greeks = VegaChimpCore.bs_greeks(
-                            spot, strike, RFR, DIV_YIELD, iv, T, kind_str,
+                            spot, strike, RFR, DIV_YIELD, iv_mkt, T, kind_str,
                         )
+
+                    # Prefer delta band once Greeks are available
+                    if not delta_in_band(greeks.get('delta', float('nan'))):
+                        continue
+
+                    verdict, ev_at_ask, edge_pct = scan_verdict(
+                        fair, b, a, is_earnings=is_earnings,
+                    )
 
                     try:
                         if kind_str == "call":
@@ -1831,8 +1867,8 @@ class MarketApp:
                         else:
                             d2_pop = (
                                 math.log(spot / breakeven_price)
-                                + (RFR - DIV_YIELD - 0.5 * iv * iv) * T
-                            ) / (iv * sqrtT)
+                                + (RFR - DIV_YIELD - 0.5 * iv_mkt * iv_mkt) * T
+                            ) / (iv_mkt * sqrtT)
                             pop = Ncdf(d2_pop) * 100 if kind_str == "call" else Ncdf(-d2_pop) * 100
                             pop = max(0.0, min(100.0, pop))
                     except Exception:
@@ -1846,28 +1882,25 @@ class MarketApp:
                         if observed < lower - 0.10 or observed > upper + 0.10:
                             parity_warn = "!"
 
-                    is_undervalued = ev > threshold
+                    is_undervalued = "Under" in verdict
                     scan_buf.append({
                         'date': date,
                         'type': types_v[j],
                         'strike': strike,
-                        'ev': ev,
+                        'ev': ev_at_ask,
                         'vol': float(vol_v[j]),
                         'is_earnings': is_earnings,
                         'is_good': is_undervalued,
                     })
 
                     breakeven = strike + market_price if kind_str == "call" else strike - market_price
-                    verdict = "Fair"
                     tag = ""
                     if is_undervalued:
-                        verdict = "Earnings Under" if is_earnings else "Under"
                         tag = "green"
-                    elif ev < -0.05:
-                        verdict = "Earnings Over" if is_earnings else "Over"
+                    elif "Over" in verdict:
                         tag = "red"
                     if parity_warn:
-                        verdict += " " + parity_warn
+                        verdict = f"{verdict} {parity_warn}"
                     if filter_under_only and "Under" not in verdict:
                         continue
 
@@ -1875,17 +1908,27 @@ class MarketApp:
                         date, types_v[j], f"{strike:.2f}", int(vol_v[j]),
                         oi, f"{market_price:.2f}", f"{sp:.0f}%",
                         f"{breakeven:.2f}", f"{iv:.1%}",
-                        f"{fair:.2f}", f"{ev:+.2f}",
+                        f"{fair:.2f}", f"{ev_at_ask:+.2f}",
                         f"{greeks['delta']:.3f}", f"{greeks['gamma']:.4f}",
                         f"{greeks['theta']:.3f}", f"{greeks['vega']:.3f}",
                         f"{pop:.0f}%", verdict,
                     )
-                    ui_batch.append((vals, tag))
-                    if len(ui_batch) >= UI_BATCH_SIZE:
-                        flush_ui()
+                    if filter_under_only:
+                        under_rows.append((edge_pct, vals, tag))
+                    else:
+                        ui_batch.append((vals, tag))
+                        if len(ui_batch) >= UI_BATCH_SIZE:
+                            flush_ui()
 
             except Exception as e:
                 self.log(f"Options fetch error for {date}: {e}")
+
+        if filter_under_only and under_rows:
+            under_rows.sort(key=lambda r: r[0], reverse=True)
+            for _pct, vals, tag in under_rows:
+                ui_batch.append((vals, tag))
+                if len(ui_batch) >= UI_BATCH_SIZE:
+                    flush_ui()
 
         flush_ui()
         if scan_buf:
