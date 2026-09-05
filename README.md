@@ -6,6 +6,13 @@
 
 ---
 
+## Screenshots
+
+![Main terminal — AMD chart, technicals, probability cone](Screenshots/main-terminal.png)
+
+![Options Explorer — tradeable-edge scan](Screenshots/options-explorer.png)
+
+
 ## 🚀 Key Features
 
 ### 1. Advanced Options Valuation
