@@ -1,7 +1,7 @@
-"""MarketApp GUI controller (Phase I MVC — UI still co-located here).
+"""MarketApp GUI controller (Phase I MVC).
 
-Follow-up: peel chart/options/news widgets into ui/ modules once the
-core + data provider split has settled.
+Chart / news / options chrome live in ``ui/``; this module coordinates
+data fetch, pricing, and widget callbacks.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, Toplevel, filedialog
@@ -45,6 +45,11 @@ from core.vol_models import (
 )
 from ui.tooltip import Tooltip
 from ui.theme import setup_dark_theme as apply_dark_theme, DARK_BG
+from ui.chart import prepare_plot_frame, draw_main_chart
+from ui.news import open_news_feed, open_news_reader
+from ui.options_explorer import build_options_explorer, OPTION_COLS
+from ui.prefs import load_prefs, save_prefs
+from core.vol_models import blend_forecast_vol
 
 
 class MarketApp:
@@ -71,11 +76,17 @@ class MarketApp:
         
         self.use_sentiment = False
         # Vol / Greek experiments (EWMA path preserved unless blend flags are on)
-        self.use_garch_blend = False   # blend GARCH(1,1) into historical vol for FV
-        self.use_smile_vol = False     # replace raw IV with quadratic smile fit
+        self._prefs_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _prefs = load_prefs(self._prefs_root)
+        self.use_garch_blend = bool(_prefs.get("use_garch_blend", False))
+        self.use_smile_vol = bool(_prefs.get("use_smile_vol", False))
+        self.show_prob_cone = bool(_prefs.get("show_prob_cone", True))
         self.use_american_greeks = True  # FD Greeks on BS2002 (else European BS)
         self.garch_vol = 0.0
         self.garch_info = {}
+        self.ewma_vol = 0.0
+        self._vol_tooltip = None
+        self.last_period = "5d"
 
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
@@ -92,6 +103,19 @@ class MarketApp:
         
         self.btn_news = ttk.Button(input_frame, text="📰 News", command=self.open_news_window, state="disabled")
         self.btn_news.pack(side="left", padx=10)
+
+        vol_opts = ttk.Frame(input_frame)
+        vol_opts.pack(side="left", padx=12)
+        self.var_garch_blend = tk.BooleanVar(value=self.use_garch_blend)
+        self.var_smile_vol = tk.BooleanVar(value=self.use_smile_vol)
+        ttk.Checkbutton(
+            vol_opts, text="GARCH blend", variable=self.var_garch_blend,
+            command=self._on_vol_flags_changed,
+        ).pack(side="left", padx=2)
+        ttk.Checkbutton(
+            vol_opts, text="Smile vol", variable=self.var_smile_vol,
+            command=self._on_vol_flags_changed,
+        ).pack(side="left", padx=2)
 
         self.paned = ttk.PanedWindow(root, orient="horizontal")
         self.paned.pack(fill="both", expand=True, padx=10, pady=5)
@@ -111,6 +135,7 @@ class MarketApp:
         self.lbl_bb = self.add_row(self.grid_frame, "Bollinger Bands", 3, "20-day SMA +/- 2 STDs.")
         self.lbl_atr = self.add_row(self.grid_frame, "ATR (Volatility)", 4, "Average True Range (Daily Move in $).")
         self.lbl_vol = self.add_row(self.grid_frame, "Vol (HV vs EWMA)", 5, "HV: 30d Historical Volatility.\nEWMA: Exponentially Weighted Moving Average Vol Forecast (decay=0.94).")
+        self._vol_tooltip = Tooltip(self.lbl_vol, self._vol_why_text())
         if self.use_sentiment:
             self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6, "Headline sentiment scored 0-1.")
             self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7, "Total return over selected period.")
@@ -145,6 +170,12 @@ class MarketApp:
         self.btn_10y.pack(side="left", padx=2)
         self.btn_25y = ttk.Button(ctrl_frame, text="25Y", command=lambda: self.load_chart("25y", "1mo"), width=5)
         self.btn_25y.pack(side="left", padx=2)
+
+        self.var_show_cone = tk.BooleanVar(value=self.show_prob_cone)
+        ttk.Checkbutton(
+            ctrl_frame, text="Prob Cone", variable=self.var_show_cone,
+            command=self._on_cone_toggle,
+        ).pack(side="left", padx=8)
 
         self.lbl_status = ttk.Label(ctrl_frame, text="", foreground="gray", font=("Arial", 8))
         self.lbl_status.pack(side="right", padx=10)
@@ -222,6 +253,58 @@ class MarketApp:
         self._chart_request_id = 0
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(500, self.load_data)
+    def _vol_why_text(self):
+        """Short 'why this vol' hint for the Vol row tooltip."""
+        lines = [
+            "HV: 30d realized vol from daily log returns.",
+            "EWMA: RiskMetrics λ=0.94 forecast (default FV historical vol).",
+        ]
+        if self.use_garch_blend:
+            lines.append(
+                "GARCH blend ON: FV/cone use 50/50 EWMA+GARCH(1,1) when GARCH fits."
+            )
+        else:
+            lines.append("GARCH blend OFF: GARCH shown for reference only.")
+        if self.use_smile_vol:
+            lines.append(
+                "Smile vol ON: scanner replaces raw IVs with quadratic log-moneyness fit."
+            )
+        else:
+            lines.append("Smile vol OFF: scanner uses listed contract IVs.")
+        if getattr(self, "show_prob_cone", True):
+            lines.append("Prob cone: ±σ√(t/252) bands ~30 trading days ahead.")
+        return "\n".join(lines)
+
+    def _persist_vol_prefs(self):
+        save_prefs(
+            self._prefs_root,
+            use_garch_blend=self.use_garch_blend,
+            use_smile_vol=self.use_smile_vol,
+            show_prob_cone=self.show_prob_cone,
+        )
+
+    def _on_vol_flags_changed(self):
+        self.use_garch_blend = bool(self.var_garch_blend.get())
+        self.use_smile_vol = bool(self.var_smile_vol.get())
+        self._persist_vol_prefs()
+        if self._vol_tooltip is not None:
+            self._vol_tooltip.set_text(self._vol_why_text())
+        # Refresh cone with blended σ if chart is already drawn
+        chart_df = getattr(self, "_last_chart_df", None) or self.last_plot_df
+        if chart_df is not None and self.current_ticker:
+            self.update_chart(chart_df, self.current_ticker, getattr(self, "last_period", "5d"))
+        self.log(
+            f"Vol flags → GARCH blend={self.use_garch_blend}, smile={self.use_smile_vol}"
+        )
+
+    def _on_cone_toggle(self):
+        self.show_prob_cone = bool(self.var_show_cone.get())
+        self._persist_vol_prefs()
+        chart_df = getattr(self, "_last_chart_df", None) or self.last_plot_df
+        if chart_df is not None and self.current_ticker:
+            self.update_chart(chart_df, self.current_ticker, getattr(self, "last_period", "5d"))
+        self.log(f"Probability cone {'shown' if self.show_prob_cone else 'hidden'}")
+
     def on_close(self):
         """Force kills the application and all background threads."""
         print("Shutting down Sentinel...")
@@ -687,104 +770,16 @@ class MarketApp:
             messagebox.showinfo("News", "No headlines found.")
             return
 
-        win = Toplevel(self.root)
-        win.title(f"News Feed: {self.current_ticker}")
-        win.geometry("900x600")
-        win.configure(bg=DARK_BG)
-
-        # Header
-        header = ttk.Frame(win)
-        header.pack(fill="x", padx=10, pady=10)
-        ttk.Label(header, text=f"Latest News ({len(news_items)})", 
-                  font=("Arial", 16, "bold"), background="#1e1e1e", foreground="white").pack(side="left")
-        ttk.Label(header, text="(Double-click to read)", 
-                  font=("Arial", 10), background="#1e1e1e", foreground="gray").pack(side="left", padx=10, pady=(5,0))
-
-        # Treeview
-        columns = ("Date", "Source", "Headline")
-        tree = ttk.Treeview(win, columns=columns, show="headings", height=20)
-        
-        tree.heading("Date", text="Date")
-        tree.heading("Source", text="Source")
-        tree.heading("Headline", text="Headline")
-        
-        tree.column("Date", width=120, anchor="center")
-        tree.column("Source", width=100, anchor="center")
-        tree.column("Headline", width=600, anchor="w")
-        
-        scr = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
-        tree.configure(yscroll=scr.set)
-        
-        tree.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-        scr.pack(side="right", fill="y", pady=10)
-
-        # Styles
-        tree.tag_configure('odd', background='#252526', foreground='white')
-        tree.tag_configure('even', background='#333333', foreground='white')
-
-        # Insert Data (Already sorted)
-        for i, item in enumerate(news_items):
-            tag = 'even' if i % 2 == 0 else 'odd'
-            # Format date for display
-            date_str = item['published'].strftime("%Y-%m-%d %H:%M")
-            tree.insert("", "end", iid=i, values=(date_str, item['source'], item['title']), tags=(tag,))
-
-        # Bind Double Click
-        def on_double_click(event):
-            item_id = tree.selection()[0]
-            news_obj = news_items[int(item_id)]
-            self.view_news_content(news_obj)
-            
-        tree.bind("<Double-1>", on_double_click)
+        open_news_feed(
+            self.root, self.current_ticker, news_items, self.view_news_content,
+        )
 
     def view_news_content(self, news_item):
         """Opens a pane to read the selected news item."""
-        reader = Toplevel(self.root)
-        reader.title("News Reader")
-        reader.geometry("600x450")
-        reader.configure(bg="#1e1e1e")
+        open_news_reader(self.root, news_item)
 
-        # Headline
-        tk.Label(reader, text=news_item['title'], font=("Arial", 14, "bold"), 
-                 bg="#1e1e1e", fg="white", wraplength=550, justify="left").pack(pady=15, padx=15, anchor="w")
-
-        # Metadata
-        meta = tk.Frame(reader, bg="#1e1e1e")
-        meta.pack(fill="x", padx=15)
-        tk.Label(meta, text=f"{news_item['source']}  •  {news_item['published']}", 
-                 bg="#1e1e1e", fg="#00e6ff", font=("Arial", 9)).pack(side="left")
-
-        # Summary Box
-        tk.Label(reader, text="Snippet:", bg="#1e1e1e", fg="gray", anchor="w").pack(fill="x", padx=15, pady=(20, 5))
-        
-        text_box = tk.Text(reader, height=10, bg="#252526", fg="#dddddd", 
-                           font=("Segoe UI", 11), wrap="word", relief="flat", padx=10, pady=10)
-        
-        # If the summary is just the title repeated (Google behavior), show a helpful message
-        display_text = news_item.get('summary', '')
-        if len(display_text) < 10 or display_text == news_item['title']:
-            display_text = "No detailed summary available. Please read the full article below."
-            
-        text_box.insert("1.0", display_text)
-        text_box.config(state="disabled") # Read-only
-        text_box.pack(fill="both", expand=True, padx=15, pady=5)
-
-        # Button
-        btn_frame = tk.Frame(reader, bg="#1e1e1e")
-        btn_frame.pack(fill="x", pady=20, padx=15)
-        
-        def open_link():
-            if news_item['link']:
-                webbrowser.open(news_item['link'])
-            else:
-                messagebox.showerror("Error", "No link found.")
-
-        # Large, clear button
-        btn = tk.Button(btn_frame, text="🌐  Open Full Article in Browser", command=open_link,
-                        bg="#007acc", fg="white", font=("Arial", 11, "bold"), 
-                        relief="flat", pady=8, cursor="hand2")
-        btn.pack(fill="x")
     def fetch_and_plot(self, ticker, period, interval, stock=None, request_id=None):
+
         try:
             # Keep a request-local stock snapshot so a ticker change cannot make
             # this worker fetch another symbol under the old cache key.
@@ -909,6 +904,7 @@ class MarketApp:
                     return
                 self.current_price = current_price
                 self.hv_30 = hv_30
+                self.ewma_vol = ewma_vol
                 self.garch_vol = garch_vol
                 self.garch_info = garch_info
                 self.lbl_status.config(text=status_msg)
@@ -937,146 +933,45 @@ class MarketApp:
                 self.log("Chart skipped: no data")
                 self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                 return
-            
-            plot_df = df.copy()
+
             interval = getattr(self, "last_interval", None)
-            
-            # --- 1. Intraday Filtering (Keep existing logic) ---
-            # We still filter the DATAFRAME for market hours, even if plotting logic changes
-            intraday = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
-            if interval in intraday:
-                idx = plot_df.index
-                if getattr(idx, "tz", None):
-                    idx_eastern = idx.tz_convert("America/New_York")
-                else:
-                    idx_eastern = idx.tz_localize("UTC").tz_convert("America/New_York")
-                minutes = idx_eastern.hour * 60 + idx_eastern.minute
-                # Filter 9:30 AM (570) to 4:00 PM (960)
-                mask = (minutes >= 570) & (minutes <= 960) & (idx_eastern.dayofweek < 5)
-                filtered = plot_df[mask]
-                if not filtered.empty:
-                    plot_df = filtered
+            self._last_chart_df = df
+            plot_df, times_for_labels, x_vals = prepare_plot_frame(df, interval)
+            if plot_df.empty or len(x_vals) == 0:
+                self.log("Chart skipped: empty after filter")
+                return
 
-            # --- 2. X-Axis Preparation ---
-            # We now use index-based plotting for ALL charts to control tick counts precisely
-            times_for_labels = plot_df.index
-            if getattr(times_for_labels, "tz", None):
-                times_for_labels = times_for_labels.tz_convert("America/New_York")
-            else:
-                times_for_labels = times_for_labels.tz_localize("UTC").tz_convert("America/New_York")
-            
-            x_vals = np.arange(len(plot_df))
-
-            # --- 3. PLOTTING ---
-            self.ax.clear()
-            self.hover_annot = None 
-
-            # Price
-            self.ax.plot(x_vals, plot_df['Close'], label='Price', color='#00e6ff', linewidth=1.5)
-            
-            # EMAs
-            if 'EMA_5' in plot_df.columns: 
-                self.ax.plot(x_vals, plot_df['EMA_5'], label='EMA 5', color='#ff00ff', linewidth=1, alpha=0.8)
-            if 'EMA_21' in plot_df.columns: 
-                self.ax.plot(x_vals, plot_df['EMA_21'], label='EMA 21', color='#ffe100', linewidth=1, alpha=0.8)
-            if 'EMA_63' in plot_df.columns: 
-                self.ax.plot(x_vals, plot_df['EMA_63'], label='EMA 63', color='#9900ff', linewidth=1, alpha=0.8)
-            if 'EMA_200' in plot_df.columns and plot_df['EMA_200'].notna().sum() > 0:
-                self.ax.plot(x_vals, plot_df['EMA_200'], label='EMA 200', color='#ff3333', linewidth=1.5)
-            
-            # VWAP
-            if 'VWAP' in plot_df.columns and plot_df['VWAP'].notna().sum() > 0:
-                 self.ax.plot(x_vals, plot_df['VWAP'], label='VWAP', color='#ffd700', linewidth=1.5, linestyle='--')
-
-            # --- Fibonacci Retracement Levels (D4) ---
-            fib_high = plot_df['High'].max()
-            fib_low = plot_df['Low'].min()
-            fib_range = fib_high - fib_low
-            if fib_range > 0:
-                fib_levels = {
-                    '23.6%': fib_high - 0.236 * fib_range,
-                    '38.2%': fib_high - 0.382 * fib_range,
-                    '50.0%': fib_high - 0.500 * fib_range,
-                    '61.8%': fib_high - 0.618 * fib_range,
+            self.last_period = period
+            cone = None
+            if getattr(self, "show_prob_cone", True):
+                sigma = blend_forecast_vol(
+                    getattr(self, "ewma_vol", 0.0),
+                    getattr(self, "garch_vol", 0.0),
+                    getattr(self, "use_garch_blend", False),
+                )
+                p0 = float(getattr(self, "current_price", 0) or 0)
+                if p0 <= 0:
+                    p0 = float(plot_df["Close"].iloc[-1])
+                cone = {
+                    "show": True,
+                    "p0": p0,
+                    "sigma": sigma,
+                    "horizon_days": 30,
                 }
-                fib_colors = {'23.6%': '#ff9800', '38.2%': '#e91e63', '50.0%': '#9c27b0', '61.8%': '#2196f3'}
-                for level_name, level_val in fib_levels.items():
-                    self.ax.axhline(y=level_val, color=fib_colors[level_name], linestyle=':', linewidth=0.7, alpha=0.6)
-                    self.ax.text(x_vals[-1], level_val, f" {level_name}", color=fib_colors[level_name],
-                                fontsize=6, va='center', alpha=0.8)
 
-            # Styling
-            self.ax.set_xlim(left=x_vals[0], right=x_vals[-1])
-            self.ax.set_title(f"{ticker} Price Action ({period})", color="white", fontweight="bold")
-            self.ax.legend(loc='upper right', fontsize='small', frameon=False, labelcolor='white')
-            self.ax.grid(True, color='#2a2a2a', linestyle='-', linewidth=0.5)
-            self.ax.spines['top'].set_visible(False)
-            self.ax.spines['right'].set_visible(False)
-            self.ax.spines['bottom'].set_color('#444444')
-            self.ax.spines['left'].set_color('#444444')
-            self.ax.tick_params(axis='x', colors='gray')
-            self.ax.tick_params(axis='y', colors='gray')
-
-            # --- 4. CUSTOM TICK LOGIC ---
-            if len(times_for_labels) > 0:
-                # A. Determine Target Tick Count based on Period
-                if period == "1mo":
-                    target_count = 21
-                elif period == "3mo":
-                    target_count = 63
-                elif period == "1y":
-                    target_count = 52
-                elif period == "5y" or period == "10y":
-                    target_count = 60
-                elif period == "25y":
-                    target_count = 25
-                elif period == "1d":
-                    target_count = 7
-                else:
-                    # Fallback for 5d, 3m, etc.
-                    target_count = 6
-
-                # Ensure we don't ask for more ticks than data points
-                tick_count = min(target_count, len(times_for_labels))
-                
-                # B. Generate Indices
-                tick_idx = np.linspace(0, len(times_for_labels) - 1, tick_count, dtype=int)
-                self.ax.set_xticks(tick_idx)
-                
-                # C. Generate Labels with Special Logic
-                final_labels = []
-                for i in tick_idx:
-                    ts = times_for_labels[i]
-                    
-                    if period == "1d":
-                        # 1D Chart: Show Time
-                        label = ts.strftime("%H:%M")
-                    else:
-                        # All other charts: Show Date Only
-                        
-                        # logic: if 15:55 -> show next day
-                        if ts.hour == 15 and ts.minute == 55:
-                            ts = ts + timedelta(days=1)
-                        
-                        label = ts.strftime("%Y-%m-%d")
-                        
-                    final_labels.append(label)
-
-                self.ax.set_xticklabels(final_labels, rotation=45, ha='right', fontsize=8)
-
-            # --- Finalize ---
-            self.ax.set_facecolor('#121212')
-            self.figure.patch.set_facecolor('#121212')
-
+            self.hover_annot = None
+            draw_main_chart(
+                self.ax, self.figure, plot_df, times_for_labels, x_vals,
+                ticker, period, cone=cone,
+            )
             self.canvas.draw()
-            
-            # Update state for hover
             self.last_plot_df = plot_df
 
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
     def update_technicals(self, data, hv, ewma, sentiment, period_return, garch_vol=None):
+
         self.lbl_price.config(text=f"${data['Close']:.2f}")
         
         rsi_val = data['RSI']
@@ -1157,10 +1052,17 @@ class MarketApp:
         self.lbl_atr.config(text=f"${data['ATR']:.2f}")
         
         # --- EWMA & HV DISPLAY ---
+        self.ewma_vol = float(ewma) if ewma is not None else 0.0
         garch_txt = ""
         if garch_vol is not None and garch_vol > 0:
             garch_txt = f" | GARCH: {garch_vol:.1%}"
-        self.lbl_vol.config(text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}{garch_txt}")
+        blend_mark = " [blend]" if self.use_garch_blend else ""
+        smile_mark = " [smile]" if self.use_smile_vol else ""
+        self.lbl_vol.config(
+            text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}{garch_txt}{blend_mark}{smile_mark}"
+        )
+        if self._vol_tooltip is not None:
+            self._vol_tooltip.set_text(self._vol_why_text())
         
         if self.use_sentiment:
             if sentiment is not None:
@@ -1544,65 +1446,24 @@ class MarketApp:
 
     def open_options_window(self):
         if not self.current_ticker: return
-        win = Toplevel(self.root)
-        win.title(f"Options Explorer: {self.current_ticker}")
-        win.geometry("1200x800")
-        win.configure(bg=DARK_BG)
-
-        left_panel = ttk.Frame(win, width=200)
-        left_panel.pack(side="left", fill="y", padx=5, pady=5)
-        right_panel = ttk.Frame(win)
-        right_panel.pack(side="right", fill="both", expand=True, padx=5, pady=5)
-
-        ttk.Label(left_panel, text="Target Date (YYYY-MM-DD):").pack(fill="x")
-        self.entry_date = ttk.Entry(left_panel)
-        self.entry_date.pack(fill="x", pady=2)
-        self.entry_date.insert(0, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d"))
-        
-        ttk.Button(left_panel, text="Select Prev 7 Expirations", command=self.filter_expirations).pack(fill="x", pady=5)
-        ttk.Button(left_panel, text="⚡ Scan ALL Undervalued", command=self.scan_all_undervalued).pack(fill="x", pady=20)
-        
-        viz_frame = ttk.LabelFrame(left_panel, text="3D Visualizer", padding=5)
-        viz_frame.pack(fill="x", pady=20)
-        
-        ttk.Button(viz_frame, text="3D Plot (CALLS)", command=lambda: self.visualize_3d("CALL")).pack(fill="x", pady=2)
-        ttk.Button(viz_frame, text="3D Plot (PUTS)", command=lambda: self.visualize_3d("PUT")).pack(fill="x", pady=2)
-        # ---------------------------------
-        
-        ttk.Button(left_panel, text="💾 Export Results to CSV", command=self.export_to_csv).pack(fill="x", pady=5)
-          
-        self.exp_list = tk.Listbox(left_panel, selectmode="extended", height=25,
-                                   bg="#252526", fg="white", highlightthickness=0)
-        self.exp_list.pack(fill="both", expand=True)
-        self.exp_list.bind('<<ListboxSelect>>', self.on_exp_select)
-        
-        # --- EXPANDED COLUMNS: Greeks, POP, OI, Spread ---
-        cols = ("Date", "Type", "Strike", "Vol", "OI", "Price", "Spread%",
-                "Breakeven", "Imp Vol", "Fair", "EV", "Delta", "Gamma", "Theta", "Vega", "POP", "Verdict")
-        self.tree = ttk.Treeview(right_panel, columns=cols, show="headings")
-
-        col_widths = {"Date": 90, "Breakeven": 75, "Verdict": 65,
-                      "Delta": 55, "Gamma": 55, "Theta": 55, "Vega": 55, "POP": 50,
-                      "OI": 55, "Spread%": 55}
-        for c in cols:
-            self.tree.heading(c, text=c, command=lambda _c=c: self.treeview_sort_column(self.tree, _c, False))
-            w = col_widths.get(c, 60)
-            self.tree.column(c, width=w, anchor="center")
-        
-        scr = ttk.Scrollbar(right_panel, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=scr.set); self.tree.pack(side="left", fill="both", expand=True); scr.pack(side="right", fill="y")
-        
-        # Green (Undervalued): "Sage Green" 
-        # Old: #d4f8d4 (Too bright)
-        self.tree.tag_configure("green", background="#8fbc8f", foreground="black")
-        
-        # Red (Overvalued): "Muted Salmon"
-        # Old: #f8d4d4 (Too bright)
-        self.tree.tag_configure("red", background="#e57373", foreground="black")   
-    
+        refs = build_options_explorer(
+            self.root,
+            self.current_ticker,
+            on_filter_expirations=self.filter_expirations,
+            on_scan_all=self.scan_all_undervalued,
+            on_viz_calls=lambda: self.visualize_3d("CALL"),
+            on_viz_puts=lambda: self.visualize_3d("PUT"),
+            on_export_csv=self.export_to_csv,
+            on_exp_select=self.on_exp_select,
+            on_sort_column=self.treeview_sort_column,
+        )
+        self.entry_date = refs["entry_date"]
+        self.exp_list = refs["exp_list"]
+        self.tree = refs["tree"]
         threading.Thread(target=self.load_expirations, daemon=True).start()
 
     def export_to_csv(self):
+
         # 1. Ask user where to save
         filename = filedialog.asksaveasfilename(
             initialfile=f"{self.current_ticker}_options_scan.csv",
@@ -1623,9 +1484,7 @@ class MarketApp:
                 writer = csv.writer(f)
 
                 # Write Headers
-                cols = ("Date", "Type", "Strike", "Vol", "OI", "Price", "Spread%",
-                        "Breakeven", "Imp Vol", "Fair", "EV", "Delta", "Gamma", "Theta", "Vega", "POP", "Verdict")
-                writer.writerow(cols)
+                writer.writerow(OPTION_COLS)
 
                 # Write Rows
                 count = 0

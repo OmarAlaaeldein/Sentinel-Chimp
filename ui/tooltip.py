@@ -38,3 +38,9 @@ class Tooltip:
         if self._tip:
             self._tip.destroy()
             self._tip = None
+
+    def set_text(self, text):
+        """Update tooltip body (e.g. dynamic 'why this vol' hint)."""
+        self.text = text
+        self._hide()
+
