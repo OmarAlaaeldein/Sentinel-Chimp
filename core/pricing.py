@@ -8,6 +8,11 @@ References
 - Bjerksund, P. & Stensland, G. (1993b); McDonald, R. & Schroder, M. (1998) —
   American put-call transformation.
 - J.P. Morgan / RiskMetrics (1996) — EWMA variance with λ=0.94.
+- Abramowitz & Stegun (1964) §7.1.26 — vectorized erf for batch CDFs.
+
+Batch API: ``bjerksund_stensland_batch``, ``american_greeks`` /
+``american_greeks_batch`` (finite-difference on BS2002). GARCH / smile live in
+``core.vol_models``.
 """
 from __future__ import annotations
 
@@ -397,3 +402,506 @@ class VegaChimpCore:
         except (OverflowError, ValueError, ZeroDivisionError):
             print("[Warning] Bjerksund-Stensland 2002 failed, falling back to Black-Scholes.")
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
+
+
+# ---------------------------------------------------------------------------
+# Vectorized / batch helpers (numpy). Used by chain scans.
+# erf: Abramowitz–Stegun 7.1.26 (max |err| ~1.4e-7) — no scipy required.
+# ---------------------------------------------------------------------------
+
+def _erf_arr(x):
+    x = np.asarray(x, dtype=np.float64)
+    sign = np.sign(x)
+    ax = np.abs(x)
+    t = 1.0 / (1.0 + 0.3275911 * ax)
+    # Horner form of the rational approximation
+    poly = (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+             - 0.284496736) * t + 0.254829592) * t
+    return sign * (1.0 - poly * np.exp(-ax * ax))
+
+
+def _N_arr(x):
+    return 0.5 * (1.0 + _erf_arr(np.asarray(x, dtype=np.float64) / _SQRT2))
+
+
+def _safe_exp_arr(val):
+    return np.exp(np.clip(np.asarray(val, dtype=np.float64), -700.0, 700.0))
+
+
+def _M_arr(a, b, rho):
+    """Vectorized bivariate standard normal CDF (same quadrature as ``_M``)."""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    rho = np.asarray(rho, dtype=np.float64)
+    a, b, rho = np.broadcast_arrays(a, b, rho)
+    shape = a.shape
+    a = a.ravel()
+    b = b.ravel()
+    rho = rho.ravel()
+    na = _N_arr(a)
+    nb = _N_arr(b)
+    half_rho = rho * 0.5
+    nodes = np.asarray(_GL_NODES, dtype=np.float64)
+    weights = np.asarray(_GL_WEIGHTS, dtype=np.float64)
+    s = half_rho[:, None] * (nodes[None, :] + 1.0)
+    denom = 1.0 - s * s
+    safe = denom > 1e-15
+    aa = a * a
+    bb = b * b
+    ab2 = 2.0 * a * b
+    exponent = np.full_like(s, -np.inf)
+    numer = -(aa[:, None] - s * ab2[:, None] + bb[:, None])
+    exponent[safe] = (numer / (2.0 * denom))[safe]
+    contrib = np.zeros_like(s)
+    denom_safe = np.where(safe, denom, 1.0)
+    raw = (half_rho[:, None] * weights[None, :] * np.exp(exponent)
+           / (_TWO_PI * np.sqrt(denom_safe)))
+    contrib[safe] = raw[safe]
+    out = np.clip(na * nb + contrib.sum(axis=1), 0.0, 1.0)
+    out = np.where(rho == 0.0, na * nb, out)
+    mask_neg = (a <= -1e15) | (b <= -1e15)
+    out = np.where(mask_neg, 0.0, out)
+    out = np.where((~mask_neg) & (a >= 1e15), nb, out)
+    out = np.where((~mask_neg) & (b >= 1e15) & (a < 1e15), na, out)
+    return out.reshape(shape)
+
+
+def _phi_arr(S, T, gamma, H, X, r, b, sigma):
+    S, T, gamma, H, X, r, b, sigma = np.broadcast_arrays(
+        *[np.asarray(v, dtype=np.float64) for v in (S, T, gamma, H, X, r, b, sigma)]
+    )
+    sig2 = sigma * sigma
+    lam = (-r + gamma * b + 0.5 * gamma * (gamma - 1.0) * sig2) * T
+    d_den = sigma * np.sqrt(T)
+    d = -(np.log(S / H) + (b + (gamma - 0.5) * sig2) * T) / d_den
+    kappa = 2.0 * b / sig2 + (2.0 * gamma - 1.0)
+    ln_s = np.log(S)
+    ln_x = np.log(X)
+    power1 = lam + gamma * ln_s
+    val_1 = _safe_exp_arr(power1) * _N_arr(d)
+    d2 = d - 2.0 * np.log(X / S) / d_den
+    power2 = power1 + kappa * (ln_x - ln_s)
+    val_2 = _safe_exp_arr(power2) * _N_arr(d2)
+    return val_1 - val_2
+
+
+def _psi_arr(S, T, gamma, H, X, x, t, r, b, sigma):
+    S, T, gamma, H, X, x, t, r, b, sigma = np.broadcast_arrays(
+        *[np.asarray(v, dtype=np.float64)
+          for v in (S, T, gamma, H, X, x, t, r, b, sigma)]
+    )
+    tiny = (T <= 1e-10) | (t <= 1e-10)
+    out = np.empty(S.shape, dtype=np.float64)
+    if np.any(tiny):
+        out[tiny] = _phi_arr(
+            S[tiny], T[tiny], gamma[tiny], H[tiny], X[tiny],
+            r[tiny], b[tiny], sigma[tiny],
+        )
+    m = ~tiny
+    if not np.any(m):
+        return out
+    Sm, Tm, gm, Hm, Xm, xm, tm, rm, bm, sm = (
+        arr[m] for arr in (S, T, gamma, H, X, x, t, r, b, sigma)
+    )
+    sig2 = sm * sm
+    sqt = sm * np.sqrt(Tm)
+    sqt1 = sm * np.sqrt(tm)
+    drift_t = (bm + (gm - 0.5) * sig2) * tm
+    drift_T = (bm + (gm - 0.5) * sig2) * Tm
+    e1 = -(np.log(Sm / xm) + drift_t) / sqt1
+    e2 = -(np.log(Xm * Xm / (Sm * xm)) + drift_t) / sqt1
+    e3 = -(np.log(Sm / xm) - drift_t) / sqt1
+    e4 = -(np.log(Xm * Xm / (Sm * xm)) - drift_t) / sqt1
+    f1 = -(np.log(Sm / Hm) + drift_T) / sqt
+    f2 = -(np.log(Xm * Xm / (Sm * Hm)) + drift_T) / sqt
+    f3 = -(np.log(xm * xm / (Sm * Hm)) + drift_T) / sqt
+    f4 = -(np.log(Sm * xm * xm / (Hm * Xm * Xm)) + drift_T) / sqt
+    rho_val = np.sqrt(tm / Tm)
+    lam = -rm + gm * bm + 0.5 * gm * (gm - 1.0) * sig2
+    kappa = 2.0 * bm / sig2 + (2.0 * gm - 1.0)
+    ln_s = np.log(Sm)
+    ln_X = np.log(Xm)
+    ln_x = np.log(xm)
+    power = lam * Tm + gm * ln_s
+    term1 = _safe_exp_arr(power) * _M_arr(e1, f1, rho_val)
+    term2 = _safe_exp_arr(power + kappa * (ln_X - ln_s)) * _M_arr(e2, f2, rho_val)
+    term3 = _safe_exp_arr(power + kappa * (ln_x - ln_s)) * _M_arr(e3, f3, -rho_val)
+    term4 = _safe_exp_arr(power + kappa * (ln_x - ln_X)) * _M_arr(e4, f4, -rho_val)
+    out[m] = term1 - term2 - term3 + term4
+    return out
+
+
+# Attach batch API onto VegaChimpCore
+@staticmethod
+def _bs_price_arr(S, K, r, q, sig, T, is_call):
+    """Vectorized European BSM. ``is_call`` is a boolean array."""
+    S = np.asarray(S, dtype=np.float64)
+    K = np.asarray(K, dtype=np.float64)
+    r = np.asarray(r, dtype=np.float64)
+    q = np.asarray(q, dtype=np.float64)
+    sig = np.asarray(sig, dtype=np.float64)
+    T = np.asarray(T, dtype=np.float64)
+    is_call = np.asarray(is_call, dtype=bool)
+    S, K, r, q, sig, T, is_call = np.broadcast_arrays(S, K, r, q, sig, T, is_call)
+    out = np.empty(S.shape, dtype=np.float64)
+
+    t0 = T <= 1e-8
+    if np.any(t0):
+        out[t0 & is_call] = np.maximum(0.0, S[t0 & is_call] - K[t0 & is_call])
+        out[t0 & ~is_call] = np.maximum(0.0, K[t0 & ~is_call] - S[t0 & ~is_call])
+
+    s0 = (~t0) & (sig <= 1e-8)
+    if np.any(s0):
+        ds = S[s0] * np.exp(-q[s0] * T[s0])
+        dk = K[s0] * np.exp(-r[s0] * T[s0])
+        ic = is_call[s0]
+        tmp = np.empty(ds.shape)
+        tmp[ic] = np.maximum(0.0, ds[ic] - dk[ic])
+        tmp[~ic] = np.maximum(0.0, dk[~ic] - ds[~ic])
+        out[s0] = tmp
+
+    main = (~t0) & (~s0)
+    if np.any(main):
+        Sm, Km, rm, qm, sm, Tm, cm = (
+            arr[main] for arr in (S, K, r, q, sig, T, is_call)
+        )
+        d1 = (np.log(Sm / Km) + (rm - qm + 0.5 * sm * sm) * Tm) / (sm * np.sqrt(Tm))
+        d2 = d1 - sm * np.sqrt(Tm)
+        disc = np.exp(-rm * Tm)
+        disc_q = np.exp(-qm * Tm)
+        call = Sm * disc_q * _N_arr(d1) - Km * disc * _N_arr(d2)
+        put = Km * disc * _N_arr(-d2) - Sm * disc_q * _N_arr(-d1)
+        out[main] = np.where(cm, call, put)
+    return out
+
+
+@staticmethod
+def _american_call_arr(S, K, T, r, q, sigma):
+    """Vectorized BS2002 American **call** (put via transform in batch API)."""
+    S = np.asarray(S, dtype=np.float64)
+    K = np.asarray(K, dtype=np.float64)
+    T = np.asarray(T, dtype=np.float64)
+    r = np.asarray(r, dtype=np.float64)
+    q = np.asarray(q, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    S, K, T, r, q, sigma = np.broadcast_arrays(S, K, T, r, q, sigma)
+    out = np.zeros(S.shape, dtype=np.float64)
+
+    bad = (S <= 0) | (K <= 0)
+    t0 = (~bad) & (T <= 0)
+    out[t0] = np.maximum(S[t0] - K[t0], 0.0)
+
+    s0 = (~bad) & (~t0) & (sigma <= 1e-8)
+    if np.any(s0):
+        euro = _bs_price_arr(S[s0], K[s0], r[s0], q[s0], sigma[s0], T[s0],
+                             np.ones(np.count_nonzero(s0), dtype=bool))
+        out[s0] = np.maximum(euro, np.maximum(S[s0] - K[s0], 0.0))
+
+    b = r - q
+    no_ee = (~bad) & (~t0) & (~s0) & (b >= r)
+    if np.any(no_ee):
+        out[no_ee] = _bs_price_arr(
+            S[no_ee], K[no_ee], r[no_ee], q[no_ee], sigma[no_ee], T[no_ee],
+            np.ones(np.count_nonzero(no_ee), dtype=bool),
+        )
+
+    main = (~bad) & (~t0) & (~s0) & (b < r)
+    if not np.any(main):
+        return out
+
+    Sm = S[main]; Km = K[main]; Tm = T[main]
+    rm = r[main]; qm = q[main]; sm = sigma[main]
+    bm = rm - qm
+    sig2 = sm * sm
+    # Guard r~0 / sig~0 already excluded; still protect division
+    with np.errstate(divide='ignore', invalid='ignore'):
+        beta = (0.5 - bm / sig2) + np.sqrt((bm / sig2 - 0.5) ** 2 + 2.0 * rm / sig2)
+    beta_bad = (~np.isfinite(beta)) | (np.abs(beta - 1.0) < 1e-5)
+    sub = np.empty(Sm.shape, dtype=np.float64)
+    sub[beta_bad] = np.maximum(Sm[beta_bad] - Km[beta_bad], 0.0)
+
+    m2 = ~beta_bad
+    if np.any(m2):
+        S2, K2, T2, r2, q2, s2, b2, beta2 = (
+            arr[m2] for arr in (Sm, Km, Tm, rm, qm, sm, bm, beta)
+        )
+        boundary_inf = K2 * beta2 / (beta2 - 1.0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            boundary_zero = np.maximum(K2, (r2 / (r2 - b2)) * K2)
+        # If carry edge makes boundary_zero non-finite, fall back to European
+        bz_bad = ~np.isfinite(boundary_zero) | ~np.isfinite(boundary_inf)
+        price2 = np.empty(S2.shape, dtype=np.float64)
+        if np.any(bz_bad):
+            price2[bz_bad] = _bs_price_arr(
+                S2[bz_bad], K2[bz_bad], r2[bz_bad], q2[bz_bad], s2[bz_bad], T2[bz_bad],
+                np.ones(np.count_nonzero(bz_bad), dtype=bool),
+            )
+        m_ok = ~bz_bad
+        if np.any(m_ok):
+            S3, K3, T3, r3, q3, s3, b3, beta3 = (
+                arr[m_ok] for arr in (S2, K2, T2, r2, q2, s2, b2, beta2)
+            )
+            binf = boundary_inf[m_ok]
+            bzero = boundary_zero[m_ok]
+            t1 = 0.5 * (math.sqrt(5.0) - 1.0) * T3
+
+            def _ex_bound(tau):
+                h_val = (-(b3 * tau + 2.0 * s3 * np.sqrt(tau))
+                         * K3 * K3 / ((binf - bzero) * bzero))
+                return bzero + (binf - bzero) * (1.0 - _safe_exp_arr(h_val))
+
+            I2 = _ex_bound(T3)
+            I1 = _ex_bound(T3 - t1)
+            hit = S3 >= I2
+            price3 = np.empty(S3.shape, dtype=np.float64)
+            if np.any(hit):
+                intrinsic = np.maximum(S3[hit] - K3[hit], 0.0)
+                euro = _bs_price_arr(
+                    S3[hit], K3[hit], r3[hit], q3[hit], s3[hit], T3[hit],
+                    np.ones(np.count_nonzero(hit), dtype=bool),
+                )
+                price3[hit] = np.maximum(intrinsic, euro)
+            m4 = ~hit
+            if np.any(m4):
+                S4 = S3[m4]; K4 = K3[m4]; T4 = T3[m4]
+                r4 = r3[m4]; q4 = q3[m4]; s4 = s3[m4]; b4 = b3[m4]
+                beta4 = beta3[m4]; I2m = I2[m4]; I1m = I1[m4]; t1m = t1[m4]
+                alpha2 = (I2m - K4) * _safe_exp_arr(-beta4 * np.log(I2m))
+                alpha1 = (I1m - K4) * _safe_exp_arr(-beta4 * np.log(I1m))
+                term1 = alpha2 * _safe_exp_arr(beta4 * np.log(S4))
+                term2 = alpha2 * _phi_arr(S4, t1m, beta4, I2m, I2m, r4, b4, s4)
+                term3 = _phi_arr(S4, t1m, 1.0, I2m, I2m, r4, b4, s4)
+                term4 = _phi_arr(S4, t1m, 1.0, I1m, I2m, r4, b4, s4)
+                term5 = K4 * _phi_arr(S4, t1m, 0.0, I2m, I2m, r4, b4, s4)
+                term6 = K4 * _phi_arr(S4, t1m, 0.0, I1m, I2m, r4, b4, s4)
+                term7 = alpha1 * _phi_arr(S4, t1m, beta4, I1m, I2m, r4, b4, s4)
+                term8 = alpha1 * _psi_arr(S4, T4, beta4, I1m, I2m, I1m, t1m, r4, b4, s4)
+                term9 = _psi_arr(S4, T4, 1.0, I1m, I2m, I1m, t1m, r4, b4, s4)
+                term10 = _psi_arr(S4, T4, 1.0, K4, I2m, I1m, t1m, r4, b4, s4)
+                term11 = K4 * _psi_arr(S4, T4, 0.0, I1m, I2m, I1m, t1m, r4, b4, s4)
+                term12 = K4 * _psi_arr(S4, T4, 0.0, K4, I2m, I1m, t1m, r4, b4, s4)
+                raw = (term1 - term2 + term3 - term4 - term5 + term6
+                       + term7 - term8 + term9 - term10 - term11 + term12)
+                intrinsic = np.maximum(0.0, S4 - K4)
+                euro = _bs_price_arr(
+                    S4, K4, r4, q4, s4, T4, np.ones(S4.shape, dtype=bool),
+                )
+                price3[m4] = np.maximum(np.maximum(raw, intrinsic), euro)
+            price2[m_ok] = price3
+        sub[m2] = price2
+
+    out[main] = sub
+    return out
+
+
+# Bind as staticmethods on the class (defined at module level above for clarity
+# of the helpers; re-attach below).
+VegaChimpCore._bs_price_arr = staticmethod(_bs_price_arr.__func__
+                                           if hasattr(_bs_price_arr, '__func__')
+                                           else _bs_price_arr)
+VegaChimpCore._american_call_arr = staticmethod(
+    _american_call_arr.__func__ if hasattr(_american_call_arr, '__func__')
+    else _american_call_arr
+)
+
+
+@staticmethod
+def bjerksund_stensland_batch(S, K, T, r, q, sigma, option_type='call'):
+    """Batch BS2002 American prices.
+
+    Parameters
+    ----------
+    S, T, r, q : float or array
+        Broadcastable with ``K`` / ``sigma``.
+    K, sigma : array-like
+        Strikes and vols (typically one per contract).
+    option_type : {'call','put'} or sequence of those / bool is_call
+
+    Returns
+    -------
+    np.ndarray of prices (broadcast shape).
+    """
+    K = np.asarray(K, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    S = np.asarray(S, dtype=np.float64)
+    T = np.asarray(T, dtype=np.float64)
+    r = np.asarray(r, dtype=np.float64)
+    q = np.asarray(q, dtype=np.float64)
+
+    if isinstance(option_type, str):
+        is_call = np.full(np.broadcast(K, sigma, S, T, r, q).shape,
+                          option_type == 'call', dtype=bool)
+    else:
+        ot = np.asarray(option_type)
+        if ot.dtype == bool:
+            is_call = ot
+        else:
+            # bytes/str array
+            is_call = np.array([
+                (x == 'call' or x == b'call' or x == 'CALL' or x == b'CALL')
+                for x in np.asarray(ot).ravel()
+            ], dtype=bool).reshape(ot.shape)
+
+    S, K, T, r, q, sigma, is_call = np.broadcast_arrays(
+        S, K, T, r, q, sigma, is_call
+    )
+    out = np.empty(S.shape, dtype=np.float64)
+
+    # Calls
+    if np.any(is_call):
+        out[is_call] = VegaChimpCore._american_call_arr(
+            S[is_call], K[is_call], T[is_call], r[is_call], q[is_call], sigma[is_call]
+        )
+
+    # Puts via BS / McDonald–Schroder transform + European floor
+    if np.any(~is_call):
+        m = ~is_call
+        put_via = VegaChimpCore._american_call_arr(
+            K[m], S[m], T[m], q[m], r[m], sigma[m]
+        )
+        put_euro = VegaChimpCore._bs_price_arr(
+            S[m], K[m], r[m], q[m], sigma[m], T[m],
+            np.zeros(np.count_nonzero(m), dtype=bool),
+        )
+        out[m] = np.maximum(put_via, put_euro)
+    return out
+
+
+@staticmethod
+def american_greeks(S, K, r, q, sig, T, kind, dS=None, dSig=0.01, dT=1.0 / 365.0):
+    """Finite-difference Greeks on BS2002 American prices.
+
+    Conventions match ``bs_greeks``: theta per calendar day, vega per 1% vol,
+    rho per 1% rate. Delta/gamma via central differences in S.
+    """
+    if kind not in {'call', 'put'}:
+        raise ValueError("kind must be 'call' or 'put'")
+    if dS is None:
+        dS = max(1e-4 * S, 1e-4)
+    price = VegaChimpCore.bjerksund_stensland
+    if sig <= 1e-4 or T <= 1e-4:
+        if kind == 'call':
+            delta = 1.0 if S > K else 0.0
+        else:
+            delta = -1.0 if K > S else 0.0
+        return {'delta': delta, 'gamma': 0.0, 'theta': 0.0, 'vega': 0.0, 'rho': 0.0}
+
+    p_up = price(S + dS, K, T, r, q, sig, kind)
+    p_dn = price(S - dS, K, T, r, q, sig, kind)
+    p0 = price(S, K, T, r, q, sig, kind)
+    delta = (p_up - p_dn) / (2.0 * dS)
+    gamma = (p_up - 2.0 * p0 + p_dn) / (dS * dS)
+
+    p_vu = price(S, K, T, r, q, sig + dSig, kind)
+    p_vd = price(S, K, T, r, q, max(sig - dSig, 1e-8), kind)
+    vega = (p_vu - p_vd) / (2.0 * dSig) / 100.0
+
+    T_dn = max(T - dT, 1e-8)
+    # theta ≈ −∂V/∂T ; report per calendar day (dT = 1/365)
+    p_t = price(S, K, T_dn, r, q, sig, kind)
+    theta = (p_t - p0) / 1.0  # already one calendar-day bump
+
+    # rho (per 1% rate): bump r by 1e-4 absolute (=1bp) then scale — match euro
+    dr = 0.01
+    p_ru = price(S, K, T, r + dr, q, sig, kind)
+    p_rd = price(S, K, T, r - dr, q, sig, kind)
+    rho = (p_ru - p_rd) / (2.0 * dr) / 100.0
+
+    return {
+        'delta': float(delta),
+        'gamma': float(gamma),
+        'theta': float(theta),
+        'vega': float(vega),
+        'rho': float(rho),
+    }
+
+
+@staticmethod
+def american_greeks_batch(S, K, r, q, sigma, T, option_type, dS=None, dSig=0.01,
+                          dT=1.0 / 365.0):
+    """Vectorized FD Greeks for a chain slice (shared S,T,r,q typical).
+
+    Returns dict of numpy arrays: delta, gamma, theta, vega, rho.
+    """
+    K = np.asarray(K, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    batch = VegaChimpCore.bjerksund_stensland_batch
+    S_val = float(np.asarray(S).reshape(-1)[0]) if np.size(S) == 1 else None
+    if dS is None:
+        dS = max(1e-4 * (S_val if S_val is not None else float(np.mean(S))), 1e-4)
+
+    p0 = batch(S, K, T, r, q, sigma, option_type)
+    p_up = batch(np.asarray(S, dtype=np.float64) + dS, K, T, r, q, sigma, option_type)
+    p_dn = batch(np.asarray(S, dtype=np.float64) - dS, K, T, r, q, sigma, option_type)
+    delta = (p_up - p_dn) / (2.0 * dS)
+    gamma = (p_up - 2.0 * p0 + p_dn) / (dS * dS)
+
+    p_vu = batch(S, K, T, r, q, np.asarray(sigma, dtype=np.float64) + dSig, option_type)
+    p_vd = batch(S, K, T, r, q, np.maximum(np.asarray(sigma, dtype=np.float64) - dSig, 1e-8),
+                 option_type)
+    vega = (p_vu - p_vd) / (2.0 * dSig) / 100.0
+
+    T_arr = np.asarray(T, dtype=np.float64)
+    p_t = batch(S, K, np.maximum(T_arr - dT, 1e-8), r, q, sigma, option_type)
+    theta = p_t - p0
+
+    dr = 0.01
+    p_ru = batch(S, K, T, np.asarray(r, dtype=np.float64) + dr, q, sigma, option_type)
+    p_rd = batch(S, K, T, np.asarray(r, dtype=np.float64) - dr, q, sigma, option_type)
+    rho = (p_ru - p_rd) / (2.0 * dr) / 100.0
+
+    # Edge: near expiry / tiny vol → match scalar american_greeks discrete delta
+    sig_arr = np.asarray(sigma, dtype=np.float64)
+    T_b = np.broadcast_to(T_arr, p0.shape)
+    sig_b = np.broadcast_to(sig_arr, p0.shape)
+    edge = (sig_b <= 1e-4) | (T_b <= 1e-4)
+    if np.any(edge):
+        S_b = np.broadcast_to(np.asarray(S, dtype=np.float64), p0.shape)
+        K_b = np.broadcast_to(K, p0.shape)
+        if isinstance(option_type, str):
+            is_call = option_type == 'call'
+            if is_call:
+                delta = np.where(edge, np.where(S_b > K_b, 1.0, 0.0), delta)
+            else:
+                delta = np.where(edge, np.where(K_b > S_b, -1.0, 0.0), delta)
+        else:
+            ot = np.asarray(option_type)
+            if ot.dtype == bool:
+                is_call = ot
+            else:
+                is_call = np.array([
+                    (x == 'call' or x == b'call' or x == 'CALL' or x == b'CALL')
+                    for x in ot.ravel()
+                ], dtype=bool).reshape(ot.shape)
+            is_call_b = np.broadcast_to(is_call, p0.shape)
+            d_edge = np.where(
+                is_call_b,
+                np.where(S_b > K_b, 1.0, 0.0),
+                np.where(K_b > S_b, -1.0, 0.0),
+            )
+            delta = np.where(edge, d_edge, delta)
+        gamma = np.where(edge, 0.0, gamma)
+        theta = np.where(edge, 0.0, theta)
+        vega = np.where(edge, 0.0, vega)
+        rho = np.where(edge, 0.0, rho)
+
+    return {
+        'delta': delta,
+        'gamma': gamma,
+        'theta': theta,
+        'vega': vega,
+        'rho': rho,
+    }
+
+
+VegaChimpCore.bjerksund_stensland_batch = staticmethod(
+    bjerksund_stensland_batch.__func__
+    if hasattr(bjerksund_stensland_batch, '__func__') else bjerksund_stensland_batch
+)
+VegaChimpCore.american_greeks = staticmethod(
+    american_greeks.__func__ if hasattr(american_greeks, '__func__') else american_greeks
+)
+VegaChimpCore.american_greeks_batch = staticmethod(
+    american_greeks_batch.__func__
+    if hasattr(american_greeks_batch, '__func__') else american_greeks_batch
+)
