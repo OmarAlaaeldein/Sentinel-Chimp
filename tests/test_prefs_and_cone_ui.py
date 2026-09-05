@@ -20,11 +20,16 @@ class TestPrefs:
         assert data == DEFAULT_PREFS
 
     def test_round_trip(self, tmp_path):
-        save_prefs(str(tmp_path), use_garch_blend=True, show_prob_cone=False)
+        save_prefs(str(tmp_path), use_garch_blend=True, show_prob_cone=False, show_fib=True)
         data = load_prefs(str(tmp_path))
         assert data["use_garch_blend"] is True
         assert data["show_prob_cone"] is False
         assert data["use_smile_vol"] is False
+        assert data["show_fib"] is True
+
+    def test_show_fib_defaults_false(self, tmp_path):
+        data = load_prefs(str(tmp_path))
+        assert data["show_fib"] is False
 
 
 class TestChartConeHelper:

@@ -9,6 +9,7 @@ DEFAULT_PREFS: Dict[str, Any] = {
     "use_garch_blend": False,
     "use_smile_vol": False,
     "show_prob_cone": True,
+    "show_fib": False,
 }
 
 

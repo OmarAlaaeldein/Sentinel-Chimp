@@ -126,11 +126,13 @@ def draw_main_chart(
     ticker: str,
     period: str,
     cone: Optional[dict] = None,
+    show_fib: bool = False,
 ) -> None:
-    """Render price / EMAs / VWAP / Fib / optional probability cone onto ``ax``.
+    """Render price / EMAs / VWAP / optional Fib / probability cone onto ``ax``.
 
     ``cone`` keys (all optional unless noted):
       show (bool), p0 (float), sigma (float), horizon_days (int, default 30)
+    ``show_fib``: when True, draw Fibonacci retracement levels (off by default).
     """
     ax.clear()
     pal = chart_colors()
@@ -152,29 +154,30 @@ def draw_main_chart(
             color="#e8c547", linewidth=1.3, linestyle="--", alpha=0.9,
         )
 
-    fib_high = plot_df["High"].max()
-    fib_low = plot_df["Low"].min()
-    fib_range = fib_high - fib_low
-    if fib_range > 0:
-        fib_levels = {
-            "23.6%": fib_high - 0.236 * fib_range,
-            "38.2%": fib_high - 0.382 * fib_range,
-            "50.0%": fib_high - 0.500 * fib_range,
-            "61.8%": fib_high - 0.618 * fib_range,
-        }
-        fib_colors = {
-            "23.6%": "#ff9800", "38.2%": "#e91e63",
-            "50.0%": "#9c27b0", "61.8%": "#2196f3",
-        }
-        for level_name, level_val in fib_levels.items():
-            ax.axhline(
-                y=level_val, color=fib_colors[level_name],
-                linestyle=":", linewidth=0.7, alpha=0.55,
-            )
-            ax.text(
-                x_vals[-1], level_val, f" {level_name}",
-                color=fib_colors[level_name], fontsize=6, va="center", alpha=0.75,
-            )
+    if show_fib:
+        fib_high = plot_df["High"].max()
+        fib_low = plot_df["Low"].min()
+        fib_range = fib_high - fib_low
+        if fib_range > 0:
+            fib_levels = {
+                "23.6%": fib_high - 0.236 * fib_range,
+                "38.2%": fib_high - 0.382 * fib_range,
+                "50.0%": fib_high - 0.500 * fib_range,
+                "61.8%": fib_high - 0.618 * fib_range,
+            }
+            fib_colors = {
+                "23.6%": "#ff9800", "38.2%": "#e91e63",
+                "50.0%": "#9c27b0", "61.8%": "#2196f3",
+            }
+            for level_name, level_val in fib_levels.items():
+                ax.axhline(
+                    y=level_val, color=fib_colors[level_name],
+                    linestyle=":", linewidth=0.7, alpha=0.55,
+                )
+                ax.text(
+                    x_vals[-1], level_val, f" {level_name}",
+                    color=fib_colors[level_name], fontsize=6, va="center", alpha=0.75,
+                )
 
     x_right = float(x_vals[-1])
     y_lo = float(plot_df["Low"].min()) if "Low" in plot_df.columns else float(plot_df["Close"].min())
