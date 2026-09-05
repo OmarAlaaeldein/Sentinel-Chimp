@@ -17,8 +17,9 @@ Unlike standard calculators that use Black-Scholes, Sentinel uses the **Bjerksun
 
 ### 2. Institutional Volatility Forecasting
 Sentinel looks beyond simple Historical Volatility (HV).
-* **EWMA Forecasting:** Computes an EWMA volatility estimate (RiskMetrics-style decay) for forward-looking volatility context.
-* **Smart Blending:** Option pricing inputs use market implied volatility blended with 30-day historical volatility (time-weighted by maturity) to estimate fair value.
+* **EWMA Forecasting:** RiskMetrics-style λ=0.94 EWMA (always).
+* **Optional GARCH / smile:** GUI toggles for fitted GARCH(1,1) blend and quadratic IV smile smoothing.
+* **Options fair value:** Forecast vol only (EWMA ± GARCH); market IV is shown and used for Greeks — see Options Finder rules in `docs/LOGIC_REVIEW.md`.
 
 ### 3. Smart Technical Dashboard
 A threaded, non-blocking GUI featuring a professional Dark Mode interface optimized for low eye strain:
@@ -102,27 +103,32 @@ To use the AI Sentiment engine, you must run from the source:
 | Path | Role |
 | :--- | :--- |
 | `sentinel.py` | Thin launcher + backwards-compatible re-exports |
-| `core/pricing.py` | `VegaChimpCore` (BS / Bjerksund-Stensland / EWMA) |
+| `core/pricing.py` | `VegaChimpCore` (BS / BS2002 batch / EWMA / American FD Greeks) |
 | `core/technicals.py` | `calculate_technicals` |
 | `core/sentiment.py` | FinBERT `SentimentEngine` |
 | `core/data.py` | `DataProvider` ABC + `YFinanceProvider` |
-| `ui/tooltip.py` / `ui/theme.py` | Tooltip helper + dark theme |
-| `main/app.py` | `MarketApp` controller (UI still co-located; chart/options/news peel is follow-up) |
+| `core/vol_models.py` | Probability cone, GARCH(1,1), quadratic smile |
+| `core/options_scan.py` | Tradeable-edge / liquidity filters for Options Finder |
+| `ui/` | Theme, chart, news, options explorer, tooltip, prefs |
+| `main/app.py` | `MarketApp` controller |
+| `docs/LOGIC_REVIEW.md` | Paper mapping, scan rules, perf notes |
+| `to_do.md` | Roadmap with live statuses |
 
 ---
 
 ## 📉 Usage Guide
 
-1.  **Ticker Entry:** Type a ticker (e.g., `NVDA`, `SPY`) and press Enter.
+1.  **Ticker Entry:** Type a ticker (e.g., `NVDA`, `SPY`) and press Enter / **Load**.
 2.  **Technicals:** Review the left panel for RSI, MACD, VWAP Gap, and Volatility stats.
-3.  **Options Scanner:**
-    * Click **"Open Options Explorer"**.
-    * Select an expiration date (or multiple).
-    * Click **"Scan ALL Undervalued"** to find contracts where `EV > 0`.
-    * **Green Rows** indicate "Undervalued" (Potential Buy/Cover).
-    * **Red Rows** indicate "Overvalued" (Potential Sell/Write).
-    * **3D Plot:** Click the "3D Plot" buttons to visualize the data in an interactive cube.
-4.  **Export:** Save your scan results to CSV or your 3D plots to HTML for sharing and toggling.
+3.  **Chart toggles:** **Prob Cone** (on by default), **Fib** (off by default), period buttons (1D…25Y). Optional **GARCH blend** / **Smile vol** near the ticker bar.
+4.  **Options Scanner:**
+    * Click **"Open … Options"**.
+    * Select expiration(s), or **Scan ALL Undervalued**.
+    * Fair value uses **forecast vol** (EWMA ± GARCH), not the contract’s own IV.
+    * **EV@Ask** is tradeable edge vs the ask (must clear half-spread + liquidity/ATM filters).
+    * **Green** = Under (candidate long); **Red** = Over (candidate write). See `docs/LOGIC_REVIEW.md`.
+    * **3D Plot** visualizes the filtered surface.
+5.  **Export:** CSV scan results or HTML 3D plots.
 
 ---
 

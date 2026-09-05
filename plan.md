@@ -3,27 +3,29 @@
 This document started as a gap-analysis checklist. It now serves as a historical record of prior
 issues and proposed fixes.
 
-## Current Status (March 2026)
+## Current Status (2026-09-05)
 
-The codebase has already implemented many items that are listed below as "missing" in the older
-sections of this file.
+This file remains a **historical audit**. Sections below may still say “missing” for items
+that have since landed — trust this status block and `docs/LOGIC_REVIEW.md` / `to_do.md` first.
 
-Implemented in current `sentinel.py`:
-- Black-Scholes Greeks (`bs_greeks`) are implemented and shown in the options scanner.
-- Implied volatility solver (`implied_vol`) is implemented.
-- Bjerksund-Stensland 2002 two-boundary implementation is present.
-- VWAP daily reset is implemented in `calculate_technicals()`.
-- StochRSI %K/%D smoothing, MACD histogram, Bollinger %B/width, and ADX directional context are implemented.
-- Williams %R, CCI, and Fibonacci levels are implemented.
-- Time-to-expiry uses trading days (`np.busday_count`) rather than calendar-day/365.
-- Term-aware risk-free rate interpolation (^IRX and ^TNX) is implemented.
-- Scanner includes put-call parity flagging, POP column, open interest, spread%, and thread locks.
-- Tests are present in `tests/test_option_pricing.py` and `tests/test_technicals.py`.
+**Layout:** Phase I MVC on `main` (`core/`, `ui/`, `main/app.py`, thin `sentinel.py`).
 
-Still open or partial:
-- The app does not implement a fitted GARCH model; it uses EWMA plus IV/HV blend logic.
-- Volatility smile fitting is not implemented.
-- FinBERT label-order safety check is a warning-style validation, not a hard assertion.
+Implemented (among other items):
+- Black-Scholes Greeks + American FD Greeks in the options scanner
+- IV solver, Bjerksund-Stensland 2002 (scalar + batch), paper-table regressions
+- EWMA (λ=0.94) plus optional fitted GARCH(1,1) and optional quadratic smile (GUI toggles)
+- VWAP daily reset, StochRSI smoothing, MACD hist, Bollinger %B/width, ADX ±DI, %R, CCI
+- Fibonacci levels (chart toggle; **off by default**)
+- Trading-day T, term RFR (^IRX/^TNX), parity flagging, POP, OI, spread%
+- Options Finder: tradeable edge vs **forecast vol** (BBO-only, liquidity + ATM filters)
+- Probability cones; modern dark theme; DataProvider / YFinanceProvider
+- Broad pytest suite (pricing, technicals, cone, options_scan, …)
+
+Still open / optional backlog:
+- Full SVI / local-vol smile (quadratic OLS is the lite path)
+- Ichimoku (D3); econ calendar overlays; watchlists; semantic arb / fund-bias filter
+- Publishing `.github/workflows/ci.yml` needs a GitHub token with `workflow` scope (template lives in `docs/github-actions-ci.yml`)
+- Stricter FinBERT label-order assert (validation already present)
 
 ---
 
@@ -455,13 +457,13 @@ of midpoint price.
 | 6 | E1: Restore test suite | ✅ Done | Tests present for pricing and technicals. |
 | 7 | C1: Upgrade to BS2002 | ✅ Done | Two-boundary method implemented. |
 | 8 | B1: Fix VWAP daily reset | ✅ Done | Daily group reset logic implemented. |
-| 9 | C2: Rename GARCH to EWMA or fit GARCH | ⚠️ Partial | Engine uses EWMA, not fitted GARCH. Keep docs/code wording aligned. |
+| 9 | C2: Rename GARCH to EWMA or fit GARCH | ✅ Done | EWMA always; optional fitted GARCH(1,1) via GUI "GARCH blend". |
 | 10 | B2: Add StochRSI smoothing | ✅ Done | %K/%D smoothing implemented. |
 | 11 | B3: Add MACD Histogram | ✅ Done | `MACD_Hist` implemented. |
 | 12 | B5: ADX direction (+DI/-DI) | ✅ Done | Directional display present. |
-| 13 | C4: Add IV solver | ✅ Done | Newton-Raphson solver implemented. |
+| 13 | C4: Add IV solver | ✅ Done | Bracketed bisection IV solver implemented. |
 | 14 | C7: Term-matched risk-free rate | ✅ Done | ^IRX/^TNX interpolation present. |
-| 15 | C5: Time-weighted vol blend | ✅ Done | IV/HV maturity-weighted blend implemented. |
+| 15 | C5: Time-weighted vol blend | ✅ Reworked | Scanner fair vol is forecast-only (EWMA ± GARCH); market IV is display/Greeks. |
 | 16 | C9: Put-call parity check | ✅ Done | Residual warning logic present. |
 | 17 | C10: Add POP column | ✅ Done | POP column implemented in scanner. |
 | 18 | A2: FinBERT label-order validation | ⚠️ Partial | Warning validation exists; hard assert still optional. |
@@ -469,7 +471,7 @@ of midpoint price.
 | 20 | E2: Add threading locks | ✅ Done | Locking added for shared structures. |
 | 21 | B4: Bollinger %B and bandwidth | ✅ Done | Implemented and displayed. |
 | 22 | D1-D4: Additional indicators | ⚠️ Partial | D1, D2, D4 done; D3 (Ichimoku) still optional backlog. |
-| 23 | C6: Volatility smile fitting | ⏳ Open | Not implemented yet. |
+| 23 | C6: Volatility smile fitting | ✅ Lite done | Optional quadratic smile toggle; full SVI still optional backlog. |
 
 ---
 
@@ -477,7 +479,6 @@ of midpoint price.
 
 Most high-impact items in this document are now completed.
 
-Current high-priority remaining work:
-- Align all user-facing wording away from "GARCH" unless fitted GARCH is actually implemented.
-- Add volatility smile/skew fitting if improved strike-level pricing is required.
-- Optionally harden FinBERT label-order validation from warning to strict assertion.
+Current high-priority remaining work (see also `to_do.md`):
+- Phase II econ calendar overlays; Phase III fund-bias / semantic arb; Phase IV watchlists / background scans
+- Optional: full SVI smile; stricter FinBERT label assert; publish Actions workflow with `workflow` OAuth scope

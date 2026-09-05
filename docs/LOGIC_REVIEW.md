@@ -56,7 +56,7 @@ No fabricated citations were introduced.
 3. **Dividend normalization** (`_normalize_div_yield`) already handles yfinance percent-vs-decimal ambiguity; left as-is.
 4. **IV solver** is bisection (not Newton); numerically robust and covered by round-trip tests.
 5. **Technicals** cross-check suite remains the regression oracle; vectorized CCI MAD matches prior `rolling.apply` definition.
-6. **Deferred (not bugs):** fitted GARCH, vol smile, American Greeks (scanner still shows European BS Greeks on market IV), FinBERT already raises on unexpected labels.
+6. **Later landed on `main`:** optional fitted GARCH(1,1) + quadratic smile (GUI toggles); American FD Greeks in the scanner (default on). Still optional backlog: full SVI; analytic BS2002 Greeks. FinBERT raises on unexpected labels.
 
 ## Performance / memory changes
 
@@ -159,6 +159,7 @@ Tests: core suite + cone/prefs helpers — see latest pytest count on `main`.
 | :--- | :--- |
 | Probability cone (`probability_cone`, chart overlay, Prob Cone toggle) | Landed |
 | GUI toggles for `use_garch_blend` / `use_smile_vol` + vol-label hint | Landed |
+| Fib levels (checkbox; default off) | Landed |
 | GitHub Actions CI (`requirements-ci.txt` + `docs/github-actions-ci.yml`) | Template on main; `.github/workflows/ci.yml` needs `workflow` OAuth scope to publish |
 | UI peel (chart / news / options) | Landed |
 

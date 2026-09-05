@@ -1,79 +1,71 @@
-# 🛡️ Sentinel 2.0:
+# 🛡️ Sentinel 2.0
 **Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
+
+*Last updated: 2026-09-05 — statuses reflect `main` as shipped.*
 
 ---
 
 ## 🏗️ Track 1: Architecture & Core (The Foundation)
-*Priority: Critical | Status: Partial (MVC + UI peel landed; DataProvider interface still future)*
+*Priority: Critical | Status: **Done** (Phase I MVC + DataProvider + UI peel)*
 
-### 1.1 "God Object" Decomposition (MVC Pattern)
-Refactor the monolithic `MarketApp` class into three distinct layers to ensure stability before adding complex features.
-* **Model (`/core`):** Pure logic. Contains `VegaChimpCore` (Options), `GARCH` (Vol), and the new `ArbEngine`. *No UI code allowed here.*
-* **View (`/ui`):** Pure Tkinter. Handles windows, buttons, and charts. It observes the Model but calculates nothing.
-* **Controller (`/main`):** Handles user inputs (e.g., "User clicked Scan") and coordinates data fetching.
+### 1.1 "God Object" Decomposition (MVC Pattern) — **Done**
+Landed on `main`:
+* **Model (`core/`):** `VegaChimpCore`, technicals, sentiment, vol models, options scan helpers, `DataProvider` / `YFinanceProvider`
+* **View (`ui/`):** theme, chart, news, options explorer, tooltip, prefs
+* **Controller (`main/app.py`):** `MarketApp` wires inputs ↔ data ↔ views
+* **Entrypoint:** thin `sentinel.py` (keeps `Stocks.cmd` / builds working)
 
-### 1.2 Data Abstraction Layer
-* **Objective:** Decouple the app from `yfinance`.
-* **Implementation:** Create a `DataProvider` interface.
-    * *Current:* `YFinanceProvider` (Free, Delayed).
-    * *Future:* `PolygonProvider` or `IBKR_API` (Paid, Real-time).
-    * *Benefit:* Allows the "Arbitrage Engine" to run on real-time data later without rewriting the whole app.
+### 1.2 Data Abstraction Layer — **Done (YFinance); more providers future**
+* ✅ `DataProvider` ABC + `YFinanceProvider` in `core/data.py`
+* *Future (optional):* `PolygonProvider` / `IBKR_API` for paid realtime — not started
 
 ---
 
 ## 🧠 Track 2: The Quant Engine (New Features)
 
-### 2.1 The "Probability Cone" (Vol-Adjusted Charting)
-* **Status (2026-09-05):** Implemented on `main` (math helper + chart cone + toggle).
-* **Goal:** Visualize whether current price action is "normal" or "extreme" relative to forecast volatility.
-* **Math:**
-    $$\text{Upper} = P_0 \times \exp(+\sigma \sqrt{t/252})$$
-    $$\text{Lower} = P_0 \times \exp(-\sigma \sqrt{t/252})$$
-* **Visual:** Plot these bounds as a translucent "Cone" extending 30 days right of the current price.
-    * *Signal:* If price breaks the cone **without** news, Mean Reversion is likely.
+### 2.1 The "Probability Cone" (Vol-Adjusted Charting) — **Done**
+* Math + chart overlay + **Prob Cone** toggle on `main`
+* σ = EWMA by default; 50/50 EWMA+GARCH when **GARCH blend** is on
 
-### 2.2 The "Fundamental Bias" Filter (Revised)
-* **Goal:** Use fundamentals to filter/rank option opportunities, rather than distorting the pricing math.
-* **Implementation:**
-    * Calculate a **Fundamental Z-Score** based on 5 factors: `P/E`, `PEG`, `Debt/Eq`, `RevGrowth`, `EarningsAccel`.
-    * **The Logic:**
-        * If `Math_Edge > 0` AND `Fund_Score > 70` → **Strong Buy (🟢)**
-        * If `Math_Edge > 0` AND `Fund_Score < 30` → **Value Trap Warning (⚠️)**
+### 2.2 The "Fundamental Bias" Filter (Revised) — **Pending**
+* Goal: rank option opportunities with a fundamental Z-score (P/E, PEG, Debt/Eq, RevGrowth, EarningsAccel)
+* Not started (P/E / PEG already shown in the metrics panel)
 
-### 2.3 The "Semantic Arbitrage" Scanner (The Killer App)
-* **Concept:** Trade a stock against its "True Peers" defined by AI, not rigid sectors.
-* **Workflow:**
-    1.  **Vector Database:** On startup, FinBERT encodes the "Business Summary" of the S&P 500 into 768-dim vectors.
-    2.  **Cluster:** User types "NVDA". System finds the 10 nearest vectors (Cosine Similarity).
-    3.  **Spread Tracking:** Calculate the custom index of that basket.
-    4.  **Signal:** Alert when Target Stock diverges $> 2\sigma$ from its Semantic Basket.
+### 2.3 The "Semantic Arbitrage" Scanner — **Pending**
+* FinBERT peer clustering / basket divergence — not started
+* Note: FinBERT sentiment on headlines is already available when running from source
+
+### Related quant work already on `main` (not in original 2.x list)
+* ✅ Optional **GARCH(1,1)** forecast + GUI toggle (`use_garch_blend`)
+* ✅ Optional **quadratic smile** smoother + GUI toggle (`use_smile_vol`)
+* ✅ Batch BS2002 + American FD Greeks in the scanner
+* ✅ Options Finder uses **tradeable edge vs forecast vol** (BBO / liquidity / ATM filters) — see `core/options_scan.py` and `docs/LOGIC_REVIEW.md`
 
 ---
 
 ## 🎨 Track 3: UX & Quality of Life
 
-### 3.1 "Set & Forget" Scanners
-* **Feature:** Automated background scanning.
-* **Logic:** User sets criteria (e.g., "Notify me if SPY Puts > 5% Edge"). The app runs the `scan_options()` subroutine silently every 15 minutes.
-* **Notification:** System Tray bubble or discord webhook.
+### 3.1 "Set & Forget" Scanners — **Pending**
+Background criteria + tray / webhook notifications — not started
 
-### 3.2 Economic Context Layer
-* **Feature:** Vertical lines on the chart for key events.
-* **Data:** FOMC Meetings, CPI Releases, Earnings Dates.
-* **Visual:** dashed vertical lines colored by impact (Red = High Impact).
+### 3.2 Economic Context Layer — **Pending**
+FOMC / CPI / earnings verticals on the chart — not started
 
-### 3.3 Dynamic Watchlist
-* **Feature:** Persistence for tracked opportunities.
-* **Storage:** Simple `watchlist.json` file.
-* **Action:** When app loads, it auto-refreshes data for saved tickers/contracts.
+### 3.3 Dynamic Watchlist — **Pending**
+Persistent `watchlist.json` — not started
+
+### Related UX already on `main`
+* ✅ Modern dark trading-terminal theme (`ui/theme.py`)
+* ✅ **Fib** levels off by default; checkbox to enable
+* ✅ Vol prefs persisted in `user_prefs.json`
 
 ---
 
 ## 🗓️ Execution Phases
 
-| Phase | Name | Focus | Key Deliverable |
+| Phase | Name | Focus | Status |
 | :--- | :--- | :--- | :--- |
-| **I** | **The Clean Up** | Refactoring | MVC Architecture, `requirements.txt` update. |
-| **II** | **The Eyes** | Charting | Probability Cones (**done**), Econ Calendar (pending). |
-| **III** | **The Brain** | Alpha Logic | Semantic Embeddings (FinBERT), Arb Engine. |
-| **IV** | **The Automaton** | Automation | Background Scanning, Watchlists. |
+| **I** | **The Clean Up** | MVC, DataProvider, UI peel | **Done** |
+| **II** | **The Eyes** | Probability cones; econ calendar | Cones **done**; calendar **pending** |
+| **III** | **The Brain** | Semantic arb / fund bias / alpha | **Pending** |
+| **IV** | **The Automaton** | Background scans, watchlists | **Pending** |
