@@ -283,16 +283,43 @@ class MarketApp:
             show_prob_cone=self.show_prob_cone,
         )
 
+    def _refresh_vol_label(self):
+        """Update HV/EWMA/GARCH label marks immediately (no network reload)."""
+        hv = float(getattr(self, "hv_30", 0.0) or 0.0)
+        ewma = float(getattr(self, "ewma_vol", 0.0) or 0.0)
+        garch_vol = float(getattr(self, "garch_vol", 0.0) or 0.0)
+        garch_txt = f" | GARCH: {garch_vol:.1%}" if garch_vol > 0 else ""
+        blend_mark = " [blend]" if self.use_garch_blend else ""
+        smile_mark = " [smile]" if self.use_smile_vol else ""
+        if hasattr(self, "lbl_vol") and self.lbl_vol is not None:
+            self.lbl_vol.config(
+                text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}{garch_txt}{blend_mark}{smile_mark}"
+            )
+        if self._vol_tooltip is not None:
+            self._vol_tooltip.set_text(self._vol_why_text())
+
+    def _redraw_chart_now(self):
+        """Force a full chart redraw on the UI thread (clears stale cone artists)."""
+        chart_df = getattr(self, "_last_chart_df", None)
+        ticker = getattr(self, "current_ticker", None)
+        if chart_df is None or not ticker:
+            return
+        period = getattr(self, "last_period", "5d")
+        try:
+            self.update_chart(chart_df, ticker, period)
+            if hasattr(self, "canvas") and self.canvas is not None:
+                self.canvas.draw_idle()
+                self.root.update_idletasks()
+        except Exception as e:
+            self.log(f"Chart redraw error: {e}")
+
     def _on_vol_flags_changed(self):
         self.use_garch_blend = bool(self.var_garch_blend.get())
         self.use_smile_vol = bool(self.var_smile_vol.get())
         self._persist_vol_prefs()
-        if self._vol_tooltip is not None:
-            self._vol_tooltip.set_text(self._vol_why_text())
+        self._refresh_vol_label()
         # Refresh cone with blended σ if chart is already drawn
-        chart_df = getattr(self, "_last_chart_df", None) or self.last_plot_df
-        if chart_df is not None and self.current_ticker:
-            self.update_chart(chart_df, self.current_ticker, getattr(self, "last_period", "5d"))
+        self.root.after(0, self._redraw_chart_now)
         self.log(
             f"Vol flags → GARCH blend={self.use_garch_blend}, smile={self.use_smile_vol}"
         )
@@ -300,9 +327,8 @@ class MarketApp:
     def _on_cone_toggle(self):
         self.show_prob_cone = bool(self.var_show_cone.get())
         self._persist_vol_prefs()
-        chart_df = getattr(self, "_last_chart_df", None) or self.last_plot_df
-        if chart_df is not None and self.current_ticker:
-            self.update_chart(chart_df, self.current_ticker, getattr(self, "last_period", "5d"))
+        # Schedule redraw so ax.clear() + canvas flush run on the idle UI cycle
+        self.root.after(0, self._redraw_chart_now)
         self.log(f"Probability cone {'shown' if self.show_prob_cone else 'hidden'}")
 
     def on_close(self):
@@ -964,7 +990,7 @@ class MarketApp:
                 self.ax, self.figure, plot_df, times_for_labels, x_vals,
                 ticker, period, cone=cone,
             )
-            self.canvas.draw()
+            self.canvas.draw_idle()
             self.last_plot_df = plot_df
 
         except Exception as e:
