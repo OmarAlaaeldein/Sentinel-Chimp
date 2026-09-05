@@ -23,6 +23,10 @@ sources, correctness spot-checks, and performance/memory changes applied on
 | Williams | 1973 | Williams %R (14) |
 | Lambert | 1980 | CCI (20, 0.015) |
 | Araci / ProsusAI FinBERT (arXiv:1908.10063 lineage; HuggingFace `ProsusAI/finbert`) | 2019 | Financial sentiment encoder; label map from `id2label` |
+| Engle, “Autoregressive Conditional Heteroscedasticity…” | 1982 | ARCH foundation for `garch11_vol_forecast` |
+| Bollerslev, “Generalized Autoregressive Conditional Heteroskedasticity” | 1986 | GARCH(1,1) variance-targeted QMLE |
+| Gatheral, *The Volatility Surface* | 2006 | Smile phenomenology; code uses OLS quadratic in log-moneyness (not SVI) |
+| Abramowitz & Stegun 7.1.26 | 1964 | Vectorized `erf` for batch CDF |
 
 No fabricated citations were introduced.
 
@@ -39,7 +43,11 @@ No fabricated citations were introduced.
 | Technicals | `core/technicals.py` | Wilder / Appel / Bollinger / StochRSI / VWAP daily reset / OBV / ADX / %R / CCI |
 | FinBERT | `core/sentiment.py` | Lazy load; `id2label` → pos/neg indices; `eval()` + `no_grad` |
 | Term RFR | `main/app.py` + `YFinanceProvider.fetch_rate_curve` | ^IRX / ^TNX interpolate by T |
-| Vol blend for fair value | `fetch_options_batch` | Time-weighted IV/HV; **pricing semantics unchanged** |
+| Vol blend for fair value | `fetch_options_batch` | Time-weighted IV/HV; **pricing semantics unchanged** unless smile/GARCH flags on |
+| Batch BS2002 | `bjerksund_stensland_batch` | Vectorized φ/Ψ/M; scanner uses when n≥64 |
+| American FD Greeks | `american_greeks(_batch)` | Δ/Γ/ν/Θ on BS2002; default in scanner |
+| GARCH(1,1) | `core/vol_models.py` | Optional; display always when fit ok |
+| Quadratic smile | `core/vol_models.py` | Optional IV smoother per expiry |
 
 ## Correctness findings
 
@@ -70,7 +78,77 @@ Pricing semantics (fair value, EV threshold, vol blend weights, dividend handlin
 
 ## Deferred
 
-- Vectorized / batch American pricing across an entire chain (still scalar BS2002 per contract).
-- Fitted GARCH(1,1) or local-vol smile.
-- Peel chart/options UI out of `main/app.py` (Phase I follow-up).
-- American Greeks / analytic BS2002 greeks from the 2002 paper (omitted there for space; numerical bump possible later).
+- Peel chart/options UI out of `main/app.py` (Phase I follow-up) — still open.
+- Analytic BS2002 Greeks from the 2002 paper (paper omitted them; we ship FD instead).
+- Cross-expiry mega-batch (currently batch-per-expiry with n≥64 threshold).
+- Full SVI / local-vol smile (quadratic OLS kept as the practical lite path).
+
+## Deferred follow-up (2026-09-05) — experiments landed
+
+### 1. Batch / vector BS2002 — **kept**
+
+- Added `bjerksund_stensland_batch`, vectorized `_M` / `_φ` / `_ψ` / American-call
+  core in `core/pricing.py` (Abramowitz–Stegun 7.1.26 `erf` ≈ 1.4e-7; price
+  vs scalar max |Δ| ≈ 2e-5).
+- Scanner (`fetch_options_batch`) uses batch when ≥64 eligible contracts per
+  expiry; scalar below that (numpy overhead otherwise wins).
+- Microbench (box):
+
+  | n | batch | scalar | speedup |
+  | ---: | ---: | ---: | ---: |
+  | 100 | 4.7 ms | 5.0 ms | ~1.1× |
+  | 500 | 6.5 ms | 27.8 ms | ~4.3× |
+  | 1000 | 8.3 ms | 51.0 ms | ~6.1× |
+
+### 2. GARCH(1,1) + quadratic smile — **kept (optional flags)**
+
+| Piece | Module | Default |
+| :--- | :--- | :--- |
+| Variance-targeted GARCH(1,1) QMLE | `core/vol_models.garch11_vol_forecast` | Displayed next to EWMA; **not** in FV unless `use_garch_blend` |
+| Quadratic smile `σ(k)=a+bk+ck²`, `k=log(K/F)` | `fit_quadratic_smile` / `smile_vol*` | Off unless `use_smile_vol` |
+
+Citations (real): Engle (1982) ARCH; Bollerslev (1986) GARCH; Gatheral (2006)
+for smile phenomenology (fit itself is OLS quadratic, **not** SVI).
+
+EWMA (RiskMetrics λ=0.94) remains the default historical-vol path. Flags on
+`MarketApp`: `use_garch_blend=False`, `use_smile_vol=False`.
+
+GARCH fit cost ≈ 8 ms / 252 returns (coarse grid + coordinate refine; no SciPy).
+
+### 3. American Greeks — **kept**
+
+- `american_greeks` / `american_greeks_batch`: central FD on BS2002
+  (Δ/Γ/ν/Θ; Θ = one calendar-day bump; ν per 1% vol).
+- Wired into scanner when `use_american_greeks=True` (default). Set False to
+  restore European `bs_greeks`.
+- Sanity: q=0 American call FD Greeks ≈ analytic BS; batch matches scalar FD.
+- Bench n=200: American batch FD ~25 ms vs scalar FD ~82 ms (~3.3×); European
+  analytic still ~0.2 ms if flag off.
+
+### 4. Further UI peel — **dropped (time)**
+
+Left for a later Phase I follow-up; did not block 1–3.
+
+### How to exercise
+
+```python
+from core.pricing import VegaChimpCore
+from core.vol_models import garch11_vol_forecast, fit_quadratic_smile
+
+# Batch American prices
+VegaChimpCore.bjerksund_stensland_batch(100, [90,100,110], 0.5, 0.05, 0.02, [0.25]*3, 'put')
+
+# American FD Greeks
+VegaChimpCore.american_greeks(100, 100, 0.05, 0.02, 0.25, 1.0, 'put')
+
+# GARCH / smile (optional)
+vol, info = garch11_vol_forecast(log_returns)
+coef = fit_quadratic_smile(strikes, ivs, forward=100.0)
+
+# In the GUI (after Load Data):
+#   app.use_garch_blend = True
+#   app.use_smile_vol = True
+#   app.use_american_greeks = True  # default
+```
+
+Tests: `tests/test_vol_models_and_batch.py` (+ prior suite) — 129 passed.
