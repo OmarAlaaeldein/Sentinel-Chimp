@@ -194,3 +194,83 @@ def smile_vol_arr(strikes, forward: float, coef: Tuple[float, float, float],
     vol = np.clip(vol, floor, cap)
     out[ok] = vol[ok]
     return out
+
+
+def probability_cone(
+    p0: float,
+    sigma: float,
+    horizon_days: int = 30,
+    trading_days_per_year: int = 252,
+    include_t0: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Lognormal volatility probability cone (Phase II).
+
+    For trading-day horizon ``t``::
+
+        Upper = P0 * exp(+σ √(t / N))
+        Lower = P0 * exp(-σ √(t / N))
+
+    where ``N`` defaults to 252 trading days/year and ``σ`` is annualized
+    volatility (same units as EWMA / GARCH forecasts in this package).
+
+    Parameters
+    ----------
+    p0 : float
+        Spot / last price (> 0).
+    sigma : float
+        Annualized vol forecast (≥ 0). Zero vol ⇒ flat cone at ``p0``.
+    horizon_days : int
+        Number of trading days to project (default 30).
+    trading_days_per_year : int
+        Day-count convention inside the square root (default 252).
+    include_t0 : bool
+        If True, prepend ``t=0`` so the cone starts at the last print.
+
+    Returns
+    -------
+    days, upper, lower : np.ndarray
+        Parallel arrays of length ``horizon_days`` (+1 if ``include_t0``).
+    """
+    horizon_days = int(horizon_days)
+    if horizon_days < 0:
+        raise ValueError("horizon_days must be >= 0")
+    if trading_days_per_year <= 0:
+        raise ValueError("trading_days_per_year must be > 0")
+    if not math.isfinite(p0) or p0 <= 0:
+        raise ValueError("p0 must be a finite positive price")
+    if not math.isfinite(sigma) or sigma < 0:
+        raise ValueError("sigma must be a finite non-negative vol")
+
+    start = 0 if include_t0 else 1
+    days = np.arange(start, horizon_days + 1, dtype=np.float64)
+    if days.size == 0:
+        return days, days.copy(), days.copy()
+
+    # √(t/N); t=0 → 0 so bounds collapse to p0
+    scale = np.sqrt(days / float(trading_days_per_year)) * float(sigma)
+    upper = p0 * np.exp(+scale)
+    lower = p0 * np.exp(-scale)
+    return days, upper, lower
+
+
+def blend_forecast_vol(
+    ewma: float,
+    garch: float,
+    use_garch_blend: bool,
+    garch_weight: float = 0.5,
+) -> float:
+    """Historical-vol input for the cone / FV path.
+
+    Mirrors ``fetch_options_batch``: when ``use_garch_blend`` and GARCH > 0,
+    return a convex blend; otherwise return EWMA (or 0 if invalid).
+    """
+    ewma = float(ewma) if ewma is not None and math.isfinite(ewma) else 0.0
+    garch = float(garch) if garch is not None and math.isfinite(garch) else 0.0
+    if ewma < 0:
+        ewma = 0.0
+    if garch < 0:
+        garch = 0.0
+    if use_garch_blend and garch > 0.0:
+        w = min(1.0, max(0.0, float(garch_weight)))
+        return (1.0 - w) * ewma + w * garch
+    return ewma
