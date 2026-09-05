@@ -92,6 +92,23 @@ To use the AI Sentiment engine, you must run from the source:
     ```
 3.  You can also run `./build_macos.command` to launch the build script interactively.
 
+
+---
+
+## 🧱 Project Structure (Phase I MVC)
+
+`python sentinel.py` remains the supported entrypoint (`Stocks.cmd` / build scripts unchanged).
+
+| Path | Role |
+| :--- | :--- |
+| `sentinel.py` | Thin launcher + backwards-compatible re-exports |
+| `core/pricing.py` | `VegaChimpCore` (BS / Bjerksund-Stensland / EWMA) |
+| `core/technicals.py` | `calculate_technicals` |
+| `core/sentiment.py` | FinBERT `SentimentEngine` |
+| `core/data.py` | `DataProvider` ABC + `YFinanceProvider` |
+| `ui/tooltip.py` / `ui/theme.py` | Tooltip helper + dark theme |
+| `main/app.py` | `MarketApp` controller (UI still co-located; chart/options/news peel is follow-up) |
+
 ---
 
 ## 📉 Usage Guide
