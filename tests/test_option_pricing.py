@@ -316,6 +316,45 @@ class TestAmericanPricing:
         assert lower <= call - put <= upper
 
 
+
+# ==================== BS2002 Paper Table Regression ====================
+
+class TestBS2002PaperTables:
+    """Regression vs Bjerksund & Stensland (2002) two-step published values.
+
+    Tables report two-decimal approximations; we allow abs error < 0.01.
+    Cost of carry b = r - q.
+    """
+
+    def test_table1_high_div_call_put(self):
+        # Table 1: b = -0.04 => q = r + 0.04; K=100
+        # S=100, r=0.08, sig=0.20, T=0.5 -> call 4.69, put 6.37
+        r, q, sig, T, K = 0.08, 0.12, 0.20, 0.5, 100
+        call = VegaChimpCore.bjerksund_stensland(100, K, T, r, q, sig, 'call')
+        put = VegaChimpCore.bjerksund_stensland(100, K, T, r, q, sig, 'put')
+        assert abs(call - 4.69) < 0.01
+        assert abs(put - 6.37) < 0.01
+
+    def test_table2_positive_carry(self):
+        # Table 2: b = 0.04 => q = r - 0.04; ATM T=0.5
+        r, q, sig, T, K = 0.08, 0.04, 0.20, 0.5, 100
+        call = VegaChimpCore.bjerksund_stensland(100, K, T, r, q, sig, 'call')
+        put = VegaChimpCore.bjerksund_stensland(100, K, T, r, q, sig, 'put')
+        assert abs(call - 6.50) < 0.01
+        assert abs(put - 4.74) < 0.01
+
+    def test_table3_zero_div_american_put(self):
+        # Table 3: b = r => q = 0; ATM put T=0.5 -> 4.15
+        put = VegaChimpCore.bjerksund_stensland(100, 100, 0.5, 0.08, 0.0, 0.20, 'put')
+        assert abs(put - 4.15) < 0.01
+
+    def test_table1_itm_call_immediate_exercise(self):
+        # Deep ITM short-dated call under high div: approx intrinsic floor ~20
+        r, q = 0.08, 0.12
+        call = VegaChimpCore.bjerksund_stensland(120, 100, 0.25, r, q, 0.20, 'call')
+        assert abs(call - 20.00) < 0.01
+
+
 # ==================== EWMA Vol Forecast ====================
 
 class TestEWMAVol:
