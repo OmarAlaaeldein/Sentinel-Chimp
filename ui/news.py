@@ -5,7 +5,16 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import webbrowser
 
-from ui.theme import DARK_BG
+from ui.theme import (
+    APP_BG,
+    ELEVATED_BG,
+    TEXT_PRIMARY,
+    TEXT_MUTED,
+    ACCENT,
+    TREE_ALT,
+    TREE_BG,
+    _font,
+)
 
 
 def open_news_feed(parent, ticker: str, news_items, on_view_content) -> tk.Toplevel:
@@ -13,18 +22,18 @@ def open_news_feed(parent, ticker: str, news_items, on_view_content) -> tk.Tople
     win = tk.Toplevel(parent)
     win.title(f"News Feed: {ticker}")
     win.geometry("900x600")
-    win.configure(bg=DARK_BG)
+    win.configure(bg=APP_BG)
 
     header = ttk.Frame(win)
-    header.pack(fill="x", padx=10, pady=10)
+    header.pack(fill="x", padx=14, pady=12)
     ttk.Label(
         header, text=f"Latest News ({len(news_items)})",
-        font=("Arial", 16, "bold"), background="#1e1e1e", foreground="white",
+        font=_font(15, "bold"),
     ).pack(side="left")
     ttk.Label(
-        header, text="(Double-click to read)",
-        font=("Arial", 10), background="#1e1e1e", foreground="gray",
-    ).pack(side="left", padx=10, pady=(5, 0))
+        header, text="Double-click to read",
+        style="Muted.TLabel",
+    ).pack(side="left", padx=10, pady=(4, 0))
 
     columns = ("Date", "Source", "Headline")
     tree = ttk.Treeview(win, columns=columns, show="headings", height=20)
@@ -40,8 +49,8 @@ def open_news_feed(parent, ticker: str, news_items, on_view_content) -> tk.Tople
     tree.pack(side="left", fill="both", expand=True, padx=10, pady=10)
     scr.pack(side="right", fill="y", pady=10)
 
-    tree.tag_configure("odd", background="#252526", foreground="white")
-    tree.tag_configure("even", background="#333333", foreground="white")
+    tree.tag_configure("odd", background=TREE_BG, foreground=TEXT_PRIMARY)
+    tree.tag_configure("even", background=TREE_ALT, foreground=TEXT_PRIMARY)
 
     for i, item in enumerate(news_items):
         tag = "even" if i % 2 == 0 else "odd"
@@ -66,27 +75,29 @@ def open_news_reader(parent, news_item) -> tk.Toplevel:
     reader = tk.Toplevel(parent)
     reader.title("News Reader")
     reader.geometry("600x450")
-    reader.configure(bg="#1e1e1e")
+    reader.configure(bg=APP_BG)
 
     tk.Label(
-        reader, text=news_item["title"], font=("Arial", 14, "bold"),
-        bg="#1e1e1e", fg="white", wraplength=550, justify="left",
+        reader, text=news_item["title"], font=_font(13, "bold"),
+        bg=APP_BG, fg=TEXT_PRIMARY, wraplength=550, justify="left",
     ).pack(pady=15, padx=15, anchor="w")
 
-    meta = tk.Frame(reader, bg="#1e1e1e")
+    meta = tk.Frame(reader, bg=APP_BG)
     meta.pack(fill="x", padx=15)
     tk.Label(
-        meta, text=f"{news_item['source']}  •  {news_item['published']}",
-        bg="#1e1e1e", fg="#00e6ff", font=("Arial", 9),
+        meta, text=f"{news_item['source']}  ·  {news_item['published']}",
+        bg=APP_BG, fg=ACCENT, font=_font(9),
     ).pack(side="left")
 
-    tk.Label(reader, text="Snippet:", bg="#1e1e1e", fg="gray", anchor="w").pack(
+    tk.Label(reader, text="Snippet", bg=APP_BG, fg=TEXT_MUTED, anchor="w", font=_font(9)).pack(
         fill="x", padx=15, pady=(20, 5),
     )
 
     text_box = tk.Text(
-        reader, height=10, bg="#252526", fg="#dddddd",
-        font=("Segoe UI", 11), wrap="word", relief="flat", padx=10, pady=10,
+        reader, height=10, bg=ELEVATED_BG, fg=TEXT_PRIMARY,
+        font=_font(11), wrap="word", relief="flat", padx=10, pady=10,
+        highlightthickness=0, borderwidth=0,
+        insertbackground=TEXT_PRIMARY,
     )
     display_text = news_item.get("summary", "")
     if len(display_text) < 10 or display_text == news_item["title"]:
@@ -95,7 +106,7 @@ def open_news_reader(parent, news_item) -> tk.Toplevel:
     text_box.config(state="disabled")
     text_box.pack(fill="both", expand=True, padx=15, pady=5)
 
-    btn_frame = tk.Frame(reader, bg="#1e1e1e")
+    btn_frame = tk.Frame(reader, bg=APP_BG)
     btn_frame.pack(fill="x", pady=20, padx=15)
 
     def open_link():
@@ -105,9 +116,11 @@ def open_news_reader(parent, news_item) -> tk.Toplevel:
             messagebox.showerror("Error", "No link found.")
 
     btn = tk.Button(
-        btn_frame, text="🌐  Open Full Article in Browser", command=open_link,
-        bg="#007acc", fg="white", font=("Arial", 11, "bold"),
+        btn_frame, text="Open Full Article", command=open_link,
+        bg=ACCENT, fg=APP_BG, font=_font(11, "bold"),
+        activebackground="#2bb8aa", activeforeground=APP_BG,
         relief="flat", pady=8, cursor="hand2",
+        highlightthickness=0, borderwidth=0,
     )
     btn.pack(fill="x")
     return reader

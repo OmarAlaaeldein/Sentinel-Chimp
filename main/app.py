@@ -44,7 +44,14 @@ from core.vol_models import (
     garch11_vol_forecast, fit_quadratic_smile, smile_vol_arr,
 )
 from ui.tooltip import Tooltip
-from ui.theme import setup_dark_theme as apply_dark_theme, DARK_BG
+from ui.theme import (
+    setup_dark_theme as apply_dark_theme,
+    APP_BG,
+    WARNING,
+    log_colors,
+    chart_colors,
+    _font,
+)
 from ui.chart import prepare_plot_frame, draw_main_chart
 from ui.news import open_news_feed, open_news_reader
 from ui.options_explorer import build_options_explorer, OPTION_COLS
@@ -55,9 +62,11 @@ from core.vol_models import blend_forecast_vol
 class MarketApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Sentinel: Stock & Options Analyzer")
+        self.root.title("Sentinel — Stock & Options Analyzer")
         self.root.geometry("1450x900")
+        self.root.minsize(1100, 700)
         self.style = apply_dark_theme(self.root)
+        self._chart_palette = chart_colors()
         self.data_provider = YFinanceProvider(cache_duration=60)
 
         self.headline_limit = 1000
@@ -88,34 +97,37 @@ class MarketApp:
         self._vol_tooltip = None
         self.last_period = "5d"
 
-        input_frame = ttk.Frame(root, padding=10)
+        input_frame = ttk.Frame(root, padding=(14, 12))
         input_frame.pack(fill="x")
-        
-        ttk.Label(input_frame, text="Ticker:").pack(side="left")
+
+        ttk.Label(input_frame, text="Ticker", style="Muted.TLabel").pack(side="left", padx=(0, 6))
         self.entry_ticker = ttk.Entry(input_frame, width=10)
-        self.entry_ticker.pack(side="left", padx=5)
+        self.entry_ticker.pack(side="left", padx=(0, 8))
         self.entry_ticker.insert(0, "AMD")
-        self.entry_ticker.bind('<Return>', lambda e: self.load_data()) 
-        
-        
-        
-        ttk.Button(input_frame, text="Load Data", command=self.load_data).pack(side="left")
-        
-        self.btn_news = ttk.Button(input_frame, text="📰 News", command=self.open_news_window, state="disabled")
-        self.btn_news.pack(side="left", padx=10)
+        self.entry_ticker.bind('<Return>', lambda e: self.load_data())
+
+        ttk.Button(
+            input_frame, text="Load", command=self.load_data, style="Accent.TButton",
+        ).pack(side="left")
+
+        self.btn_news = ttk.Button(
+            input_frame, text="News", command=self.open_news_window,
+            state="disabled", style="Ghost.TButton",
+        )
+        self.btn_news.pack(side="left", padx=(10, 0))
 
         vol_opts = ttk.Frame(input_frame)
-        vol_opts.pack(side="left", padx=12)
+        vol_opts.pack(side="left", padx=(16, 0))
         self.var_garch_blend = tk.BooleanVar(value=self.use_garch_blend)
         self.var_smile_vol = tk.BooleanVar(value=self.use_smile_vol)
         ttk.Checkbutton(
             vol_opts, text="GARCH blend", variable=self.var_garch_blend,
             command=self._on_vol_flags_changed,
-        ).pack(side="left", padx=2)
+        ).pack(side="left", padx=(0, 8))
         ttk.Checkbutton(
             vol_opts, text="Smile vol", variable=self.var_smile_vol,
             command=self._on_vol_flags_changed,
-        ).pack(side="left", padx=2)
+        ).pack(side="left")
 
         self.paned = ttk.PanedWindow(root, orient="horizontal")
         self.paned.pack(fill="both", expand=True, padx=10, pady=5)
@@ -123,11 +135,13 @@ class MarketApp:
         self.left_frame = ttk.Frame(self.paned, width=350)
         self.paned.add(self.left_frame, weight=1)
 
-        self.lbl_price = ttk.Label(self.left_frame, text="---", font=("Arial", 28, "bold"))
-        self.lbl_price.pack(anchor="center", pady=10)
+        self.lbl_price = ttk.Label(self.left_frame, text="---", style="Price.TLabel")
+        self.lbl_price.pack(anchor="center", pady=(14, 8))
 
-        self.grid_frame = ttk.LabelFrame(self.left_frame, text="Technical Analysis", padding=15)
-        self.grid_frame.pack(fill="x", pady=5)
+        self.grid_frame = ttk.LabelFrame(
+            self.left_frame, text="Technicals", padding=12, style="Card.TLabelframe",
+        )
+        self.grid_frame.pack(fill="x", pady=5, padx=4)
         
         self.lbl_rsi = self.add_row(self.grid_frame, "RSI (14d)", 0, "Relative Strength Index. Range 0-100.")
         self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1, "Stochastic RSI.\n\nMore sensitive than standard RSI.\nUse this to time specific entries/exits within a trend.\n0.0 = Max Oversold, 1.0 = Max Overbought.")
@@ -145,8 +159,11 @@ class MarketApp:
             self.lbl_vwap = self.add_row(self.grid_frame, "VWAP Gap", 7, "Volume Weighted Average Price.\n\n'Who is winning today?'\nPrice > VWAP: Buyers are in control (Bullish).\nPrice < VWAP: Sellers are in control (Bearish).")
 
 
-        self.btn_opt = ttk.Button(self.left_frame, text="🔎 Options Explorer", command=self.open_options_window, state="disabled")
-        self.btn_opt.pack(fill="x", padx=20, pady=20, ipady=10)
+        self.btn_opt = ttk.Button(
+            self.left_frame, text="Options Explorer", command=self.open_options_window,
+            state="disabled", style="Accent.TButton",
+        )
+        self.btn_opt.pack(fill="x", padx=12, pady=(16, 12), ipady=6)
 
         self.right_frame = ttk.Frame(self.paned)
         self.paned.add(self.right_frame, weight=3)
@@ -154,71 +171,83 @@ class MarketApp:
         ctrl_frame = ttk.Frame(self.right_frame)
         ctrl_frame.pack(fill="x", pady=5)
         
-        self.btn_1d = ttk.Button(ctrl_frame, text="1D", command=lambda: self.load_chart("1d", "1m"), width=5)
+        _period_style = "Period.TButton"
+        self.btn_1d = ttk.Button(ctrl_frame, text="1D", command=lambda: self.load_chart("1d", "1m"), width=4, style=_period_style)
         self.btn_1d.pack(side="left", padx=2)
-        self.btn_5d = ttk.Button(ctrl_frame, text="5D", command=lambda: self.load_chart("5d", "5m"), width=5)
+        self.btn_5d = ttk.Button(ctrl_frame, text="5D", command=lambda: self.load_chart("5d", "5m"), width=4, style=_period_style)
         self.btn_5d.pack(side="left", padx=2)
-        self.btn_1m = ttk.Button(ctrl_frame, text="1M", command=lambda: self.load_chart("1mo", "30m"), width=5) 
+        self.btn_1m = ttk.Button(ctrl_frame, text="1M", command=lambda: self.load_chart("1mo", "30m"), width=4, style=_period_style)
         self.btn_1m.pack(side="left", padx=2)
-        self.btn_3m = ttk.Button(ctrl_frame, text="3M", command=lambda: self.load_chart("3mo", "60m"), width=5)
+        self.btn_3m = ttk.Button(ctrl_frame, text="3M", command=lambda: self.load_chart("3mo", "60m"), width=4, style=_period_style)
         self.btn_3m.pack(side="left", padx=2)
-        self.btn_1y = ttk.Button(ctrl_frame, text="1Y", command=lambda: self.load_chart("1y", "60m"), width=5)
+        self.btn_1y = ttk.Button(ctrl_frame, text="1Y", command=lambda: self.load_chart("1y", "60m"), width=4, style=_period_style)
         self.btn_1y.pack(side="left", padx=2)
-        self.btn_5y = ttk.Button(ctrl_frame, text="5Y", command=lambda: self.load_chart("5y", "1d"), width=5)
+        self.btn_5y = ttk.Button(ctrl_frame, text="5Y", command=lambda: self.load_chart("5y", "1d"), width=4, style=_period_style)
         self.btn_5y.pack(side="left", padx=2)
-        self.btn_10y = ttk.Button(ctrl_frame, text="10Y", command=lambda: self.load_chart("10y", "1wk"), width=5)
+        self.btn_10y = ttk.Button(ctrl_frame, text="10Y", command=lambda: self.load_chart("10y", "1wk"), width=4, style=_period_style)
         self.btn_10y.pack(side="left", padx=2)
-        self.btn_25y = ttk.Button(ctrl_frame, text="25Y", command=lambda: self.load_chart("25y", "1mo"), width=5)
+        self.btn_25y = ttk.Button(ctrl_frame, text="25Y", command=lambda: self.load_chart("25y", "1mo"), width=4, style=_period_style)
         self.btn_25y.pack(side="left", padx=2)
 
         self.var_show_cone = tk.BooleanVar(value=self.show_prob_cone)
         ttk.Checkbutton(
             ctrl_frame, text="Prob Cone", variable=self.var_show_cone,
             command=self._on_cone_toggle,
-        ).pack(side="left", padx=8)
+        ).pack(side="left", padx=(10, 0))
 
-        self.lbl_status = ttk.Label(ctrl_frame, text="", foreground="gray", font=("Arial", 8))
+        self.lbl_status = ttk.Label(ctrl_frame, text="", style="Status.TLabel")
         self.lbl_status.pack(side="right", padx=10)
 
-        self.figure = Figure(figsize=(5, 4), dpi=120, facecolor='#121212') 
-        
-        self.ax = self.figure.add_subplot(111) 
-        
-        # Make the chart background slightly lighter than the border for contrast
-        self.ax.set_facecolor('#121212') 
-        
+        _cp = self._chart_palette
+        self.figure = Figure(figsize=(5, 4), dpi=120, facecolor=_cp["figure"])
+
+        self.ax = self.figure.add_subplot(111)
+        self.ax.set_facecolor(_cp["face"])
+
         self.canvas = FigureCanvasTkAgg(self.figure, self.right_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
-        
-        # Make the Tkinter canvas widget black to match
-        self.canvas.get_tk_widget().configure(bg='#121212')
+        self.canvas.get_tk_widget().configure(bg=_cp["figure"])
         self.hover_annot = None
         self.last_plot_df = None
         self.canvas.mpl_connect('motion_notify_event', self.on_hover)
 
 # --- SYSTEM LOG & CONTROLS ---
         if self.use_sentiment:
-            log_frame = ttk.LabelFrame(root, text="System Log & AI Controls", padding=5)
-
+            log_frame = ttk.LabelFrame(
+                root, text="System Log & AI Controls", padding=8, style="Card.TLabelframe",
+            )
         else:
-            log_frame = ttk.LabelFrame(root, text="System Log", padding=5)
-            
-        log_frame.pack(fill="x", padx=10, pady=5)
+            log_frame = ttk.LabelFrame(
+                root, text="System Log", padding=8, style="Card.TLabelframe",
+            )
+
+        log_frame.pack(fill="x", padx=10, pady=(0, 8))
 
         ctrl_panel = ttk.Frame(log_frame)
         ctrl_panel.pack(fill="x", pady=2)
-        
-        self.btn_log = ttk.Button(ctrl_panel, text="Show Log", command=self.toggle_log, width=10)
+
+        self.btn_log = ttk.Button(
+            ctrl_panel, text="Show Log", command=self.toggle_log, width=10, style="Ghost.TButton",
+        )
         self.btn_log.pack(side="right", padx=5)
         if self.use_sentiment:
-            ttk.Label(ctrl_panel, text="Active Model:").pack(side="left")
-        
-            self.lbl_model_status = ttk.Label(ctrl_panel, text="Status: Init...", foreground="orange")
+            ttk.Label(ctrl_panel, text="Active Model:", style="Muted.TLabel").pack(side="left")
+            self.lbl_model_status = ttk.Label(
+                ctrl_panel, text="Status: Init...", style="Status.TLabel", foreground=WARNING,
+            )
             self.lbl_model_status.pack(side="left", padx=10)
 
-        self.log_box = tk.Text(log_frame, height=6, font=("Consolas", 9), 
-                               bg="#1e1e1e", fg="#00ff00", # Matrix Green Text
-                               insertbackground="white") # Cursor color
+        _log = log_colors()
+        self.log_box = tk.Text(
+            log_frame, height=6, font=_font(9, mono=True),
+            bg=_log["bg"], fg=_log["fg"],
+            insertbackground=_log["insertbackground"],
+            selectbackground=_log["selectbackground"],
+            selectforeground=_log["selectforeground"],
+            highlightthickness=_log["highlightthickness"],
+            relief=_log["relief"],
+            borderwidth=_log["borderwidth"],
+        )
         self.log_scroll = ttk.Scrollbar(log_frame, command=self.log_box.yview)
         self.log_box['yscrollcommand'] = self.log_scroll.set
         
@@ -381,15 +410,15 @@ class MarketApp:
             self.log_visible = True
 
     def add_row(self, parent, text, row, tooltip_text=None):
-        f = ttk.Frame(parent)
-        f.grid(row=row, column=0, sticky="w", padx=5, pady=5)
-        ttk.Label(f, text=text, font=("Arial", 10, "bold")).pack(side="left")
+        f = ttk.Frame(parent, style="Panel.TFrame")
+        f.grid(row=row, column=0, sticky="w", padx=4, pady=3)
+        ttk.Label(f, text=text, style="Metric.TLabel").pack(side="left")
         if tooltip_text:
-            q = ttk.Label(f, text="?", foreground="orange", cursor="question_arrow", padding=(4, 0))
+            q = ttk.Label(f, text="?", style="Hint.TLabel", padding=(4, 0))
             q.pack(side="left")
             Tooltip(q, tooltip_text)
-        lbl = ttk.Label(parent, text="---", font=("Arial", 10))
-        lbl.grid(row=row, column=1, sticky="e", padx=10, pady=5)
+        lbl = ttk.Label(parent, text="---", style="MetricValue.TLabel")
+        lbl.grid(row=row, column=1, sticky="e", padx=8, pady=3)
         return lbl
 
     def load_data(self, period="5d", interval="5m"):
@@ -412,9 +441,9 @@ class MarketApp:
                 self.sent_cache.clear()
             self.projected_earnings = []
             
-            self.lbl_pe.config(text="Updating...", foreground="orange")
-            self.lbl_pe_percentile.config(text="Updating...", foreground="orange")
-            self.lbl_peg.config(text="Updating...", foreground="orange")
+            self.lbl_pe.config(text="Updating...", foreground=WARNING)
+            self.lbl_pe_percentile.config(text="Updating...", foreground=WARNING)
+            self.lbl_peg.config(text="Updating...", foreground=WARNING)
             self.pe_fwd = None
             self.pe_ttm = None
             self.peg_ratio = None
@@ -423,7 +452,7 @@ class MarketApp:
             self.valuation_status = {}
             self.current_price = 0.0
             self.hv_30 = 0.0
-            self.btn_opt.config(state="disabled", text="🔎 Options Explorer")
+            self.btn_opt.config(state="disabled", text="Options Explorer")
             self.btn_news.config(state="disabled")
             
             # Start background fundamental fetch
@@ -1121,7 +1150,7 @@ class MarketApp:
         else:
             self.lbl_cci.config(text="N/A", foreground="gray")
 
-        self.btn_opt.config(state="normal", text=f"🔎 Open {self.current_ticker} Option Scanner")
+        self.btn_opt.config(state="normal", text=f"Open {self.current_ticker} Options")
     
     def visualize_3d(self, option_type):
         """Interactive 3D Plot with Uniform Color Types (Fixes Ragged Array Error)."""
@@ -1138,7 +1167,7 @@ class MarketApp:
         vis_win = Toplevel(self.root)
         vis_win.title(f"3D Analysis: {self.current_ticker} {option_type}s")
         vis_win.geometry("1000x850")
-        vis_win.configure(bg="#1e1e1e")
+        vis_win.configure(bg=APP_BG)
 
         # --- CONTROLS ---
         ctrl_frame = ttk.LabelFrame(vis_win, text="Filter Conditions", padding=10)
@@ -1150,9 +1179,9 @@ class MarketApp:
         var_reg_over   = tk.BooleanVar(value=True)
 
         # --- FIGURE ---
-        fig = Figure(figsize=(8, 6), dpi=100, facecolor="#1e1e1e")
+        fig = Figure(figsize=(8, 6), dpi=100, facecolor=APP_BG)
         ax = fig.add_subplot(111, projection='3d')
-        ax.set_facecolor("#1e1e1e")
+        ax.set_facecolor(APP_BG)
         
         canvas = FigureCanvasTkAgg(fig, master=vis_win)
         canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -1305,12 +1334,12 @@ class MarketApp:
                 title=f"{self.current_ticker} {option_type} Landscape (Filtered)",
                 scene=dict(
                     xaxis_title='Days to Expiry', yaxis_title='Strike', zaxis_title='EV',
-                    bgcolor='#1e1e1e',
-                    xaxis=dict(backgroundcolor="#1e1e1e", color="white"),
-                    yaxis=dict(backgroundcolor="#1e1e1e", color="white"),
-                    zaxis=dict(backgroundcolor="#1e1e1e", color="white"),
+                    bgcolor=APP_BG,
+                    xaxis=dict(backgroundcolor=APP_BG, color="white"),
+                    yaxis=dict(backgroundcolor=APP_BG, color="white"),
+                    zaxis=dict(backgroundcolor=APP_BG, color="white"),
                 ),
-                paper_bgcolor='#1e1e1e', font=dict(color="white")
+                paper_bgcolor=APP_BG, font=dict(color="white")
             )
 
             plot(fig, filename=filename, auto_open=True)

@@ -6,7 +6,13 @@ from tkinter import ttk
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Any
 
-from ui.theme import DARK_BG
+from ui.theme import (
+    APP_BG,
+    TEXT_PRIMARY,
+    BULL,
+    BEAR,
+    TREE_BG,
+)
 
 
 OPTION_COLS = (
@@ -34,39 +40,44 @@ def build_options_explorer(
     win = tk.Toplevel(parent)
     win.title(f"Options Explorer: {ticker}")
     win.geometry("1200x800")
-    win.configure(bg=DARK_BG)
+    win.configure(bg=APP_BG)
 
     left_panel = ttk.Frame(win, width=200)
-    left_panel.pack(side="left", fill="y", padx=5, pady=5)
+    left_panel.pack(side="left", fill="y", padx=8, pady=8)
     right_panel = ttk.Frame(win)
-    right_panel.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+    right_panel.pack(side="right", fill="both", expand=True, padx=8, pady=8)
 
-    ttk.Label(left_panel, text="Target Date (YYYY-MM-DD):").pack(fill="x")
+    ttk.Label(left_panel, text="Target Date (YYYY-MM-DD)", style="Muted.TLabel").pack(fill="x")
     entry_date = ttk.Entry(left_panel)
-    entry_date.pack(fill="x", pady=2)
+    entry_date.pack(fill="x", pady=(2, 6))
     entry_date.insert(0, (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d"))
 
     ttk.Button(
         left_panel, text="Select Prev 7 Expirations", command=on_filter_expirations,
-    ).pack(fill="x", pady=5)
+        style="Ghost.TButton",
+    ).pack(fill="x", pady=4)
     ttk.Button(
-        left_panel, text="⚡ Scan ALL Undervalued", command=on_scan_all,
-    ).pack(fill="x", pady=20)
+        left_panel, text="Scan ALL Undervalued", command=on_scan_all,
+        style="Accent.TButton",
+    ).pack(fill="x", pady=(12, 8))
 
-    viz_frame = ttk.LabelFrame(left_panel, text="3D Visualizer", padding=5)
-    viz_frame.pack(fill="x", pady=20)
-    ttk.Button(viz_frame, text="3D Plot (CALLS)", command=on_viz_calls).pack(fill="x", pady=2)
-    ttk.Button(viz_frame, text="3D Plot (PUTS)", command=on_viz_puts).pack(fill="x", pady=2)
+    viz_frame = ttk.LabelFrame(left_panel, text="3D Visualizer", padding=8, style="Card.TLabelframe")
+    viz_frame.pack(fill="x", pady=12)
+    ttk.Button(viz_frame, text="3D Plot (CALLS)", command=on_viz_calls, style="Period.TButton").pack(fill="x", pady=2)
+    ttk.Button(viz_frame, text="3D Plot (PUTS)", command=on_viz_puts, style="Period.TButton").pack(fill="x", pady=2)
 
     ttk.Button(
-        left_panel, text="💾 Export Results to CSV", command=on_export_csv,
+        left_panel, text="Export Results to CSV", command=on_export_csv,
+        style="Ghost.TButton",
     ).pack(fill="x", pady=5)
 
     exp_list = tk.Listbox(
         left_panel, selectmode="extended", height=25,
-        bg="#252526", fg="white", highlightthickness=0,
+        bg=TREE_BG, fg=TEXT_PRIMARY, highlightthickness=0,
+        borderwidth=0, relief="flat",
+        selectbackground="#243d4a", selectforeground=TEXT_PRIMARY,
     )
-    exp_list.pack(fill="both", expand=True)
+    exp_list.pack(fill="both", expand=True, pady=(8, 0))
     exp_list.bind("<<ListboxSelect>>", on_exp_select)
 
     tree = ttk.Treeview(right_panel, columns=OPTION_COLS, show="headings")
@@ -87,7 +98,8 @@ def build_options_explorer(
     tree.pack(side="left", fill="both", expand=True)
     scr.pack(side="right", fill="y")
 
-    tree.tag_configure("green", background="#8fbc8f", foreground="black")
-    tree.tag_configure("red", background="#e57373", foreground="black")
+    # Soft bull/bear row tints (readable on dark surfaces)
+    tree.tag_configure("green", background="#1a3a2c", foreground=BULL)
+    tree.tag_configure("red", background="#3a1e24", foreground=BEAR)
 
     return {"win": win, "entry_date": entry_date, "exp_list": exp_list, "tree": tree}

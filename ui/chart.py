@@ -6,6 +6,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from ui.theme import chart_colors
+
 
 def prepare_plot_frame(df, interval: Optional[str]):
     """Copy ``df`` and optionally filter to RTH for intraday intervals.
@@ -42,10 +44,10 @@ def draw_probability_cone(
     p0: float,
     sigma: float,
     horizon_days: int = 30,
-    face_color: str = "#00e6ff",
-    alpha: float = 0.18,
-    edge_color: str = "#00e6ff",
-    edge_alpha: float = 0.55,
+    face_color: str = "#4db8c4",
+    alpha: float = 0.16,
+    edge_color: str = "#4db8c4",
+    edge_alpha: float = 0.5,
 ) -> Optional[Tuple[float, float, float]]:
     """Draw a translucent vol cone extending ``horizon_days`` right of last_x.
 
@@ -131,22 +133,23 @@ def draw_main_chart(
       show (bool), p0 (float), sigma (float), horizon_days (int, default 30)
     """
     ax.clear()
+    pal = chart_colors()
 
-    ax.plot(x_vals, plot_df["Close"], label="Price", color="#00e6ff", linewidth=1.5)
+    ax.plot(x_vals, plot_df["Close"], label="Price", color=pal["price"], linewidth=1.6)
 
     if "EMA_5" in plot_df.columns:
-        ax.plot(x_vals, plot_df["EMA_5"], label="EMA 5", color="#ff00ff", linewidth=1, alpha=0.8)
+        ax.plot(x_vals, plot_df["EMA_5"], label="EMA 5", color="#c084fc", linewidth=1, alpha=0.85)
     if "EMA_21" in plot_df.columns:
-        ax.plot(x_vals, plot_df["EMA_21"], label="EMA 21", color="#ffe100", linewidth=1, alpha=0.8)
+        ax.plot(x_vals, plot_df["EMA_21"], label="EMA 21", color="#f0c14a", linewidth=1, alpha=0.85)
     if "EMA_63" in plot_df.columns:
-        ax.plot(x_vals, plot_df["EMA_63"], label="EMA 63", color="#9900ff", linewidth=1, alpha=0.8)
+        ax.plot(x_vals, plot_df["EMA_63"], label="EMA 63", color="#7c6cf0", linewidth=1, alpha=0.85)
     if "EMA_200" in plot_df.columns and plot_df["EMA_200"].notna().sum() > 0:
-        ax.plot(x_vals, plot_df["EMA_200"], label="EMA 200", color="#ff3333", linewidth=1.5)
+        ax.plot(x_vals, plot_df["EMA_200"], label="EMA 200", color="#f07178", linewidth=1.5)
 
     if "VWAP" in plot_df.columns and plot_df["VWAP"].notna().sum() > 0:
         ax.plot(
             x_vals, plot_df["VWAP"], label="VWAP",
-            color="#ffd700", linewidth=1.5, linestyle="--",
+            color="#e8c547", linewidth=1.3, linestyle="--", alpha=0.9,
         )
 
     fib_high = plot_df["High"].max()
@@ -166,11 +169,11 @@ def draw_main_chart(
         for level_name, level_val in fib_levels.items():
             ax.axhline(
                 y=level_val, color=fib_colors[level_name],
-                linestyle=":", linewidth=0.7, alpha=0.6,
+                linestyle=":", linewidth=0.7, alpha=0.55,
             )
             ax.text(
                 x_vals[-1], level_val, f" {level_name}",
-                color=fib_colors[level_name], fontsize=6, va="center", alpha=0.8,
+                color=fib_colors[level_name], fontsize=6, va="center", alpha=0.75,
             )
 
     x_right = float(x_vals[-1])
@@ -184,6 +187,8 @@ def draw_main_chart(
             p0=cone.get("p0"),
             sigma=cone.get("sigma"),
             horizon_days=int(cone.get("horizon_days", 30)),
+            face_color=pal["cone"],
+            edge_color=pal["cone"],
         )
         if extent is not None:
             x_right = max(x_right, extent[0])
@@ -195,17 +200,23 @@ def draw_main_chart(
         pad = 0.02 * (y_hi - y_lo)
         ax.set_ylim(y_lo - pad, y_hi + pad)
 
-    ax.set_title(f"{ticker} Price Action ({period})", color="white", fontweight="bold")
-    ax.legend(loc="upper right", fontsize="small", frameon=False, labelcolor="white")
-    ax.grid(True, color="#2a2a2a", linestyle="-", linewidth=0.5)
+    ax.set_title(
+        f"{ticker}  ·  {period}",
+        color=pal["title"], fontweight="semibold", fontsize=11, pad=10,
+    )
+    ax.legend(
+        loc="upper right", fontsize=8, frameon=False,
+        labelcolor=pal["muted"],
+    )
+    ax.grid(True, color=pal["grid"], linestyle="-", linewidth=0.6, alpha=0.9)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["bottom"].set_color("#444444")
-    ax.spines["left"].set_color("#444444")
-    ax.tick_params(axis="x", colors="gray")
-    ax.tick_params(axis="y", colors="gray")
+    ax.spines["bottom"].set_color(pal["spine"])
+    ax.spines["left"].set_color(pal["spine"])
+    ax.tick_params(axis="x", colors=pal["tick"], labelsize=8)
+    ax.tick_params(axis="y", colors=pal["tick"], labelsize=8)
 
     apply_tick_labels(ax, times_for_labels, period)
 
-    ax.set_facecolor("#121212")
-    figure.patch.set_facecolor("#121212")
+    ax.set_facecolor(pal["face"])
+    figure.patch.set_facecolor(pal["figure"])
