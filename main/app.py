@@ -40,6 +40,9 @@ from core.pricing import VegaChimpCore
 from core.technicals import calculate_technicals
 from core.sentiment import sentiment_engine
 from core.data import YFinanceProvider
+from core.vol_models import (
+    garch11_vol_forecast, fit_quadratic_smile, smile_vol_arr,
+)
 from ui.tooltip import Tooltip
 from ui.theme import setup_dark_theme as apply_dark_theme, DARK_BG
 
@@ -67,6 +70,12 @@ class MarketApp:
         self.valuation_status = {}
         
         self.use_sentiment = False
+        # Vol / Greek experiments (EWMA path preserved unless blend flags are on)
+        self.use_garch_blend = False   # blend GARCH(1,1) into historical vol for FV
+        self.use_smile_vol = False     # replace raw IV with quadratic smile fit
+        self.use_american_greeks = True  # FD Greeks on BS2002 (else European BS)
+        self.garch_vol = 0.0
+        self.garch_info = {}
 
         input_frame = ttk.Frame(root, padding=10)
         input_frame.pack(fill="x")
@@ -875,7 +884,9 @@ class MarketApp:
             recent_returns = df_tech['log_ret'].dropna().tail(30)
             hv_30 = (float(recent_returns.std()) * np.sqrt(252)
                      if len(recent_returns) >= 2 else 0.0)
-            ewma_vol = VegaChimpCore.ewma_vol_forecast(df_tech['log_ret'].dropna().values)
+            log_rets = df_tech['log_ret'].dropna().values
+            ewma_vol = VegaChimpCore.ewma_vol_forecast(log_rets)
+            garch_vol, garch_info = garch11_vol_forecast(log_rets)
             
             # --- 4. Sentiment Analysis ---
             sentiment_score, headlines = self.calculate_sentiment(ticker, stock)
@@ -898,10 +909,13 @@ class MarketApp:
                     return
                 self.current_price = current_price
                 self.hv_30 = hv_30
+                self.garch_vol = garch_vol
+                self.garch_info = garch_info
                 self.lbl_status.config(text=status_msg)
                 self.btn_news.config(state="normal" if headlines else "disabled")
                 self.update_technicals(
-                    last_copy, hv_30, ewma_vol, sentiment_score, period_return)
+                    last_copy, hv_30, ewma_vol, sentiment_score, period_return,
+                    garch_vol=garch_vol)
                 self.update_chart(df, ticker, period)
 
             self.root.after(0, publish_result)
@@ -1062,7 +1076,7 @@ class MarketApp:
         except Exception as e:
             self.log(f"Chart Render Error: {e}")
 
-    def update_technicals(self, data, hv, ewma, sentiment, period_return):
+    def update_technicals(self, data, hv, ewma, sentiment, period_return, garch_vol=None):
         self.lbl_price.config(text=f"${data['Close']:.2f}")
         
         rsi_val = data['RSI']
@@ -1143,7 +1157,10 @@ class MarketApp:
         self.lbl_atr.config(text=f"${data['ATR']:.2f}")
         
         # --- EWMA & HV DISPLAY ---
-        self.lbl_vol.config(text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}")
+        garch_txt = ""
+        if garch_vol is not None and garch_vol > 0:
+            garch_txt = f" | GARCH: {garch_vol:.1%}"
+        self.lbl_vol.config(text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}{garch_txt}")
         
         if self.use_sentiment:
             if sentiment is not None:
@@ -1788,41 +1805,107 @@ class MarketApp:
                 sqrtT = math.sqrt(T)
                 is_earnings = date in earnings_contracts
                 threshold = 0.25 if is_earnings else 0.15
-                bs = VegaChimpCore.bjerksund_stensland
-                greeks_fn = VegaChimpCore.bs_greeks
                 parity_bounds = VegaChimpCore.american_put_call_parity_bounds
                 Ncdf = VegaChimpCore.N
 
-                for i in range(len(strikes)):
-                    if vol[i] <= 0 or not np.isfinite(vol[i]):
-                        continue
-                    market_price = float(mid[i])
-                    if market_price <= 0 or not math.isfinite(market_price):
-                        continue
-                    oi = int(oi_arr[i]) if np.isfinite(oi_arr[i]) else 0
-                    sp = float(spread_pct[i])
-                    if sp > 50.0 and oi == 0:
-                        continue
-                    iv = float(iv_arr[i])
-                    if not math.isfinite(iv) or iv < 0.01:
-                        continue
+                # ---- Filter eligible contracts (vector masks) ----
+                kind_is_call = (types == "CALL")
+                valid = (
+                    (vol > 0) & np.isfinite(vol)
+                    & (mid > 0) & np.isfinite(mid)
+                    & np.isfinite(iv_arr) & (iv_arr >= 0.01)
+                    & np.isfinite(strikes) & (strikes > 0)
+                )
+                # Wide spread + zero OI filter (match prior scalar rule)
+                oi_int = np.where(np.isfinite(oi_arr), oi_arr, 0.0)
+                valid &= ~((spread_pct > 50.0) & (oi_int == 0))
 
-                    historical_vol = historical_vol_base
-                    if historical_vol is None or historical_vol <= 0:
-                        historical_vol = iv
-                    if iv < 0.05:
-                        vol_input = historical_vol
-                    else:
-                        vol_input = iv_weight * iv + hv_weight * historical_vol
+                idx = np.flatnonzero(valid)
+                if idx.size == 0:
+                    continue
 
-                    kind_str = "call" if types[i] == "CALL" else "put"
-                    strike = float(strikes[i])
-                    fair = bs(spot, strike, T, RFR, DIV_YIELD, vol_input, kind_str)
-                    if fair <= 0:
+                strikes_v = strikes[idx]
+                mid_v = mid[idx]
+                iv_v = iv_arr[idx]
+                vol_v = vol[idx]
+                oi_v = oi_int[idx]
+                sp_v = spread_pct[idx]
+                is_call_v = kind_is_call[idx]
+                types_v = types[idx]
+
+                historical_vol = historical_vol_base
+                if historical_vol is None or historical_vol <= 0:
+                    historical_vol = float(np.nanmedian(iv_v)) if iv_v.size else 0.25
+                # Optional GARCH blend into the historical leg (default off)
+                if self.use_garch_blend and getattr(self, 'garch_vol', 0) > 0:
+                    historical_vol = 0.5 * historical_vol + 0.5 * float(self.garch_vol)
+
+                # Optional quadratic smile smoother for the IV leg
+                iv_for_blend = iv_v.copy()
+                forward = spot * math.exp((RFR - DIV_YIELD) * T)
+                smile_coef = None
+                if self.use_smile_vol:
+                    smile_coef = fit_quadratic_smile(strikes_v, iv_v, forward)
+                    if smile_coef is not None:
+                        iv_for_blend = smile_vol_arr(strikes_v, forward, smile_coef)
+
+                vol_input = np.where(
+                    iv_for_blend < 0.05,
+                    historical_vol,
+                    iv_weight * iv_for_blend + hv_weight * historical_vol,
+                )
+
+                kinds = np.where(is_call_v, 'call', 'put')
+                # Batch numpy path wins above ~64 contracts; below that scalar
+                # BS2002 is faster (numpy overhead dominates small n).
+                _BATCH_N = 64
+                if idx.size >= _BATCH_N:
+                    fair_v = VegaChimpCore.bjerksund_stensland_batch(
+                        spot, strikes_v, T, RFR, DIV_YIELD, vol_input, kinds,
+                    )
+                else:
+                    fair_v = np.array([
+                        VegaChimpCore.bjerksund_stensland(
+                            spot, float(strikes_v[j]), T, RFR, DIV_YIELD,
+                            float(vol_input[j]), kinds[j],
+                        )
+                        for j in range(idx.size)
+                    ], dtype=float)
+
+                # Greeks: American FD (batch when large) or European BS
+                greeks_map = None
+                if self.use_american_greeks and idx.size >= _BATCH_N:
+                    greeks_map = VegaChimpCore.american_greeks_batch(
+                        spot, strikes_v, RFR, DIV_YIELD, iv_v, T, kinds,
+                    )
+
+                for j, i in enumerate(idx):
+                    fair = float(fair_v[j])
+                    if fair <= 0 or not math.isfinite(fair):
                         continue
+                    market_price = float(mid_v[j])
+                    strike = float(strikes_v[j])
+                    iv = float(iv_v[j])
+                    kind_str = kinds[j]
                     ev = fair - market_price
+                    oi = int(oi_v[j])
+                    sp = float(sp_v[j])
 
-                    greeks = greeks_fn(spot, strike, RFR, DIV_YIELD, iv, T, kind_str)
+                    if greeks_map is not None:
+                        greeks = {
+                            'delta': float(greeks_map['delta'][j]),
+                            'gamma': float(greeks_map['gamma'][j]),
+                            'theta': float(greeks_map['theta'][j]),
+                            'vega': float(greeks_map['vega'][j]),
+                        }
+                    elif self.use_american_greeks:
+                        greeks = VegaChimpCore.american_greeks(
+                            spot, strike, RFR, DIV_YIELD, iv, T, kind_str,
+                        )
+                    else:
+                        greeks = VegaChimpCore.bs_greeks(
+                            spot, strike, RFR, DIV_YIELD, iv, T, kind_str,
+                        )
 
                     try:
                         if kind_str == "call":
@@ -1852,15 +1935,15 @@ class MarketApp:
                     is_undervalued = ev > threshold
                     scan_buf.append({
                         'date': date,
-                        'type': types[i],
+                        'type': types_v[j],
                         'strike': strike,
                         'ev': ev,
-                        'vol': vol[i],
+                        'vol': float(vol_v[j]),
                         'is_earnings': is_earnings,
                         'is_good': is_undervalued,
                     })
 
-                    breakeven = strike + market_price if types[i] == "CALL" else strike - market_price
+                    breakeven = strike + market_price if kind_str == "call" else strike - market_price
                     verdict = "Fair"
                     tag = ""
                     if is_undervalued:
@@ -1875,7 +1958,7 @@ class MarketApp:
                         continue
 
                     vals = (
-                        date, types[i], f"{strike:.2f}", int(vol[i]),
+                        date, types_v[j], f"{strike:.2f}", int(vol_v[j]),
                         oi, f"{market_price:.2f}", f"{sp:.0f}%",
                         f"{breakeven:.2f}", f"{iv:.1%}",
                         f"{fair:.2f}", f"{ev:+.2f}",
