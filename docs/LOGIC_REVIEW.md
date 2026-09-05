@@ -159,7 +159,7 @@ Tests: core suite + cone/prefs helpers — see latest pytest count on `main`.
 | :--- | :--- |
 | Probability cone (`probability_cone`, chart overlay, Prob Cone toggle) | Landed |
 | GUI toggles for `use_garch_blend` / `use_smile_vol` + vol-label hint | Landed |
-| GitHub Actions CI (`requirements-ci.txt`, no torch) | Landed |
+| GitHub Actions CI (`requirements-ci.txt` + `docs/github-actions-ci.yml`) | Template on main; `.github/workflows/ci.yml` needs `workflow` OAuth scope to publish |
 | UI peel (chart / news / options) | Landed |
 
 Cone σ uses EWMA by default; when GARCH blend is on, same 50/50 blend as the options FV path (`blend_forecast_vol`).
