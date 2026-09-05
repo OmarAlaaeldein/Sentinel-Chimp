@@ -72,6 +72,9 @@ class SentimentEngine:
                 target["pos_idx"] = label2id['positive']
                 target["neg_idx"] = label2id['negative']
 
+            # Inference-only: disable dropout and avoid autograd bookkeeping.
+            target["model"].eval()
+
             # Only mark loaded AFTER successful validation so a failure doesn't
             # leave the model silently usable with a wrong label mapping.
             target["loaded"] = True

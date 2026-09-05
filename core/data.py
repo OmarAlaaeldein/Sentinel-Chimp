@@ -59,12 +59,23 @@ class DataProvider(ABC):
 
 
 class YFinanceProvider(DataProvider):
-    """yfinance-backed DataProvider with optional OHLCV cache."""
+    """yfinance-backed DataProvider with OHLCV / rate / chain TTL caches."""
 
-    def __init__(self, cache_duration: float = 60.0):
+    def __init__(
+        self,
+        cache_duration: float = 60.0,
+        rate_cache_duration: float = 300.0,
+        chain_cache_duration: float = 60.0,
+    ):
         self.cache_duration = cache_duration
+        self.rate_cache_duration = rate_cache_duration
+        self.chain_cache_duration = chain_cache_duration
         self._data_cache = {}
         self._data_cache_lock = threading.Lock()
+        self._rate_cache = None  # (short, long, ts) or None
+        self._rate_cache_lock = threading.Lock()
+        self._chain_cache = {}
+        self._chain_cache_lock = threading.Lock()
 
     def create_ticker(self, symbol: str) -> Any:
         return yf.Ticker(symbol)
@@ -112,6 +123,10 @@ class YFinanceProvider(DataProvider):
     def clear_cache(self):
         with self._data_cache_lock:
             self._data_cache.clear()
+        with self._rate_cache_lock:
+            self._rate_cache = None
+        with self._chain_cache_lock:
+            self._chain_cache.clear()
 
     def get_info(self, ticker: Any) -> dict:
         return ticker.info or {}
@@ -126,10 +141,30 @@ class YFinanceProvider(DataProvider):
         return ticker.options
 
     def get_option_chain(self, ticker: Any, expiration: str) -> Any:
-        return ticker.option_chain(expiration)
+        """Return option chain; TTL-cached to avoid repeat yfinance hits per scan."""
+        symbol = getattr(ticker, "ticker", None) or getattr(ticker, "symbol", None) or id(ticker)
+        key = (symbol, expiration)
+        now = time.time()
+        with self._chain_cache_lock:
+            hit = self._chain_cache.get(key)
+            if hit is not None:
+                chain, ts = hit
+                if now - ts < self.chain_cache_duration:
+                    return chain
+        chain = ticker.option_chain(expiration)
+        with self._chain_cache_lock:
+            self._chain_cache[key] = (chain, now)
+        return chain
 
     def fetch_rate_curve(self) -> Tuple[float, float]:
-        """Fetches ^IRX (short) and ^TNX (long) rates once."""
+        """Fetches ^IRX (short) and ^TNX (long) rates; cached ~5 minutes."""
+        now = time.time()
+        with self._rate_cache_lock:
+            if self._rate_cache is not None:
+                short_rate, long_rate, ts = self._rate_cache
+                if now - ts < self.rate_cache_duration:
+                    return short_rate, long_rate
+
         try:
             short_rate = yf.Ticker("^IRX").fast_info["last_price"] / 100
             if short_rate <= 0:
@@ -142,6 +177,9 @@ class YFinanceProvider(DataProvider):
                 long_rate = short_rate
         except Exception:
             long_rate = short_rate
+
+        with self._rate_cache_lock:
+            self._rate_cache = (short_rate, long_rate, now)
         return short_rate, long_rate
 
     def get_calendar(self, ticker: Any) -> Any:

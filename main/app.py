@@ -1694,16 +1694,22 @@ class MarketApp:
         except Exception as e:
             self.log(f"UI Update Error (Display): {e}")
 
+
+    def _flush_option_rows(self, rows):
+        """Insert a batch of option-scan rows on the UI thread."""
+        tree = self.tree
+        for vals, tag in rows:
+            tree.insert("", "end", values=vals, tags=(tag,))
+
     def fetch_options_batch(self, dates, filter_under_only=False):
         with self._scan_lock:
             self.scan_data = []
 
         stock = self.stock
-
-        # 1. PURE INPUTS
+        spot = float(self.current_price)
         DIV_YIELD = self.get_smart_dividend(stock)
 
-        # Fetch rate curve once for the entire batch to avoid per-expiry network calls
+        # Fetch rate curve once for the entire batch (provider TTL-caches ^IRX/^TNX)
         _short_rate, _long_rate = self._fetch_rate_curve()
 
         earnings_contracts = set()
@@ -1711,16 +1717,29 @@ class MarketApp:
             for p_date in self.projected_earnings:
                 p_str = p_date.strftime("%Y-%m-%d")
                 valid_exps = [e for e in self.all_exps if e >= p_str]
-                if valid_exps: earnings_contracts.add(min(valid_exps))
+                if valid_exps:
+                    earnings_contracts.add(min(valid_exps))
+
+        historical_vol_base = self._to_finite_float(self.hv_30)
+        today = datetime.now().date()
+        ui_batch = []
+        UI_BATCH_SIZE = 40
+        scan_buf = []
+
+        def flush_ui():
+            nonlocal ui_batch
+            if not ui_batch:
+                return
+            batch = ui_batch
+            ui_batch = []
+            self.root.after(0, lambda b=batch: self._flush_option_rows(b))
 
         for date in dates:
             try:
                 exp_date = datetime.strptime(date, "%Y-%m-%d").date()
-                today = datetime.now().date()
                 trading_days = int(np.busday_count(today, exp_date))
-                T = max(trading_days / 252.0, 1/252)  # Minimum 1 trading day
+                T = max(trading_days / 252.0, 1 / 252)
 
-                # Term-matched risk-free rate using pre-fetched curve
                 if T <= 0.25:
                     RFR = _short_rate
                 else:
@@ -1729,168 +1748,150 @@ class MarketApp:
                     RFR = _short_rate + weight * (_long_rate - _short_rate)
 
                 chain = self.data_provider.get_option_chain(stock, date)
-                calls = chain.calls.assign(Type="CALL"); puts = chain.puts.assign(Type="PUT")
+                calls = chain.calls.assign(Type="CALL")
+                puts = chain.puts.assign(Type="PUT")
+                all_options = pd.concat([calls, puts], ignore_index=True)
+                if all_options.empty:
+                    continue
+                if 'volume' in all_options.columns:
+                    all_options = all_options.sort_values('volume', ascending=False, kind='mergesort')
 
-                # Get ALL options (no .head limit)
-                all_options = pd.concat([calls, puts]).sort_values('volume', ascending=False)
+                # Vectorized mid prices for parity map + scan filters
+                bid = pd.to_numeric(all_options.get('bid', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
+                ask = pd.to_numeric(all_options.get('ask', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
+                last = pd.to_numeric(all_options.get('lastPrice', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
+                vol = pd.to_numeric(all_options.get('volume', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
+                oi_arr = pd.to_numeric(all_options.get('openInterest', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
+                iv_arr = pd.to_numeric(all_options.get('impliedVolatility', 0), errors='coerce').to_numpy(dtype=float)
+                strikes = pd.to_numeric(all_options['strike'], errors='coerce').to_numpy(dtype=float)
+                types = all_options['Type'].to_numpy()
 
-                # --- Put-Call Parity check data (C9): build strike->price map ---
-                parity_map = {}  # strike -> {'call_mid': x, 'put_mid': y}
-                for _, prow in all_options.iterrows():
-                    s = prow['strike']
-                    bid_p = prow.get('bid', 0) or 0
-                    ask_p = prow.get('ask', 0) or 0
-                    if bid_p > 0 and ask_p > 0:
-                        mid = (bid_p + ask_p) / 2
-                    elif prow['lastPrice'] > 0:
-                        mid = prow['lastPrice']
-                    else:
+                has_ba = (bid > 0) & (ask > 0)
+                mid = np.where(has_ba, 0.5 * (bid + ask), last)
+                spread_pct = np.where(
+                    has_ba & (mid > 0),
+                    ((ask - bid) / mid) * 100.0,
+                    999.0,
+                )
+
+                # Parity map from vectorized mids
+                parity_map = {}
+                for i in range(len(strikes)):
+                    if mid[i] <= 0 or not np.isfinite(mid[i]):
                         continue
-                    if s not in parity_map:
-                        parity_map[s] = {}
-                    parity_map[s][prow['Type'].lower()] = mid
+                    s = float(strikes[i])
+                    bucket = parity_map.setdefault(s, {})
+                    bucket[str(types[i]).lower()] = float(mid[i])
 
-                for _, row in all_options.iterrows():
-                    # Get volume safely
-                    vol = row.get('volume', 0)
+                iv_weight = min(T * 4.0, 0.8)
+                hv_weight = 1.0 - iv_weight
+                sqrtT = math.sqrt(T)
+                is_earnings = date in earnings_contracts
+                threshold = 0.25 if is_earnings else 0.15
+                bs = VegaChimpCore.bjerksund_stensland
+                greeks_fn = VegaChimpCore.bs_greeks
+                parity_bounds = VegaChimpCore.american_put_call_parity_bounds
+                Ncdf = VegaChimpCore.N
 
-                    if pd.isna(vol) or vol == 0:
+                for i in range(len(strikes)):
+                    if vol[i] <= 0 or not np.isfinite(vol[i]):
                         continue
-                    bid, ask, last = row.get('bid', 0) or 0, row.get('ask', 0) or 0, row['lastPrice']
-                    if bid > 0 and ask > 0:
-                        market_price = (bid + ask) / 2
-                    elif last > 0:
-                        market_price = last
-                    else:
+                    market_price = float(mid[i])
+                    if market_price <= 0 or not math.isfinite(market_price):
                         continue
-
-                    # --- Open Interest (E3) ---
-                    oi = row.get('openInterest', 0)
-                    if pd.isna(oi): oi = 0
-                    oi = int(oi)
-
-                    # --- Spread Analysis (E3) ---
-                    if bid > 0 and ask > 0:
-                        spread_mid = (bid + ask) / 2
-                        spread_pct = ((ask - bid) / spread_mid) * 100 if spread_mid > 0 else 999
-                    else:
-                        spread_pct = 999  # Unknown spread
-
-                    # Skip illiquid options (spread > 50% or OI == 0 with high spread)
-                    if spread_pct > 50 and oi == 0:
+                    oi = int(oi_arr[i]) if np.isfinite(oi_arr[i]) else 0
+                    sp = float(spread_pct[i])
+                    if sp > 50.0 and oi == 0:
+                        continue
+                    iv = float(iv_arr[i])
+                    if not math.isfinite(iv) or iv < 0.01:
                         continue
 
-                    # --- VOLATILITY BLEND (Time-Weighted) ---
-                    iv = row['impliedVolatility']
-                    if not iv or math.isnan(iv) or iv < 0.01: continue
-
-                    historical_vol = self._to_finite_float(self.hv_30)
+                    historical_vol = historical_vol_base
                     if historical_vol is None or historical_vol <= 0:
                         historical_vol = iv
-
                     if iv < 0.05:
                         vol_input = historical_vol
                     else:
-                        # Weight IV more for longer-dated, HV more for shorter-dated
-                        iv_weight = min(T * 4, 0.8)
-                        hv_weight = 1.0 - iv_weight
                         vol_input = iv_weight * iv + hv_weight * historical_vol
 
-                    kind_str = row['Type'].lower()
-                    fair = VegaChimpCore.bjerksund_stensland(
-                        self.current_price,
-                        row['strike'],
-                        T,
-                        RFR,
-                        DIV_YIELD,
-                        vol_input,
-                        kind_str
-                    )
-                    ev = fair - market_price
+                    kind_str = "call" if types[i] == "CALL" else "put"
+                    strike = float(strikes[i])
+                    fair = bs(spot, strike, T, RFR, DIV_YIELD, vol_input, kind_str)
                     if fair <= 0:
                         continue
+                    ev = fair - market_price
 
-                    # --- Greeks (C3) ---
-                    greeks = VegaChimpCore.bs_greeks(
-                        self.current_price, row['strike'], RFR, DIV_YIELD, iv, T, kind_str
-                    )
+                    greeks = greeks_fn(spot, strike, RFR, DIV_YIELD, iv, T, kind_str)
 
-                    # --- Probability of Profit (C10) ---
-                    # POP = probability option expires ITM using market IV
                     try:
                         if kind_str == "call":
-                            breakeven_price = row['strike'] + market_price
+                            breakeven_price = strike + market_price
                         else:
-                            breakeven_price = row['strike'] - market_price
-                        sqrtT = math.sqrt(T)
-                        d2_pop = (math.log(self.current_price / breakeven_price) + (RFR - DIV_YIELD - 0.5 * iv * iv) * T) / (iv * sqrtT)
-                        if kind_str == "call":
-                            pop = VegaChimpCore.N(d2_pop) * 100
+                            breakeven_price = strike - market_price
+                        if breakeven_price <= 0:
+                            pop = 0.0
                         else:
-                            pop = VegaChimpCore.N(-d2_pop) * 100
-                        pop = max(0, min(100, pop))
+                            d2_pop = (
+                                math.log(spot / breakeven_price)
+                                + (RFR - DIV_YIELD - 0.5 * iv * iv) * T
+                            ) / (iv * sqrtT)
+                            pop = Ncdf(d2_pop) * 100 if kind_str == "call" else Ncdf(-d2_pop) * 100
+                            pop = max(0.0, min(100.0, pop))
                     except Exception:
                         pop = 0.0
 
-                    # --- American Put-Call Parity Bounds (C9) ---
-                    parity_data = parity_map.get(row['strike'], {})
                     parity_warn = ""
+                    parity_data = parity_map.get(strike, {})
                     if 'call' in parity_data and 'put' in parity_data:
-                        c_price = parity_data['call']
-                        p_price = parity_data['put']
-                        lower, upper = VegaChimpCore.american_put_call_parity_bounds(
-                            self.current_price, row['strike'], RFR, DIV_YIELD, T)
-                        observed = c_price - p_price
+                        lower, upper = parity_bounds(spot, strike, RFR, DIV_YIELD, T)
+                        observed = parity_data['call'] - parity_data['put']
                         if observed < lower - 0.10 or observed > upper + 0.10:
-                            parity_warn = "!"  # Flag parity violation
+                            parity_warn = "!"
 
-                    is_earnings = date in earnings_contracts
-                    threshold = 0.25 if is_earnings else 0.15
                     is_undervalued = ev > threshold
+                    scan_buf.append({
+                        'date': date,
+                        'type': types[i],
+                        'strike': strike,
+                        'ev': ev,
+                        'vol': vol[i],
+                        'is_earnings': is_earnings,
+                        'is_good': is_undervalued,
+                    })
 
-                    with self._scan_lock:
-                        self.scan_data.append({
-                            'date': date,
-                            'type': row['Type'],
-                            'strike': row['strike'],
-                            'ev': ev,
-                            'vol': row['volume'],
-                            'is_earnings': is_earnings,
-                            'is_good': is_undervalued
-                        })
-
-                    if row['Type'] == "CALL":
-                        breakeven = row['strike'] + market_price
-                    else:
-                        breakeven = row['strike'] - market_price
-
+                    breakeven = strike + market_price if types[i] == "CALL" else strike - market_price
                     verdict = "Fair"
                     tag = ""
-
                     if is_undervalued:
                         verdict = "Earnings Under" if is_earnings else "Under"
                         tag = "green"
                     elif ev < -0.05:
                         verdict = "Earnings Over" if is_earnings else "Over"
                         tag = "red"
-
-                    # Append parity warning
                     if parity_warn:
                         verdict += " " + parity_warn
-
                     if filter_under_only and "Under" not in verdict:
                         continue
 
-                    vals = (date, row['Type'], f"{row['strike']:.2f}", int(row['volume'] or 0),
-                            oi, f"{market_price:.2f}", f"{spread_pct:.0f}%",
-                            f"{breakeven:.2f}", f"{iv:.1%}",
-                            f"{fair:.2f}", f"{ev:+.2f}",
-                            f"{greeks['delta']:.3f}", f"{greeks['gamma']:.4f}",
-                            f"{greeks['theta']:.3f}", f"{greeks['vega']:.3f}",
-                            f"{pop:.0f}%", verdict)
-
-                    self.root.after(0, lambda v=vals, t=tag: self.tree.insert("", "end", values=v, tags=(t,)))
+                    vals = (
+                        date, types[i], f"{strike:.2f}", int(vol[i]),
+                        oi, f"{market_price:.2f}", f"{sp:.0f}%",
+                        f"{breakeven:.2f}", f"{iv:.1%}",
+                        f"{fair:.2f}", f"{ev:+.2f}",
+                        f"{greeks['delta']:.3f}", f"{greeks['gamma']:.4f}",
+                        f"{greeks['theta']:.3f}", f"{greeks['vega']:.3f}",
+                        f"{pop:.0f}%", verdict,
+                    )
+                    ui_batch.append((vals, tag))
+                    if len(ui_batch) >= UI_BATCH_SIZE:
+                        flush_ui()
 
             except Exception as e:
                 self.log(f"Options fetch error for {date}: {e}")
+
+        flush_ui()
+        if scan_buf:
+            with self._scan_lock:
+                self.scan_data.extend(scan_buf)
 
