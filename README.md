@@ -14,6 +14,13 @@
 
 
 ## 🚀 Key Features
+### 5. Watchlist, Ichimoku, Earnings & Fib
+* **Watchlist:** Persistent `watchlist.json` with quick ticker switch.
+* **Ichimoku:** Standard 9/26/52 cloud (toggle, default off).
+* **Earnings markers:** Vertical dashed lines (toggle like Fib, default off).
+* **Fib:** Retracement from the latest confirmed fractal swing.
+* **EMAs:** Daily-span EMAs (5/21/63/200 **days**) mapped onto any chart interval.
+
 
 ### 1. Advanced Options Valuation
 Unlike standard calculators that use Black-Scholes, Sentinel uses the **Bjerksund-Stensland (2002)** model to price American options.
