@@ -19,6 +19,19 @@ python sentinel.py
 - Needs a working tkinter build for your Python
 - GUI app — run in the foreground or background as you prefer
 
+## CLI (headless)
+
+No tkinter import on CLI paths (`sentinel.py` lazy-loads GUI only when argv is empty).
+
+```bash
+.venv/bin/python sentinel.py analyze LULU
+.venv/bin/python sentinel.py scan LULU --under-only --max-expiries 6
+.venv/bin/python -m main.cli scan LULU --type call --json
+.venv/bin/python -m sentinel_cli analyze AMD --json
+```
+
+Shared scan orchestration: `core/scan_service.py` (GUI `MarketApp.fetch_options_batch` is a thin adapter).
+
 ## Running Tests
 
 ```bash
@@ -46,9 +59,12 @@ CI-lean deps (no torch): `requirements-ci.txt`.
 | `core/data.py` | `DataProvider` / `YFinanceProvider` |
 | `core/vol_models.py` | Cone math, GARCH(1,1), quadratic smile |
 | `core/options_scan.py` | Tradeable-edge / liquidity / ATM filters |
+| `core/scan_service.py` | Shared options-scan + ticker analyze (GUI + CLI) |
 | `ui/*` | Theme, chart, news, options explorer, tooltip, prefs |
 | `main/app.py` | `MarketApp` controller + remaining orchestration |
-| `sentinel.py` | Launcher + re-exports for tests / scripts |
+| `main/cli.py` | Headless argparse CLI (`analyze` / `scan`) |
+| `sentinel.py` | Launcher (GUI or CLI) + re-exports for tests / scripts |
+| `sentinel_cli.py` | Thin `python -m sentinel_cli` alias |
 
 ## Key Patterns
 
