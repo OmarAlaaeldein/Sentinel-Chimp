@@ -31,6 +31,11 @@ class TestPrefs:
         data = load_prefs(str(tmp_path))
         assert data["show_fib"] is False
 
+    def test_overlay_toggles_default_off(self, tmp_path):
+        data = load_prefs(str(tmp_path))
+        assert data["show_ichimoku"] is False
+        assert data["show_earnings"] is False
+
 
 class TestChartConeHelper:
     def test_prepare_plot_frame_daily(self):

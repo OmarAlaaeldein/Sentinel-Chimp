@@ -199,3 +199,35 @@ Second look at labels / colors (no pricing-semantics change):
 
 Explorer footer + 3D filter copy now say Under/Over (not "Good/Bad"). Rules table above remains authoritative.
 
+## Chart overlays QoL (2026-09-06) — watchlist / Ichimoku / Fib / EMA
+
+### EMA vs EWMA diagnosis
+
+| Piece | Finding |
+| :--- | :--- |
+| Chart EMA 5/21/63/200 | **Bug (fixed):** overlays used `Close.ewm(span=N)` on the **active chart interval**. On 1m/5m charts, “EMA 200” meant 200 bars (~hours), not 200 trading days — overlays hugged price and felt broken. |
+| Fix | Compute EMAs on the **1y daily** close series (`attach_daily_emas`) and as-of-map onto chart bars. Legend labels are `EMA Nd`. |
+| EWMA vol (RiskMetrics λ=0.94) | **Math OK:** closed-form matches sequential recursion; applied to **log returns** (not prices); annualized `√(var·252)`. Used for options FV / cone σ. |
+| Cone x-axis | **Display fix:** `bars_per_trading_day(interval)` so +30 trading days is not +30 intraday bars. |
+
+### Fib anchor rule
+
+Retracement uses the **latest confirmed fractal swing** (default 5/5 left/right bars), not the visible-window max high / min low.
+
+1. Detect swing highs/lows (pivot = extremum of the inclusive window).
+2. Take the most recent swing and the nearest **preceding opposite** swing.
+3. If latest is a high → Fib from that high down to the prior low; if latest is a low → from the prior high down to that low.
+4. Levels: 23.6 / 38.2 / 50 / 61.8 of that swing range.
+5. Fallback when pivots are insufficient: period high/low (legacy).
+
+### Ichimoku
+
+Standard Hosoda 9/26/52 with 26-bar displacement (Tenkan/Kijun/Senkou A/B/Chikou). Toggle **Ichimoku** (default off). Lite Mode — pure pandas.
+
+### Earnings markers
+
+Vertical dashed markers when an earnings date falls in the visible window. Sources: soft-fail `get_earnings_dates` history + projected calendar cycle. Toggle **Earnings** (default off, like Fib).
+
+### Watchlist
+
+Persistent `watchlist.json` (`ui/watchlist.py`); combobox + add/remove next to ticker; prefs still hold overlay booleans in `user_prefs.json`.

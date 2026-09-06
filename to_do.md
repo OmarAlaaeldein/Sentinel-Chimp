@@ -1,7 +1,7 @@
 # 🛡️ Sentinel 2.0
 **Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
 
-*Last updated: 2026-09-05 — statuses reflect `main` as shipped.*
+*Last updated: 2026-09-06 — statuses reflect `main` as shipped.*
 
 ---
 
@@ -48,15 +48,19 @@ Landed on `main`:
 ### 3.1 "Set & Forget" Scanners — **Pending**
 Background criteria + tray / webhook notifications — not started
 
-### 3.2 Economic Context Layer — **Pending**
-FOMC / CPI / earnings verticals on the chart — not started
+### 3.2 Economic Context Layer — **Partial**
+* ✅ Earnings vertical markers on chart (toggle; default off)
+* FOMC / CPI — not started
 
-### 3.3 Dynamic Watchlist — **Pending**
-Persistent `watchlist.json` — not started
+### 3.3 Dynamic Watchlist — **Done**
+Persistent `watchlist.json` + combobox add/remove / quick load
 
 ### Related UX already on `main`
 * ✅ Modern dark trading-terminal theme (`ui/theme.py`)
-* ✅ **Fib** levels off by default; checkbox to enable
+* ✅ **Fib** levels off by default; checkbox to enable (latest-swing anchor)
+* ✅ **Ichimoku** overlay toggle (default off)
+* ✅ **Earnings** markers toggle (default off)
+* ✅ Daily-span EMA overlays (fixes intraday bar-span bug)
 * ✅ Vol prefs persisted in `user_prefs.json`
 
 ---
@@ -66,6 +70,6 @@ Persistent `watchlist.json` — not started
 | Phase | Name | Focus | Status |
 | :--- | :--- | :--- | :--- |
 | **I** | **The Clean Up** | MVC, DataProvider, UI peel | **Done** |
-| **II** | **The Eyes** | Probability cones; econ calendar | Cones **done**; calendar **pending** |
+| **II** | **The Eyes** | Probability cones; econ calendar | Cones **done**; earnings markers **done**; FOMC/CPI **pending** |
 | **III** | **The Brain** | Semantic arb / fund bias / alpha | **Pending** |
-| **IV** | **The Automaton** | Background scans, watchlists | **Pending** |
+| **IV** | **The Automaton** | Background scans, watchlists | Watchlist **done**; background scans **pending** |
