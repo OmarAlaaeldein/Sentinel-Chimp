@@ -1,10 +1,11 @@
 """Main price chart rendering (extracted from MarketApp.update_chart)."""
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
+import pandas as pd
 
 from ui.theme import chart_colors
 
@@ -44,12 +45,16 @@ def draw_probability_cone(
     p0: float,
     sigma: float,
     horizon_days: int = 30,
+    bars_per_day: float = 1.0,
     face_color: str = "#4db8c4",
     alpha: float = 0.16,
     edge_color: str = "#4db8c4",
     edge_alpha: float = 0.5,
 ) -> Optional[Tuple[float, float, float]]:
     """Draw a translucent vol cone extending ``horizon_days`` right of last_x.
+
+    ``bars_per_day`` scales trading-day horizon onto the chart's bar axis so
+    intraday charts do not treat +30 as +30 minute-bars.
 
     Returns ``(x_right, y_lo, y_hi)`` useful for axis padding, or None if
     inputs are not drawable.
@@ -61,15 +66,16 @@ def draw_probability_cone(
     try:
         p0 = float(p0)
         sigma = float(sigma)
+        bars_per_day = float(bars_per_day) if bars_per_day else 1.0
     except (TypeError, ValueError):
         return None
     if p0 <= 0 or sigma < 0 or not np.isfinite(p0) or not np.isfinite(sigma):
         return None
-    if horizon_days <= 0:
+    if horizon_days <= 0 or bars_per_day <= 0 or not np.isfinite(bars_per_day):
         return None
 
     days, upper, lower = probability_cone(p0, sigma, horizon_days=horizon_days)
-    x_cone = last_x + days
+    x_cone = last_x + days * bars_per_day
     ax.fill_between(
         x_cone, lower, upper,
         color=face_color, alpha=alpha, linewidth=0, zorder=1, label="Prob Cone",
@@ -117,6 +123,118 @@ def apply_tick_labels(ax, times_for_labels, period: str) -> None:
     ax.set_xticklabels(final_labels, rotation=45, ha="right", fontsize=10)
 
 
+def _to_date(value) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        ts = pd.to_datetime(value)
+        if pd.isna(ts):
+            return None
+        if getattr(ts, "tzinfo", None) is not None or getattr(ts, "tz", None) is not None:
+            ts = pd.Timestamp(ts).tz_convert("UTC").tz_localize(None)
+        return pd.Timestamp(ts).date()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def draw_earnings_markers(
+    ax,
+    times_for_labels,
+    x_vals,
+    earnings_dates: Optional[Sequence],
+) -> None:
+    """Vertical markers where an earnings date falls inside the visible window."""
+    if not earnings_dates or len(times_for_labels) == 0:
+        return
+    bar_dates = []
+    for ts in times_for_labels:
+        d = _to_date(ts)
+        bar_dates.append(d)
+    labeled = False
+    for ed in earnings_dates:
+        ed_date = _to_date(ed)
+        if ed_date is None:
+            continue
+        # nearest bar on/after earnings date (or exact match)
+        hit = None
+        for i, bd in enumerate(bar_dates):
+            if bd is None:
+                continue
+            if bd == ed_date:
+                hit = i
+                break
+            if bd > ed_date:
+                hit = i
+                break
+        if hit is None:
+            continue
+        x = float(x_vals[hit])
+        ax.axvline(
+            x=x, color="#ffb74d", linestyle="--", linewidth=1.0, alpha=0.7,
+            label="Earnings" if not labeled else None, zorder=2,
+        )
+        labeled = True
+
+
+def draw_ichimoku(ax, x_vals, plot_df) -> None:
+    """Plot Tenkan/Kijun/Chikou and Senkou cloud when columns are present."""
+    tenkan = plot_df.get("Ichimoku_Tenkan")
+    kijun = plot_df.get("Ichimoku_Kijun")
+    sa = plot_df.get("Ichimoku_Senkou_A")
+    sb = plot_df.get("Ichimoku_Senkou_B")
+    chikou = plot_df.get("Ichimoku_Chikou")
+
+    if tenkan is not None and tenkan.notna().any():
+        ax.plot(x_vals, tenkan, label="Tenkan", color="#4fc3f7", linewidth=1.0, alpha=0.9)
+    if kijun is not None and kijun.notna().any():
+        ax.plot(x_vals, kijun, label="Kijun", color="#ef5350", linewidth=1.0, alpha=0.9)
+    if chikou is not None and chikou.notna().any():
+        ax.plot(
+            x_vals, chikou, label="Chikou", color="#ce93d8",
+            linewidth=0.9, alpha=0.75, linestyle=":",
+        )
+    if sa is not None and sb is not None and sa.notna().any() and sb.notna().any():
+        ax.fill_between(
+            x_vals, sa, sb,
+            where=(sa >= sb), color="#26a69a", alpha=0.18, linewidth=0, label="Cloud+",
+        )
+        ax.fill_between(
+            x_vals, sa, sb,
+            where=(sa < sb), color="#ef5350", alpha=0.18, linewidth=0, label="Cloud-",
+        )
+
+
+def draw_fib_levels(ax, x_vals, plot_df) -> None:
+    """Fibonacci retracement from latest swing anchors (not period max/min)."""
+    from core.technicals import fib_retracement_levels, fib_swing_anchors
+
+    if "High" not in plot_df.columns or "Low" not in plot_df.columns:
+        return
+    anchors = fib_swing_anchors(plot_df["High"].values, plot_df["Low"].values)
+    if not anchors.get("ok"):
+        return
+    levels = fib_retracement_levels(anchors["fib_high"], anchors["fib_low"])
+    if not levels:
+        return
+    fib_colors = {
+        "23.6%": "#ff9800", "38.2%": "#e91e63",
+        "50.0%": "#9c27b0", "61.8%": "#2196f3",
+    }
+    for level_name, level_val in levels.items():
+        ax.axhline(
+            y=level_val, color=fib_colors[level_name],
+            linestyle=":", linewidth=0.7, alpha=0.55,
+        )
+        ax.text(
+            x_vals[-1], level_val, f" {level_name}",
+            color=fib_colors[level_name], fontsize=8, va="center", alpha=0.75,
+        )
+
+
 def draw_main_chart(
     ax,
     figure,
@@ -127,26 +245,35 @@ def draw_main_chart(
     period: str,
     cone: Optional[dict] = None,
     show_fib: bool = False,
+    show_ichimoku: bool = False,
+    show_earnings: bool = False,
+    earnings_dates: Optional[Sequence] = None,
+    interval: Optional[str] = None,
 ) -> None:
-    """Render price / EMAs / VWAP / optional Fib / probability cone onto ``ax``.
+    """Render price / daily EMAs / VWAP / optional Fib / Ichimoku / earnings / cone.
 
     ``cone`` keys (all optional unless noted):
-      show (bool), p0 (float), sigma (float), horizon_days (int, default 30)
-    ``show_fib``: when True, draw Fibonacci retracement levels (off by default).
+      show (bool), p0 (float), sigma (float), horizon_days (int, default 30),
+      bars_per_day (float, default from ``interval``)
+    Overlay toggles default off except when callers pass True (Fib / Ichimoku /
+    Earnings match the Fib checkbox pattern).
+    EMA labels use daily spans (EMA 5d … 200d) — see ``attach_daily_emas``.
     """
     ax.clear()
     pal = chart_colors()
 
     ax.plot(x_vals, plot_df["Close"], label="Price", color=pal["price"], linewidth=1.6)
 
-    if "EMA_5" in plot_df.columns:
-        ax.plot(x_vals, plot_df["EMA_5"], label="EMA 5", color="#c084fc", linewidth=1, alpha=0.85)
-    if "EMA_21" in plot_df.columns:
-        ax.plot(x_vals, plot_df["EMA_21"], label="EMA 21", color="#f0c14a", linewidth=1, alpha=0.85)
-    if "EMA_63" in plot_df.columns:
-        ax.plot(x_vals, plot_df["EMA_63"], label="EMA 63", color="#7c6cf0", linewidth=1, alpha=0.85)
-    if "EMA_200" in plot_df.columns and plot_df["EMA_200"].notna().sum() > 0:
-        ax.plot(x_vals, plot_df["EMA_200"], label="EMA 200", color="#f07178", linewidth=1.5)
+    # Daily-span EMAs (columns still named EMA_N; labels clarify "d")
+    ema_style = {
+        "EMA_5": ("EMA 5d", "#c084fc", 1.0),
+        "EMA_21": ("EMA 21d", "#f0c14a", 1.0),
+        "EMA_63": ("EMA 63d", "#7c6cf0", 1.0),
+        "EMA_200": ("EMA 200d", "#f07178", 1.5),
+    }
+    for col, (label, color, lw) in ema_style.items():
+        if col in plot_df.columns and plot_df[col].notna().sum() > 0:
+            ax.plot(x_vals, plot_df[col], label=label, color=color, linewidth=lw, alpha=0.85)
 
     if "VWAP" in plot_df.columns and plot_df["VWAP"].notna().sum() > 0:
         ax.plot(
@@ -154,42 +281,32 @@ def draw_main_chart(
             color="#e8c547", linewidth=1.3, linestyle="--", alpha=0.9,
         )
 
+    if show_ichimoku:
+        draw_ichimoku(ax, x_vals, plot_df)
+
     if show_fib:
-        fib_high = plot_df["High"].max()
-        fib_low = plot_df["Low"].min()
-        fib_range = fib_high - fib_low
-        if fib_range > 0:
-            fib_levels = {
-                "23.6%": fib_high - 0.236 * fib_range,
-                "38.2%": fib_high - 0.382 * fib_range,
-                "50.0%": fib_high - 0.500 * fib_range,
-                "61.8%": fib_high - 0.618 * fib_range,
-            }
-            fib_colors = {
-                "23.6%": "#ff9800", "38.2%": "#e91e63",
-                "50.0%": "#9c27b0", "61.8%": "#2196f3",
-            }
-            for level_name, level_val in fib_levels.items():
-                ax.axhline(
-                    y=level_val, color=fib_colors[level_name],
-                    linestyle=":", linewidth=0.7, alpha=0.55,
-                )
-                ax.text(
-                    x_vals[-1], level_val, f" {level_name}",
-                    color=fib_colors[level_name], fontsize=8, va="center", alpha=0.75,
-                )
+        draw_fib_levels(ax, x_vals, plot_df)
+
+    if show_earnings:
+        draw_earnings_markers(ax, times_for_labels, x_vals, earnings_dates)
 
     x_right = float(x_vals[-1])
     y_lo = float(plot_df["Low"].min()) if "Low" in plot_df.columns else float(plot_df["Close"].min())
     y_hi = float(plot_df["High"].max()) if "High" in plot_df.columns else float(plot_df["Close"].max())
 
     if cone and cone.get("show"):
+        from core.technicals import bars_per_trading_day
+
+        bpd = cone.get("bars_per_day")
+        if bpd is None:
+            bpd = bars_per_trading_day(interval or cone.get("interval"))
         extent = draw_probability_cone(
             ax,
             last_x=float(x_vals[-1]),
             p0=cone.get("p0"),
             sigma=cone.get("sigma"),
             horizon_days=int(cone.get("horizon_days", 30)),
+            bars_per_day=float(bpd),
             face_color=pal["cone"],
             edge_color=pal["cone"],
         )
@@ -208,7 +325,7 @@ def draw_main_chart(
         color=pal["title"], fontweight="semibold", fontsize=13, pad=10,
     )
     ax.legend(
-        loc="upper right", fontsize=10, frameon=False,
+        loc="upper right", fontsize=9, frameon=False,
         labelcolor=pal["muted"],
     )
     ax.grid(True, color=pal["grid"], linestyle="-", linewidth=0.6, alpha=0.9)

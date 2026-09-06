@@ -9,8 +9,13 @@ Classic definitions used:
 - OBV: Granville (1963).
 - Williams %R: Williams (1973) — 14-period.
 - CCI: Lambert (1980) — 20-period, 0.015 constant.
+- Chart EMAs: span on **daily** closes (α=2/(N+1)); see attach_daily_emas.
+- Ichimoku: Hosoda standard 9/26/52 with 26-bar displacement.
+- Fib: latest confirmed swing high/low (not period max/min).
 """
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import pandas as pd
@@ -116,3 +121,278 @@ def calculate_technicals(df):
     df['CCI'] = (tp - tp_sma) / (0.015 * tp_mad.replace(0, np.nan))
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# Chart overlays: daily EMAs, Ichimoku, Fib swing anchors
+# ---------------------------------------------------------------------------
+
+EMA_SPANS = (5, 21, 63, 200)
+
+
+def compute_ema_series(close: pd.Series, span: int) -> pd.Series:
+    """Classic chart EMA: pandas ``ewm(span=N, adjust=False)`` ⇒ α = 2/(N+1).
+
+    This is *not* RiskMetrics EWMA variance (see ``VegaChimpCore.ewma_vol_forecast``).
+    """
+    close = pd.Series(close, dtype=np.float64)
+    return close.ewm(span=int(span), adjust=False).mean()
+
+
+def compute_daily_emas(daily_close: pd.Series, spans=EMA_SPANS) -> pd.DataFrame:
+    """EMAs on a **daily** close series (spans = trading days)."""
+    daily_close = pd.Series(daily_close, dtype=np.float64).dropna()
+    out = pd.DataFrame(index=daily_close.index)
+    for span in spans:
+        out[f"EMA_{int(span)}"] = compute_ema_series(daily_close, int(span))
+    return out
+
+
+def _normalize_index_to_naive_utc(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    idx = pd.DatetimeIndex(index)
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_convert("UTC").tz_localize(None)
+    return idx
+
+
+def map_daily_columns_to_bars(
+    bar_index: pd.DatetimeIndex,
+    daily_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Forward-fill daily columns onto an arbitrary bar timeline (as-of merge).
+
+    Each bar receives the last completed daily value as of that bar's timestamp.
+    Prevents intraday charts from treating ``EMA_200`` as 200 *minute* bars.
+    """
+    if daily_df is None or daily_df.empty or len(bar_index) == 0:
+        return pd.DataFrame(index=bar_index)
+
+    bar_ts = _normalize_index_to_naive_utc(pd.DatetimeIndex(bar_index))
+    bars = pd.DataFrame({"_ts": bar_ts, "_orig": np.arange(len(bar_ts))})
+    daily = daily_df.copy()
+    daily.index = _normalize_index_to_naive_utc(pd.DatetimeIndex(daily.index))
+    daily = daily.sort_index()
+    daily = daily[~daily.index.duplicated(keep="last")]
+    daily_reset = daily.reset_index()
+    ts_col = daily_reset.columns[0]
+    daily_reset = daily_reset.rename(columns={ts_col: "_ts"})
+    merged = pd.merge_asof(
+        bars.sort_values("_ts"),
+        daily_reset.sort_values("_ts"),
+        on="_ts",
+        direction="backward",
+    )
+    merged = merged.sort_values("_orig")
+    cols = [c for c in daily_df.columns]
+    out = merged[cols].copy()
+    out.index = bar_index
+    return out
+
+
+def attach_daily_emas(
+    bar_df: pd.DataFrame,
+    daily_close: pd.Series,
+    spans=EMA_SPANS,
+) -> pd.DataFrame:
+    """Overwrite ``EMA_*`` on ``bar_df`` with daily-span EMAs mapped to bars."""
+    emas = compute_daily_emas(daily_close, spans=spans)
+    mapped = map_daily_columns_to_bars(bar_df.index, emas)
+    for col in mapped.columns:
+        bar_df[col] = mapped[col].values
+    return bar_df
+
+
+def calculate_ichimoku(
+    df: pd.DataFrame,
+    tenkan_period: int = 9,
+    kijun_period: int = 26,
+    senkou_b_period: int = 52,
+    displacement: int = 26,
+) -> pd.DataFrame:
+    """Standard Ichimoku Kinko Hyo (Goichi Hosoda).
+
+    Tenkan / Kijun / Senkou B = midpoint of rolling high/low.
+    Senkou A = (Tenkan + Kijun) / 2.
+    Senkou A/B are shifted **forward** by ``displacement``; Chikou is Close
+    shifted **backward** by ``displacement``.
+    """
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
+
+    tenkan = (high.rolling(tenkan_period).max() + low.rolling(tenkan_period).min()) / 2.0
+    kijun = (high.rolling(kijun_period).max() + low.rolling(kijun_period).min()) / 2.0
+    senkou_a = ((tenkan + kijun) / 2.0).shift(displacement)
+    senkou_b = (
+        (high.rolling(senkou_b_period).max() + low.rolling(senkou_b_period).min()) / 2.0
+    ).shift(displacement)
+    chikou = close.shift(-displacement)
+
+    df["Ichimoku_Tenkan"] = tenkan
+    df["Ichimoku_Kijun"] = kijun
+    df["Ichimoku_Senkou_A"] = senkou_a
+    df["Ichimoku_Senkou_B"] = senkou_b
+    df["Ichimoku_Chikou"] = chikou
+    return df
+
+
+def find_pivot_indices(
+    high: np.ndarray,
+    low: np.ndarray,
+    left: int = 5,
+    right: int = 5,
+) -> tuple:
+    """Return ``(swing_high_idxs, swing_low_idxs)`` for fractal pivots.
+
+    A swing high at ``i`` is the max of ``high[i-left:i+right+1]`` (inclusive);
+    likewise for swing lows. Requires ``left`` bars on each side (no look-ahead
+    past ``right`` confirmation bars at the series end).
+    """
+    high = np.asarray(high, dtype=np.float64)
+    low = np.asarray(low, dtype=np.float64)
+    n = high.size
+    sh, sl = [], []
+    if n < left + right + 1:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    for i in range(left, n - right):
+        window_h = high[i - left : i + right + 1]
+        window_l = low[i - left : i + right + 1]
+        if np.isfinite(high[i]) and high[i] == np.nanmax(window_h):
+            # unique peak: first occurrence of the max wins
+            if np.nanargmax(window_h) == left:
+                sh.append(i)
+        if np.isfinite(low[i]) and low[i] == np.nanmin(window_l):
+            if np.nanargmin(window_l) == left:
+                sl.append(i)
+    return np.asarray(sh, dtype=int), np.asarray(sl, dtype=int)
+
+
+def fib_swing_anchors(
+    high,
+    low,
+    close=None,
+    pivot_left: int = 5,
+    pivot_right: int = 5,
+) -> dict:
+    """Fibonacci retracement anchored to the **latest confirmed swing**.
+
+    Rule (see also ``docs/LOGIC_REVIEW.md``):
+    - Detect fractal swing highs/lows with ``pivot_left`` / ``pivot_right``
+      confirmation bars (default 5/5).
+    - Take the most recent swing (by index) and the nearest **opposite** swing
+      that precedes it — that pair is the latest impulse.
+    - If the latest swing is a **high**, Fib retraces from that high down to the
+      preceding swing low (bearish impulse). If latest is a **low**, Fib
+      retraces from the preceding swing high down to that low (bullish impulse).
+    - Levels are ``high - pct * (high - low)`` for classic 23.6 / 38.2 / 50 / 61.8.
+    - Fallback: if fewer than two opposite pivots exist, use the visible-window
+      max high / min low (legacy behaviour).
+
+    Returns dict with keys: ``fib_high``, ``fib_low``, ``high_idx``, ``low_idx``,
+    ``rule``, ``ok``.
+    """
+    high_a = np.asarray(high, dtype=np.float64).reshape(-1)
+    low_a = np.asarray(low, dtype=np.float64).reshape(-1)
+    n = high_a.size
+    result = {
+        "fib_high": float("nan"),
+        "fib_low": float("nan"),
+        "high_idx": -1,
+        "low_idx": -1,
+        "rule": "fallback_window",
+        "ok": False,
+    }
+    if n == 0:
+        return result
+
+    sh, sl = find_pivot_indices(high_a, low_a, left=pivot_left, right=pivot_right)
+
+    # Merge pivots as (idx, kind) with kind 1=high, -1=low
+    events = [(int(i), 1, float(high_a[i])) for i in sh] + [
+        (int(i), -1, float(low_a[i])) for i in sl
+    ]
+    events.sort(key=lambda t: t[0])
+
+    fib_high = fib_low = None
+    hi_idx = lo_idx = -1
+    rule = "fallback_window"
+
+    if len(events) >= 2:
+        last_idx, last_kind, last_val = events[-1]
+        # walk backward for opposite kind
+        prior = None
+        for e in reversed(events[:-1]):
+            if e[1] != last_kind:
+                prior = e
+                break
+        if prior is not None:
+            p_idx, p_kind, p_val = prior
+            if last_kind == 1:  # latest high → retrace from high to prior low
+                fib_high, fib_low = last_val, p_val
+                hi_idx, lo_idx = last_idx, p_idx
+                rule = "latest_swing_high_to_prior_low"
+            else:  # latest low → retrace from prior high to this low
+                fib_high, fib_low = p_val, last_val
+                hi_idx, lo_idx = p_idx, last_idx
+                rule = "prior_swing_high_to_latest_low"
+
+    if fib_high is None or fib_low is None or not (
+        math.isfinite(fib_high) and math.isfinite(fib_low)
+    ) or fib_high <= fib_low:
+        # Legacy fallback: period extreme
+        hi_idx = int(np.nanargmax(high_a)) if np.isfinite(high_a).any() else -1
+        lo_idx = int(np.nanargmin(low_a)) if np.isfinite(low_a).any() else -1
+        fib_high = float(high_a[hi_idx]) if hi_idx >= 0 else float("nan")
+        fib_low = float(low_a[lo_idx]) if lo_idx >= 0 else float("nan")
+        rule = "fallback_window"
+
+    ok = (
+        math.isfinite(fib_high)
+        and math.isfinite(fib_low)
+        and fib_high > fib_low
+    )
+    result.update(
+        {
+            "fib_high": float(fib_high) if ok else float("nan"),
+            "fib_low": float(fib_low) if ok else float("nan"),
+            "high_idx": int(hi_idx),
+            "low_idx": int(lo_idx),
+            "rule": rule,
+            "ok": bool(ok),
+        }
+    )
+    return result
+
+
+def fib_retracement_levels(fib_high: float, fib_low: float) -> dict:
+    """Classic retracement prices from a swing high/low pair."""
+    rng = float(fib_high) - float(fib_low)
+    if rng <= 0 or not math.isfinite(rng):
+        return {}
+    return {
+        "23.6%": fib_high - 0.236 * rng,
+        "38.2%": fib_high - 0.382 * rng,
+        "50.0%": fib_high - 0.500 * rng,
+        "61.8%": fib_high - 0.618 * rng,
+    }
+
+
+def bars_per_trading_day(interval: str | None) -> float:
+    """Approximate RTH bars per trading day for cone x-scaling."""
+    if not interval:
+        return 1.0
+    key = str(interval).lower().strip()
+    table = {
+        "1m": 390.0,
+        "2m": 195.0,
+        "5m": 78.0,
+        "15m": 26.0,
+        "30m": 13.0,
+        "60m": 6.5,
+        "90m": 390.0 / 90.0,
+        "1h": 6.5,
+        "1d": 1.0,
+        "1wk": 1.0 / 5.0,
+        "1mo": 1.0 / 21.0,
+    }
+    return float(table.get(key, 1.0))

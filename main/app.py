@@ -37,7 +37,12 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from core.pricing import VegaChimpCore
-from core.technicals import calculate_technicals
+from core.technicals import (
+    calculate_technicals,
+    attach_daily_emas,
+    calculate_ichimoku,
+    bars_per_trading_day,
+)
 from core.sentiment import sentiment_engine
 from core.data import YFinanceProvider
 from core.vol_models import (
@@ -69,6 +74,7 @@ from ui.options_3d import (
     CAT_EARN_OVER,
 )
 from ui.prefs import load_prefs, save_prefs
+from ui.watchlist import load_watchlist, add_ticker as watchlist_add, remove_ticker as watchlist_remove
 
 
 class MarketApp:
@@ -103,7 +109,10 @@ class MarketApp:
         self.use_smile_vol = bool(_prefs.get("use_smile_vol", False))
         self.show_prob_cone = bool(_prefs.get("show_prob_cone", True))
         self.show_fib = bool(_prefs.get("show_fib", False))
+        self.show_ichimoku = bool(_prefs.get("show_ichimoku", False))
+        self.show_earnings = bool(_prefs.get("show_earnings", False))
         self.use_american_greeks = True  # FD Greeks on BS2002 (else European BS)
+        self.earnings_dates = []  # chart markers (historical + projected)
         self.garch_vol = 0.0
         self.garch_info = {}
         self.ewma_vol = 0.0
@@ -121,6 +130,25 @@ class MarketApp:
 
         ttk.Button(
             input_frame, text="Load", command=self.load_data, style="Accent.TButton",
+        ).pack(side="left")
+
+        # Dynamic watchlist (persisted watchlist.json)
+        self._watchlist = load_watchlist(self._prefs_root)
+        ttk.Label(input_frame, text="Watch", style="Muted.TLabel").pack(side="left", padx=(12, 4))
+        self.var_watch = tk.StringVar(value=self._watchlist[0] if self._watchlist else "AMD")
+        self.cmb_watch = ttk.Combobox(
+            input_frame, textvariable=self.var_watch, values=self._watchlist,
+            width=9, state="readonly",
+        )
+        self.cmb_watch.pack(side="left", padx=(0, 4))
+        self.cmb_watch.bind("<<ComboboxSelected>>", self._on_watchlist_select)
+        ttk.Button(
+            input_frame, text="+", width=2, command=self._watchlist_add_current,
+            style="Ghost.TButton",
+        ).pack(side="left", padx=(0, 2))
+        ttk.Button(
+            input_frame, text="−", width=2, command=self._watchlist_remove_current,
+            style="Ghost.TButton",
         ).pack(side="left")
 
         self.btn_news = ttk.Button(
@@ -211,6 +239,16 @@ class MarketApp:
         ttk.Checkbutton(
             ctrl_frame, text="Fib", variable=self.var_show_fib,
             command=self._on_fib_toggle,
+        ).pack(side="left", padx=(8, 0))
+        self.var_show_ichimoku = tk.BooleanVar(value=self.show_ichimoku)
+        ttk.Checkbutton(
+            ctrl_frame, text="Ichimoku", variable=self.var_show_ichimoku,
+            command=self._on_ichimoku_toggle,
+        ).pack(side="left", padx=(8, 0))
+        self.var_show_earnings = tk.BooleanVar(value=self.show_earnings)
+        ttk.Checkbutton(
+            ctrl_frame, text="Earnings", variable=self.var_show_earnings,
+            command=self._on_earnings_toggle,
         ).pack(side="left", padx=(8, 0))
 
         self.lbl_status = ttk.Label(ctrl_frame, text="", style="Status.TLabel")
@@ -329,6 +367,8 @@ class MarketApp:
             use_smile_vol=self.use_smile_vol,
             show_prob_cone=self.show_prob_cone,
             show_fib=self.show_fib,
+            show_ichimoku=self.show_ichimoku,
+            show_earnings=self.show_earnings,
         )
 
     def _refresh_vol_label(self):
@@ -384,6 +424,50 @@ class MarketApp:
         self._persist_vol_prefs()
         self.root.after(0, self._redraw_chart_now)
         self.log(f"Fibonacci levels {'shown' if self.show_fib else 'hidden'}")
+
+    def _on_ichimoku_toggle(self):
+        self.show_ichimoku = bool(self.var_show_ichimoku.get())
+        self._persist_vol_prefs()
+        self.root.after(0, self._redraw_chart_now)
+        self.log(f"Ichimoku {'shown' if self.show_ichimoku else 'hidden'}")
+
+    def _on_earnings_toggle(self):
+        self.show_earnings = bool(self.var_show_earnings.get())
+        self._persist_vol_prefs()
+        self.root.after(0, self._redraw_chart_now)
+        self.log(f"Earnings markers {'shown' if self.show_earnings else 'hidden'}")
+
+    def _refresh_watchlist_combo(self):
+        self._watchlist = load_watchlist(self._prefs_root)
+        if hasattr(self, "cmb_watch") and self.cmb_watch is not None:
+            self.cmb_watch["values"] = self._watchlist
+
+    def _on_watchlist_select(self, _event=None):
+        sym = (self.var_watch.get() or "").strip().upper()
+        if not sym:
+            return
+        self.entry_ticker.delete(0, "end")
+        self.entry_ticker.insert(0, sym)
+        self.load_data()
+
+    def _watchlist_add_current(self):
+        sym = self.entry_ticker.get().upper().strip()
+        if not sym:
+            return
+        self._watchlist = watchlist_add(self._prefs_root, sym)
+        self._refresh_watchlist_combo()
+        self.var_watch.set(sym)
+        self.log(f"Watchlist + {sym} ({len(self._watchlist)} tickers)")
+
+    def _watchlist_remove_current(self):
+        sym = (self.var_watch.get() or self.entry_ticker.get() or "").upper().strip()
+        if not sym:
+            return
+        self._watchlist = watchlist_remove(self._prefs_root, sym)
+        self._refresh_watchlist_combo()
+        if self._watchlist:
+            self.var_watch.set(self._watchlist[0])
+        self.log(f"Watchlist − {sym} ({len(self._watchlist)} tickers)")
 
     def on_close(self):
         """Force kills the application and all background threads."""
@@ -465,6 +549,7 @@ class MarketApp:
             with self._sent_cache_lock:
                 self.sent_cache.clear()
             self.projected_earnings = []
+            self.earnings_dates = []
             
             self.lbl_pe.config(text="Updating...", foreground=WARNING)
             self.lbl_pe_percentile.config(text="Updating...", foreground=WARNING)
@@ -892,6 +977,19 @@ class MarketApp:
                                 projected.append(anchor_date + timedelta(days=91*i))
                             self.projected_earnings = projected
                             self.log(f"Earnings Cycle Detected: {self.projected_earnings}")
+                        # Historical earnings dates for chart markers (soft-fail)
+                        hist_dates = []
+                        try:
+                            edf = stock.get_earnings_dates(limit=40)
+                            if edf is not None and not edf.empty:
+                                for ts in pd.to_datetime(edf.index, errors='coerce'):
+                                    if pd.isna(ts):
+                                        continue
+                                    hist_dates.append(pd.Timestamp(ts).date())
+                        except Exception as he:
+                            self.log(f"Earnings dates history skipped: {he}")
+                        merged = list(dict.fromkeys(hist_dates + list(self.projected_earnings or [])))
+                        self.earnings_dates = merged
                     except Exception as e:
                         self.log(f"Earnings fetch skipped: {e}")
 
@@ -904,9 +1002,8 @@ class MarketApp:
                         self.root.after(0, lambda: self.lbl_status.config(text="No data"))
                     return
                 
-                # Vectorized EMA calculations
-                for span in [5, 21, 63, 200]:
-                    df[f'EMA_{span}'] = df['Close'].ewm(span=span, adjust=False).mean()
+                # Daily-span EMAs attached below from 1y/1d series (not bar-span).
+                # Bar-span ewm(span=200) on 1m/5m charts was the "EMA feels broken" bug.
                 
                 # --- CHART VWAP with Daily Reset (matches calculate_technicals) ---
                 try:
@@ -932,6 +1029,18 @@ class MarketApp:
                 df_tech = calculate_technicals(df_tech)
                 df_tech['log_ret'] = np.log(df_tech['Close'] / df_tech['Close'].shift(1))
                 self.save_df_cache(ticker, "1y", "1d", df_tech)
+
+            # Overlay EMAs: always daily spans mapped onto the active chart bars.
+            try:
+                attach_daily_emas(df, df_tech['Close'])
+            except Exception as e:
+                self.log(f"Daily EMA attach skipped: {e}")
+
+            # Ichimoku on the chart timeframe (toggle draws it)
+            try:
+                calculate_ichimoku(df)
+            except Exception as e:
+                self.log(f"Ichimoku calc skipped: {e}")
             
             last = df_tech.iloc[-1]
             
@@ -1039,11 +1148,20 @@ class MarketApp:
                     "horizon_days": 30,
                 }
 
+            if cone is not None:
+                cone["bars_per_day"] = bars_per_trading_day(interval)
+                cone["interval"] = interval
+
             self.hover_annot = None
             draw_main_chart(
                 self.ax, self.figure, plot_df, times_for_labels, x_vals,
                 ticker, period, cone=cone,
                 show_fib=bool(getattr(self, "show_fib", False)),
+                show_ichimoku=bool(getattr(self, "show_ichimoku", False)),
+                show_earnings=bool(getattr(self, "show_earnings", False)),
+                earnings_dates=getattr(self, "earnings_dates", None)
+                or getattr(self, "projected_earnings", None),
+                interval=interval,
             )
             self.canvas.draw_idle()
             self.last_plot_df = plot_df
@@ -1384,13 +1502,13 @@ class MarketApp:
             parts = [f"Date: {date_str}", f"Price: ${yval:.2f}"] # Added Date here
             
             if 'EMA_5' in row and not np.isnan(row['EMA_5']):
-                parts.append(f"EMA5: ${row['EMA_5']:.2f}")
+                parts.append(f"EMA5d: ${row['EMA_5']:.2f}")
             if 'EMA_21' in row and not np.isnan(row['EMA_21']):
-                parts.append(f"EMA21: ${row['EMA_21']:.2f}")
+                parts.append(f"EMA21d: ${row['EMA_21']:.2f}")
             if 'EMA_63' in row and not np.isnan(row['EMA_63']):
-                parts.append(f"EMA63: ${row['EMA_63']:.2f}")
+                parts.append(f"EMA63d: ${row['EMA_63']:.2f}")
             if 'EMA_200' in row and not np.isnan(row['EMA_200']):
-                parts.append(f"EMA200: ${row['EMA_200']:.2f}")
+                parts.append(f"EMA200d: ${row['EMA_200']:.2f}")
             
             text = "\n".join(parts)
 
