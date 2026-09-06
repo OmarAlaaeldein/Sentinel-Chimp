@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version / tag name (e.g. 1.7 or v1.7)"
+        required: true
+        default: "1.7"
+  push:
+    tags:
+      - "v*"
+      - "1.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Sentinel-Windows-x64.zip
+            platform: windows
+          - os: ubuntu-latest
+            artifact: Sentinel-Linux-x64.zip
+            platform: linux
+          - os: macos-latest
+            artifact: Sentinel-macOS-unsigned.zip
+            platform: macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-release.txt
+
+      - name: Install OS Tk dependencies (Ubuntu)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk tk-dev zip
+
+      - name: Install release dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-release.txt
+
+      - name: Build Windows artifact
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          ./scripts/build_release.ps1
+
+      - name: Build Linux artifact
+        if: matrix.platform == 'linux'
+        run: |
+          chmod +x scripts/build_release.sh
+          ./scripts/build_release.sh --platform linux
+
+      - name: Build macOS artifact
+        if: matrix.platform == 'macos'
+        run: |
+          chmod +x scripts/build_release.sh
+          ./scripts/build_release.sh --platform macos
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          # Normalize: strip leading v for display name, keep tag as given
+          TAG="${TAG# }"
+          if [[ -z "$TAG" ]]; then
+            echo "Empty tag" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using tag: $TAG"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lah release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Sentinel Chimp ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/Sentinel-Windows-x64.zip
+            release-assets/Sentinel-Linux-x64.zip
+            release-assets/Sentinel-macOS-unsigned.zip
+          body: |
+            ## Sentinel Chimp ${{ steps.tag.outputs.tag }} — Lite Mode multi-platform release
+
+            Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
+
+            ### Downloads
+            | Platform | Artifact |
+            | --- | --- |
+            | **Windows x64** | `Sentinel-Windows-x64.zip` → extract and run `Sentinel.exe` |
+            | **Linux x64** | `Sentinel-Linux-x64.zip` → `chmod +x Sentinel && ./Sentinel` |
+            | **macOS (unsigned)** | `Sentinel-macOS-unsigned.zip` → see Gatekeeper note below |
+
+            ### macOS Gatekeeper (unsigned)
+            This macOS build is **not code-signed** and **not notarized**.
+            - Right-click `Sentinel.app` → **Open**, then confirm; or
+            - `xattr -dr com.apple.quarantine Sentinel.app && open Sentinel.app`
+
+            ### Linux
+            Desktop environment with Tk recommended. See `README-RUN.txt` inside the zip.
+
+            ### What's in Lite Mode
+            Charting, technicals, Bjerksund-Stensland options math, EWMA/HV vol, Options Finder, 3D plot — **included**.
+            FinBERT AI sentiment — **not bundled** (use source for full features).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
