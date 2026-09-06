@@ -20,7 +20,7 @@ Unlike standard calculators that use Black-Scholes, Sentinel uses the **Bjerksun
 * **Log-Space Algebra:** Prevents mathematical overflow/underflow during extreme volatility events.
 * **Dynamic Risk-Free Rate:** Automatically uses term-aware treasury inputs with interpolation between short-end (^IRX) and long-end (^TNX) rates.
 * **Edge Detection:** Scans option chains to find contracts where the Market Price diverges significantly from the Theoretical Value (EV).
-* **3D Landscape Visualization:** Interactive 3D plotting of "Strike vs. Expiry vs. Expected Value," allowing you to visually spot "islands of value" across the entire option chain.
+* **3D Landscape Visualization:** Interactive matplotlib view + Plotly HTML export of **Strike × Days-to-expiry × EV@Ask ($)**, with a labeled colorbar (Fair − Ask), richer hover, fixed camera angle, and an optional EV heatmap underlay when the scatter is dense. Still uses existing Lite deps (`plotly` / `matplotlib` — no pyvista/torch).
 
 ### 2. Institutional Volatility Forecasting
 Sentinel looks beyond simple Historical Volatility (HV).
@@ -29,7 +29,7 @@ Sentinel looks beyond simple Historical Volatility (HV).
 * **Options fair value:** Forecast vol only (EWMA ± GARCH); market IV is shown and used for Greeks — see Options Finder rules in `docs/LOGIC_REVIEW.md`.
 
 ### 3. Smart Technical Dashboard
-A threaded, non-blocking GUI featuring a professional Dark Mode interface optimized for low eye strain:
+A threaded, non-blocking GUI featuring a professional Dark Mode interface with a readable type ladder (≈12pt body / 13–14pt headers) optimized for low eye strain:
 * **Momentum:** RSI (14), Stoch RSI, MACD.
 * **Trend Strength:** ADX (Average Directional Index) to distinguish between trending and chopping markets.
 * **Volume Analysis:** OBV (On-Balance Volume) trend detection and **VWAP Gap** analysis (Intraday Bull/Bear control).

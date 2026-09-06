@@ -28,7 +28,7 @@ def open_news_feed(parent, ticker: str, news_items, on_view_content) -> tk.Tople
     header.pack(fill="x", padx=14, pady=12)
     ttk.Label(
         header, text=f"Latest News ({len(news_items)})",
-        font=_font(15, "bold"),
+        font=_font(17, "bold"),
     ).pack(side="left")
     ttk.Label(
         header, text="Double-click to read",
@@ -78,7 +78,7 @@ def open_news_reader(parent, news_item) -> tk.Toplevel:
     reader.configure(bg=APP_BG)
 
     tk.Label(
-        reader, text=news_item["title"], font=_font(13, "bold"),
+        reader, text=news_item["title"], font=_font(15, "bold"),
         bg=APP_BG, fg=TEXT_PRIMARY, wraplength=550, justify="left",
     ).pack(pady=15, padx=15, anchor="w")
 
@@ -86,16 +86,16 @@ def open_news_reader(parent, news_item) -> tk.Toplevel:
     meta.pack(fill="x", padx=15)
     tk.Label(
         meta, text=f"{news_item['source']}  ·  {news_item['published']}",
-        bg=APP_BG, fg=ACCENT, font=_font(9),
+        bg=APP_BG, fg=ACCENT, font=_font(11),
     ).pack(side="left")
 
-    tk.Label(reader, text="Snippet", bg=APP_BG, fg=TEXT_MUTED, anchor="w", font=_font(9)).pack(
+    tk.Label(reader, text="Snippet", bg=APP_BG, fg=TEXT_MUTED, anchor="w", font=_font(11)).pack(
         fill="x", padx=15, pady=(20, 5),
     )
 
     text_box = tk.Text(
         reader, height=10, bg=ELEVATED_BG, fg=TEXT_PRIMARY,
-        font=_font(11), wrap="word", relief="flat", padx=10, pady=10,
+        font=_font(12), wrap="word", relief="flat", padx=10, pady=10,
         highlightthickness=0, borderwidth=0,
         insertbackground=TEXT_PRIMARY,
     )
@@ -117,7 +117,7 @@ def open_news_reader(parent, news_item) -> tk.Toplevel:
 
     btn = tk.Button(
         btn_frame, text="Open Full Article", command=open_link,
-        bg=ACCENT, fg=APP_BG, font=_font(11, "bold"),
+        bg=ACCENT, fg=APP_BG, font=_font(13, "bold"),
         activebackground="#2bb8aa", activeforeground=APP_BG,
         relief="flat", pady=8, cursor="hand2",
         highlightthickness=0, borderwidth=0,

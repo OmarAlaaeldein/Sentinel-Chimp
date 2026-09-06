@@ -114,7 +114,7 @@ def apply_tick_labels(ax, times_for_labels, period: str) -> None:
             label = ts.strftime("%Y-%m-%d")
         final_labels.append(label)
 
-    ax.set_xticklabels(final_labels, rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(final_labels, rotation=45, ha="right", fontsize=10)
 
 
 def draw_main_chart(
@@ -176,7 +176,7 @@ def draw_main_chart(
                 )
                 ax.text(
                     x_vals[-1], level_val, f" {level_name}",
-                    color=fib_colors[level_name], fontsize=6, va="center", alpha=0.75,
+                    color=fib_colors[level_name], fontsize=8, va="center", alpha=0.75,
                 )
 
     x_right = float(x_vals[-1])
@@ -205,10 +205,10 @@ def draw_main_chart(
 
     ax.set_title(
         f"{ticker}  ·  {period}",
-        color=pal["title"], fontweight="semibold", fontsize=11, pad=10,
+        color=pal["title"], fontweight="semibold", fontsize=13, pad=10,
     )
     ax.legend(
-        loc="upper right", fontsize=8, frameon=False,
+        loc="upper right", fontsize=10, frameon=False,
         labelcolor=pal["muted"],
     )
     ax.grid(True, color=pal["grid"], linestyle="-", linewidth=0.6, alpha=0.9)
@@ -216,8 +216,8 @@ def draw_main_chart(
     ax.spines["right"].set_visible(False)
     ax.spines["bottom"].set_color(pal["spine"])
     ax.spines["left"].set_color(pal["spine"])
-    ax.tick_params(axis="x", colors=pal["tick"], labelsize=8)
-    ax.tick_params(axis="y", colors=pal["tick"], labelsize=8)
+    ax.tick_params(axis="x", colors=pal["tick"], labelsize=10)
+    ax.tick_params(axis="y", colors=pal["tick"], labelsize=10)
 
     apply_tick_labels(ax, times_for_labels, period)
 

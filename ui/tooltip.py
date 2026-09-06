@@ -2,6 +2,8 @@
 import tkinter as tk
 from tkinter import ttk
 
+from ui.theme import FONT_TOOLTIP, _font, ELEVATED_BG, TEXT_PRIMARY
+
 
 class Tooltip:
     def __init__(self, widget, text, delay=400):
@@ -26,13 +28,23 @@ class Tooltip:
         if self._tip or not self.text:
             return
         x = self.widget.winfo_rootx() + 20
-        y = self.widget.winfo_rooty() + 10
+        y = self.widget.winfo_rooty() + 12
         self._tip = tk.Toplevel(self.widget)
         self._tip.wm_overrideredirect(True)
         self._tip.wm_geometry(f"+{x}+{y}")
-        lbl = ttk.Label(self._tip, text=self.text, justify="left", relief="solid", borderwidth=1,
-                        background="#333333", foreground="#ffffff", padding=2, wraplength=300)
-        lbl.pack(ipadx=1)
+        lbl = ttk.Label(
+            self._tip,
+            text=self.text,
+            justify="left",
+            relief="solid",
+            borderwidth=1,
+            background=ELEVATED_BG,
+            foreground=TEXT_PRIMARY,
+            padding=(8, 6),
+            wraplength=360,
+            font=_font(FONT_TOOLTIP),
+        )
+        lbl.pack(ipadx=2, ipady=2)
 
     def _hide(self):
         if self._tip:
@@ -43,4 +55,3 @@ class Tooltip:
         """Update tooltip body (e.g. dynamic 'why this vol' hint)."""
         self.text = text
         self._hide()
-

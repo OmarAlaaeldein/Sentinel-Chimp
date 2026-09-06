@@ -61,6 +61,17 @@ DARK_FG = TEXT_PRIMARY
 FONT_UI = ("Segoe UI", "Helvetica Neue", "DejaVu Sans", "Arial", "sans-serif")
 FONT_MONO = ("Cascadia Code", "Consolas", "DejaVu Sans Mono", "Courier New", "monospace")
 
+# Readable size ladder (pt). Body 12 / headers 13–14; dark UI was previously 8–10.
+FONT_BODY = 12
+FONT_SMALL = 11
+FONT_TINY = 10
+FONT_HEADER = 13
+FONT_TITLE = 14
+FONT_PRICE = 32
+FONT_LOG = 11
+FONT_TOOLTIP = 11
+TREE_ROWHEIGHT = 30
+
 
 def _font(size: int, weight: str = "normal", mono: bool = False) -> tuple:
     """Build a Tk font tuple with a sensible primary family."""
@@ -86,7 +97,7 @@ def setup_dark_theme(root):
         borderwidth=0,
         focusthickness=1,
         focuscolor=ACCENT,
-        font=_font(10),
+        font=_font(FONT_BODY),
     )
     style.configure("TFrame", background=APP_BG)
     style.configure("Panel.TFrame", background=PANEL_BG)
@@ -96,43 +107,43 @@ def setup_dark_theme(root):
         "TLabel",
         background=APP_BG,
         foreground=TEXT_PRIMARY,
-        font=_font(10),
+        font=_font(FONT_BODY),
     )
     style.configure(
         "Muted.TLabel",
         background=APP_BG,
         foreground=TEXT_MUTED,
-        font=_font(9),
+        font=_font(FONT_SMALL),
     )
     style.configure(
         "Metric.TLabel",
         background=PANEL_BG,
         foreground=TEXT_MUTED,
-        font=_font(9),
+        font=_font(FONT_SMALL),
     )
     style.configure(
         "MetricValue.TLabel",
         background=PANEL_BG,
         foreground=TEXT_PRIMARY,
-        font=_font(10),
+        font=_font(FONT_BODY),
     )
     style.configure(
         "Price.TLabel",
         background=APP_BG,
         foreground=TEXT_PRIMARY,
-        font=_font(28, "bold"),
+        font=_font(FONT_PRICE, "bold"),
     )
     style.configure(
         "Status.TLabel",
         background=APP_BG,
         foreground=TEXT_MUTED,
-        font=_font(8),
+        font=_font(FONT_TINY),
     )
     style.configure(
         "Hint.TLabel",
         background=PANEL_BG,
         foreground=WARNING,
-        font=_font(9),
+        font=_font(FONT_SMALL),
         cursor="question_arrow",
     )
 
@@ -143,8 +154,8 @@ def setup_dark_theme(root):
         foreground=TEXT_PRIMARY,
         borderwidth=0,
         relief="flat",
-        padding=(12, 6),
-        font=_font(10),
+        padding=(14, 8),
+        font=_font(FONT_BODY),
     )
     style.map(
         "TButton",
@@ -158,8 +169,8 @@ def setup_dark_theme(root):
         foreground=APP_BG,
         borderwidth=0,
         relief="flat",
-        padding=(14, 7),
-        font=_font(10, "bold"),
+        padding=(16, 8),
+        font=_font(FONT_BODY, "bold"),
     )
     style.map(
         "Accent.TButton",
@@ -173,8 +184,8 @@ def setup_dark_theme(root):
         foreground=TEXT_MUTED,
         borderwidth=1,
         relief="flat",
-        padding=(12, 6),
-        font=_font(10),
+        padding=(14, 8),
+        font=_font(FONT_BODY),
     )
     style.map(
         "Ghost.TButton",
@@ -189,8 +200,8 @@ def setup_dark_theme(root):
         foreground=TEXT_MUTED,
         borderwidth=0,
         relief="flat",
-        padding=(8, 4),
-        font=_font(9),
+        padding=(10, 5),
+        font=_font(FONT_SMALL),
     )
     style.map(
         "Period.TButton",
@@ -204,8 +215,8 @@ def setup_dark_theme(root):
         foreground=APP_BG,
         borderwidth=0,
         relief="flat",
-        padding=(14, 8),
-        font=_font(10, "bold"),
+        padding=(16, 9),
+        font=_font(FONT_BODY, "bold"),
     )
     style.map(
         "CTA.TButton",
@@ -236,8 +247,8 @@ def setup_dark_theme(root):
         "TCheckbutton",
         background=APP_BG,
         foreground=TEXT_MUTED,
-        font=_font(9),
-        padding=2,
+        font=_font(FONT_SMALL),
+        padding=3,
     )
     style.map(
         "TCheckbutton",
@@ -261,7 +272,7 @@ def setup_dark_theme(root):
         "TLabelframe.Label",
         background=PANEL_BG,
         foreground=TEXT_MUTED,
-        font=_font(9, "bold"),
+        font=_font(FONT_SMALL, "bold"),
     )
     style.configure(
         "Card.TLabelframe",
@@ -278,7 +289,7 @@ def setup_dark_theme(root):
         "Card.TLabelframe.Label",
         background=PANEL_BG,
         foreground=ACCENT,
-        font=_font(9, "bold"),
+        font=_font(FONT_HEADER, "bold"),
     )
 
     # Treeview
@@ -288,8 +299,8 @@ def setup_dark_theme(root):
         foreground=TEXT_PRIMARY,
         fieldbackground=TREE_BG,
         borderwidth=0,
-        rowheight=26,
-        font=_font(9),
+        rowheight=TREE_ROWHEIGHT,
+        font=_font(FONT_SMALL),
     )
     style.map(
         "Treeview",
@@ -302,8 +313,8 @@ def setup_dark_theme(root):
         foreground=TEXT_MUTED,
         relief="flat",
         borderwidth=0,
-        font=_font(9, "bold"),
-        padding=4,
+        font=_font(FONT_SMALL, "bold"),
+        padding=6,
     )
     style.map(
         "Treeview.Heading",
@@ -328,8 +339,8 @@ def setup_dark_theme(root):
     if root is not None:
         root.configure(bg=APP_BG)
         try:
-            root.option_add("*Font", _font(10))
-            root.option_add("*Text.Font", _font(9, mono=True))
+            root.option_add("*Font", _font(FONT_BODY))
+            root.option_add("*Text.Font", _font(FONT_LOG, mono=True))
             root.option_add("*Listbox.Background", TREE_BG)
             root.option_add("*Listbox.Foreground", TEXT_PRIMARY)
             root.option_add("*Listbox.SelectBackground", SELECT_BG)
