@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Cross-platform Lite Mode release builder for Linux and macOS CI/local.
 # Usage: ./scripts/build_release.sh [--platform linux|macos]
+# Outputs (no zip):
+#   linux  -> dist/Sentinel-Linux-x64
+#   macos  -> dist/Sentinel-macOS-unsigned.dmg  (contains Sentinel.app)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -82,7 +85,10 @@ EXCLUDE_ARGS=(
 )
 
 mkdir -p "$ROOT/dist"
-rm -rf "$ROOT/build" "$ROOT/dist/Sentinel" "$ROOT/dist/Sentinel.app" "$ROOT/dist/Sentinel.exe" 2>/dev/null || true
+rm -rf "$ROOT/build" "$ROOT/dist/Sentinel" "$ROOT/dist/Sentinel.app" \
+  "$ROOT/dist/Sentinel.exe" "$ROOT/dist/Sentinel-Linux-x64" \
+  "$ROOT/dist/Sentinel-macOS-unsigned.dmg" 2>/dev/null || true
+rm -f "$ROOT/dist"/*.zip 2>/dev/null || true
 
 if [[ "$PLATFORM" == "linux" ]]; then
   PYI_ARGS=(
@@ -104,40 +110,16 @@ if [[ "$PLATFORM" == "linux" ]]; then
   echo "[INFO] Running PyInstaller (linux onefile lite)"
   "$PYTHON_BIN" -m PyInstaller "${PYI_ARGS[@]}" "$APP_SCRIPT"
 
-  STAGE="$ROOT/dist/staging-linux"
-  rm -rf "$STAGE"
-  mkdir -p "$STAGE"
-  if [[ -f "$ROOT/dist/Sentinel" ]]; then
-    cp "$ROOT/dist/Sentinel" "$STAGE/Sentinel"
-    chmod +x "$STAGE/Sentinel"
-  else
+  if [[ ! -f "$ROOT/dist/Sentinel" ]]; then
     echo "[ERROR] Expected dist/Sentinel binary missing" >&2
     exit 1
   fi
 
-  cat > "$STAGE/README-RUN.txt" << 'README'
-Sentinel Chimp — Linux x64 (Lite Mode)
-======================================
-
-1. Extract this zip.
-2. Make the binary executable if needed:
-     chmod +x Sentinel
-3. Run:
-     ./Sentinel
-
-Notes:
-- Lite Mode: FinBERT / PyTorch AI sentiment is NOT bundled.
-  For AI features, clone the repo and run: python sentinel.py
-- Requires a desktop environment with Tk (most desktop Linux distros).
-- If the binary fails to start, install tk system packages, e.g.:
-     sudo apt install python3-tk   # Debian/Ubuntu (runtime usually bundled)
-README
-
-  OUT="$ROOT/dist/Sentinel-Linux-x64.zip"
-  rm -f "$OUT"
-  (cd "$STAGE" && zip -r "$OUT" Sentinel README-RUN.txt)
-  rm -rf "$STAGE"
+  OUT="$ROOT/dist/Sentinel-Linux-x64"
+  mv "$ROOT/dist/Sentinel" "$OUT"
+  chmod +x "$OUT"
   echo "[OK] Wrote $OUT"
+  ls -lh "$OUT"
 
 elif [[ "$PLATFORM" == "macos" ]]; then
   PYI_ARGS=(
@@ -165,36 +147,50 @@ elif [[ "$PLATFORM" == "macos" ]]; then
     exit 1
   fi
 
-  STAGE="$ROOT/dist/staging-macos"
+  STAGE="$ROOT/dist/staging-macos-dmg"
   rm -rf "$STAGE"
   mkdir -p "$STAGE"
   cp -R "$ROOT/dist/Sentinel.app" "$STAGE/Sentinel.app"
 
-  cat > "$STAGE/README-RUN.txt" << 'README'
+  cat > "$STAGE/README-Gatekeeper.txt" << 'README'
 Sentinel Chimp — macOS (Lite Mode, UNSIGNED)
 ============================================
 
 This build is NOT code-signed and NOT notarized.
 
 Gatekeeper / first launch:
-1. Extract this zip.
+1. Open the DMG and drag Sentinel.app to Applications (or run in place).
 2. Right-click (or Control-click) Sentinel.app → Open
 3. Confirm Open in the dialog.
 
 Or remove quarantine after download:
-  xattr -dr com.apple.quarantine Sentinel.app
-  open Sentinel.app
+  xattr -dr com.apple.quarantine /path/to/Sentinel.app
+  open /path/to/Sentinel.app
 
 Notes:
 - Lite Mode: FinBERT / PyTorch AI sentiment is NOT bundled.
   For AI features, clone the repo and run: python sentinel.py
 README
 
-  OUT="$ROOT/dist/Sentinel-macOS-unsigned.zip"
+  OUT="$ROOT/dist/Sentinel-macOS-unsigned.dmg"
   rm -f "$OUT"
-  (cd "$STAGE" && zip -r "$OUT" Sentinel.app README-RUN.txt)
+
+  if ! command -v hdiutil >/dev/null 2>&1; then
+    echo "[ERROR] hdiutil not found (macOS only)" >&2
+    exit 1
+  fi
+
+  echo "[INFO] Creating DMG with hdiutil"
+  hdiutil create \
+    -volname "Sentinel Chimp" \
+    -srcfolder "$STAGE" \
+    -ov \
+    -format UDZO \
+    "$OUT"
+
   rm -rf "$STAGE"
   echo "[OK] Wrote $OUT"
+  ls -lh "$OUT"
 fi
 
-ls -lh "$ROOT/dist"/*.zip 2>/dev/null || true
+ls -lh "$ROOT/dist"/Sentinel* 2>/dev/null || true
