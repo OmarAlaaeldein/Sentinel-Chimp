@@ -89,6 +89,32 @@ To use the AI Sentiment engine, you must run from the source:
     python sentinel.py
     ```
 
+### CLI (headless — no tkinter)
+
+The same Options Finder rules as the GUI (`core/options_scan.py` + `core/scan_service.py`).
+
+```bash
+# Spot + EWMA/HV + short technicals
+python sentinel.py analyze LULU
+python -m main.cli analyze LULU
+python -m sentinel_cli analyze LULU --json
+
+# Options scan (fair = BS2002 @ forecast vol; EV@Ask = fair − ask)
+python sentinel.py scan LULU --under-only --max-expiries 6
+python sentinel.py scan LULU --type call --garch --json
+python -m main.cli scan AMD --under-only --max-expiries 4 --type put
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--under-only` | Only Under / Earnings Under, ranked by edge % |
+| `--max-expiries N` | First N listed expirations |
+| `--type call|put|all` | Side filter (default `all`) |
+| `--garch` | 50/50 EWMA+GARCH forecast vol blend |
+| `--json` | Machine-readable output |
+
+`python sentinel.py` with **no args** still launches the GUI.
+
 ### Option B: Prebuilt Releases (Lite Mode)
 Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/releases)** — no Python required. Assets are native binaries/installers (not zips).
 
