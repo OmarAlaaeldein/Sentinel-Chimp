@@ -41,14 +41,12 @@ from core.technicals import calculate_technicals
 from core.sentiment import sentiment_engine
 from core.data import YFinanceProvider
 from core.vol_models import (
-    garch11_vol_forecast, fit_quadratic_smile, smile_vol_arr, blend_forecast_vol,
+    garch11_vol_forecast, blend_forecast_vol,
 )
-from core.options_scan import (
-    quote_passes_liquidity,
-    near_atm_strike,
-    delta_in_band,
-    scan_verdict,
-    SCAN_RULES_LOG,
+from core.scan_service import (
+    scan_option_chains,
+    normalize_div_yield,
+    resolve_dividend_yield,
 )
 from ui.tooltip import Tooltip
 from ui.theme import (
@@ -1433,22 +1431,8 @@ class MarketApp:
     
     
     def _normalize_div_yield(self, div):
-        """Normalize a dividend yield to decimal form (e.g. 0.0294 for 2.94%).
-
-        yfinance versions vary: some return decimal (0.0294), others return
-        percent (2.94). Treat any value > 1 as percent and divide by 100.
-        """
-        if div is None:
-            return None
-        try:
-            d = float(div)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(d) or d < 0:
-            return None
-        if d > 1:
-            d = d / 100.0
-        return d
+        """Normalize a dividend yield to decimal form (e.g. 0.0294 for 2.94%)."""
+        return normalize_div_yield(div)
 
     def get_info(self):
         """Consolidated fundamental fetch called when ticker changes."""
@@ -1474,42 +1458,11 @@ class MarketApp:
             self.root.after(0, self.update_pe_display)
 
     def get_smart_dividend(self, stock_obj):
-        """
-        Retrieves the dividend yield (as a decimal) using a priority queue:
-        1. fast_info (Fastest, lightest)
-        2. info.dividendYield (Standard)
-        3. info.trailingAnnualDividendYield (Fallback)
-
-        All sources are normalized via _normalize_div_yield so percent/decimal
-        ambiguity across yfinance versions is handled uniformly. Always returns
-        a finite float (0.0 when nothing is available).
-        """
-        try:
-            # 1. fast_info (milliseconds)
-            fast_div = self._normalize_div_yield(
-                self.data_provider.get_fast_info(stock_obj).get('dividend_yield')
-            )
-            if fast_div is not None:
-                print(f"[DEBUG] Found Dividend (fast_info): {fast_div:.4%}")
-                return fast_div
-
-            # 2. Full info blob
-            info = self.data_provider.get_info(stock_obj)
-            div = self._normalize_div_yield(info.get('dividendYield'))
-            if div is not None:
-                print(f"[DEBUG] Found Dividend (info/dividendYield): {div:.4%}")
-                return div
-            div = self._normalize_div_yield(info.get('trailingAnnualDividendYield'))
-            if div is not None:
-                print(f"[DEBUG] Found Dividend (info/trailing): {div:.4%}")
-                return div
-
-        except Exception as e:
-            print(f"[DEBUG] Div fetch error: {e}")
-
-        # Fallthrough: no dividend data available (or error). Return 0.0 so
-        # callers that do math.exp(-q*T) don't blow up on None.
-        return 0.0
+        """Dividend yield as decimal via shared ``resolve_dividend_yield``."""
+        div = resolve_dividend_yield(self.data_provider, stock_obj)
+        if div > 0:
+            print(f"[DEBUG] Found Dividend: {div:.4%}")
+        return div
 
     def open_options_window(self):
         if not self.current_ticker: return
@@ -1645,285 +1598,33 @@ class MarketApp:
             tree.insert("", "end", values=vals, tags=(tag,))
 
     def fetch_options_batch(self, dates, filter_under_only=False):
+        """Options Finder batch — delegates pricing/filters to ``core.scan_service``."""
         with self._scan_lock:
             self.scan_data = []
 
-        stock = self.stock
-        spot = float(self.current_price)
-        DIV_YIELD = self.get_smart_dividend(stock)
+        def on_ui_batch(items):
+            batch = list(items)
+            if batch:
+                self.root.after(0, lambda b=batch: self._flush_option_rows(b))
 
-        # Fetch rate curve once for the entire batch (provider TTL-caches ^IRX/^TNX)
-        _short_rate, _long_rate = self._fetch_rate_curve()
-
-        earnings_contracts = set()
-        if self.projected_earnings and hasattr(self, 'all_exps') and self.all_exps:
-            for p_date in self.projected_earnings:
-                p_str = p_date.strftime("%Y-%m-%d")
-                valid_exps = [e for e in self.all_exps if e >= p_str]
-                if valid_exps:
-                    earnings_contracts.add(min(valid_exps))
-
-        # Fair vol = forecast only (EWMA ± optional GARCH). Never blend contract IV.
-        forecast_vol = blend_forecast_vol(
-            getattr(self, "ewma_vol", 0.0),
-            getattr(self, "garch_vol", 0.0),
-            getattr(self, "use_garch_blend", False),
+        result = scan_option_chains(
+            data_provider=self.data_provider,
+            stock=self.stock,
+            spot=float(self.current_price),
+            dates=dates,
+            all_exps=getattr(self, "all_exps", None),
+            projected_earnings=self.projected_earnings,
+            ewma_vol=getattr(self, "ewma_vol", 0.0),
+            garch_vol=getattr(self, "garch_vol", 0.0),
+            hv_30=getattr(self, "hv_30", 0.0),
+            use_garch_blend=getattr(self, "use_garch_blend", False),
+            use_smile_vol=getattr(self, "use_smile_vol", False),
+            use_american_greeks=getattr(self, "use_american_greeks", True),
+            under_only=filter_under_only,
+            dividend_yield=self.get_smart_dividend(self.stock),
+            log=self.log,
+            on_ui_batch=on_ui_batch,
         )
-        if forecast_vol is None or forecast_vol <= 0:
-            hv = self._to_finite_float(self.hv_30)
-            forecast_vol = hv if hv and hv > 0 else 0.25
-
-        today = datetime.now().date()
-        ui_batch = []
-        UI_BATCH_SIZE = 40
-        scan_buf = []
-        under_rows = []  # (edge_pct, vals, tag) when filter_under_only
-        rules_logged = False
-
-        def flush_ui():
-            nonlocal ui_batch
-            if not ui_batch:
-                return
-            batch = ui_batch
-            ui_batch = []
-            self.root.after(0, lambda b=batch: self._flush_option_rows(b))
-
-        for date in dates:
-            try:
-                if not rules_logged:
-                    self.log(SCAN_RULES_LOG)
-                    rules_logged = True
-
-                exp_date = datetime.strptime(date, "%Y-%m-%d").date()
-                trading_days = int(np.busday_count(today, exp_date))
-                T = max(trading_days / 252.0, 1 / 252)
-
-                if T <= 0.25:
-                    RFR = _short_rate
-                else:
-                    t_clamped = min(max(T, 0.25), 10.0)
-                    weight = (t_clamped - 0.25) / (10.0 - 0.25)
-                    RFR = _short_rate + weight * (_long_rate - _short_rate)
-
-                chain = self.data_provider.get_option_chain(stock, date)
-                calls = chain.calls.assign(Type="CALL")
-                puts = chain.puts.assign(Type="PUT")
-                all_options = pd.concat([calls, puts], ignore_index=True)
-                if all_options.empty:
-                    continue
-                if 'volume' in all_options.columns:
-                    all_options = all_options.sort_values('volume', ascending=False, kind='mergesort')
-
-                bid = pd.to_numeric(all_options.get('bid', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
-                ask = pd.to_numeric(all_options.get('ask', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
-                vol = pd.to_numeric(all_options.get('volume', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
-                oi_arr = pd.to_numeric(all_options.get('openInterest', 0), errors='coerce').fillna(0.0).to_numpy(dtype=float)
-                iv_arr = pd.to_numeric(all_options.get('impliedVolatility', 0), errors='coerce').to_numpy(dtype=float)
-                strikes = pd.to_numeric(all_options['strike'], errors='coerce').to_numpy(dtype=float)
-                types = all_options['Type'].to_numpy()
-
-                # Hard BBO: no last-only fallback
-                has_ba = (bid > 0) & (ask > 0) & (ask >= bid)
-                mid = np.where(has_ba, 0.5 * (bid + ask), np.nan)
-                spread_frac = np.where(
-                    has_ba & (mid > 0),
-                    (ask - bid) / mid,
-                    np.nan,
-                )
-                spread_pct = np.where(np.isfinite(spread_frac), spread_frac * 100.0, 999.0)
-
-                # Parity map from liquid mids only
-                parity_map = {}
-                for i in range(len(strikes)):
-                    if not has_ba[i] or not np.isfinite(mid[i]) or mid[i] <= 0:
-                        continue
-                    s = float(strikes[i])
-                    bucket = parity_map.setdefault(s, {})
-                    bucket[str(types[i]).lower()] = float(mid[i])
-
-                sqrtT = math.sqrt(T)
-                is_earnings = date in earnings_contracts
-                parity_bounds = VegaChimpCore.american_put_call_parity_bounds
-                Ncdf = VegaChimpCore.N
-
-                kind_is_call = (types == "CALL")
-                oi_int = np.where(np.isfinite(oi_arr), oi_arr, 0.0)
-
-                # Liquidity + near-ATM strike prefilter (vector)
-                liquid = np.array([
-                    quote_passes_liquidity(bid[i], ask[i], oi_int[i], vol[i])
-                    for i in range(len(strikes))
-                ], dtype=bool)
-                atm = np.array([
-                    near_atm_strike(strikes[i], spot) for i in range(len(strikes))
-                ], dtype=bool)
-                valid = (
-                    liquid & atm
-                    & np.isfinite(mid) & (mid > 0)
-                    & np.isfinite(iv_arr) & (iv_arr >= 0.01)
-                    & np.isfinite(strikes) & (strikes > 0)
-                )
-
-                idx = np.flatnonzero(valid)
-                if idx.size == 0:
-                    continue
-
-                strikes_v = strikes[idx]
-                mid_v = mid[idx]
-                bid_v = bid[idx]
-                ask_v = ask[idx]
-                iv_v = iv_arr[idx]
-                vol_v = vol[idx]
-                oi_v = oi_int[idx]
-                sp_v = spread_pct[idx]
-                is_call_v = kind_is_call[idx]
-                types_v = types[idx]
-
-                # Display IV: optional smile smoother (cross-check only; NOT used for FV)
-                iv_display = iv_v.copy()
-                forward = spot * math.exp((RFR - DIV_YIELD) * T)
-                if self.use_smile_vol:
-                    smile_coef = fit_quadratic_smile(strikes_v, iv_v, forward)
-                    if smile_coef is not None:
-                        iv_display = smile_vol_arr(strikes_v, forward, smile_coef)
-
-                # Single forecast vol for all contracts (non-circular fair value)
-                vol_input = np.full(idx.size, float(forecast_vol), dtype=float)
-                kinds = np.where(is_call_v, 'call', 'put')
-                _BATCH_N = 64
-                if idx.size >= _BATCH_N:
-                    fair_v = VegaChimpCore.bjerksund_stensland_batch(
-                        spot, strikes_v, T, RFR, DIV_YIELD, vol_input, kinds,
-                    )
-                else:
-                    fair_v = np.array([
-                        VegaChimpCore.bjerksund_stensland(
-                            spot, float(strikes_v[j]), T, RFR, DIV_YIELD,
-                            float(vol_input[j]), kinds[j],
-                        )
-                        for j in range(idx.size)
-                    ], dtype=float)
-
-                # Greeks on market IV (American FD default)
-                greeks_map = None
-                if self.use_american_greeks and idx.size >= _BATCH_N:
-                    greeks_map = VegaChimpCore.american_greeks_batch(
-                        spot, strikes_v, RFR, DIV_YIELD, iv_v, T, kinds,
-                    )
-
-                for j, i in enumerate(idx):
-                    fair = float(fair_v[j])
-                    if fair <= 0 or not math.isfinite(fair):
-                        continue
-                    market_price = float(mid_v[j])
-                    strike = float(strikes_v[j])
-                    iv = float(iv_display[j])
-                    iv_mkt = float(iv_v[j])
-                    kind_str = kinds[j]
-                    b = float(bid_v[j])
-                    a = float(ask_v[j])
-                    oi = int(oi_v[j])
-                    sp = float(sp_v[j])
-
-                    if greeks_map is not None:
-                        greeks = {
-                            'delta': float(greeks_map['delta'][j]),
-                            'gamma': float(greeks_map['gamma'][j]),
-                            'theta': float(greeks_map['theta'][j]),
-                            'vega': float(greeks_map['vega'][j]),
-                        }
-                    elif self.use_american_greeks:
-                        greeks = VegaChimpCore.american_greeks(
-                            spot, strike, RFR, DIV_YIELD, iv_mkt, T, kind_str,
-                        )
-                    else:
-                        greeks = VegaChimpCore.bs_greeks(
-                            spot, strike, RFR, DIV_YIELD, iv_mkt, T, kind_str,
-                        )
-
-                    # Prefer delta band once Greeks are available
-                    if not delta_in_band(greeks.get('delta', float('nan'))):
-                        continue
-
-                    verdict, ev_at_ask, edge_pct = scan_verdict(
-                        fair, b, a, is_earnings=is_earnings,
-                    )
-
-                    try:
-                        if kind_str == "call":
-                            breakeven_price = strike + market_price
-                        else:
-                            breakeven_price = strike - market_price
-                        if breakeven_price <= 0:
-                            pop = 0.0
-                        else:
-                            d2_pop = (
-                                math.log(spot / breakeven_price)
-                                + (RFR - DIV_YIELD - 0.5 * iv_mkt * iv_mkt) * T
-                            ) / (iv_mkt * sqrtT)
-                            pop = Ncdf(d2_pop) * 100 if kind_str == "call" else Ncdf(-d2_pop) * 100
-                            pop = max(0.0, min(100.0, pop))
-                    except Exception:
-                        pop = 0.0
-
-                    parity_warn = ""
-                    parity_data = parity_map.get(strike, {})
-                    if 'call' in parity_data and 'put' in parity_data:
-                        lower, upper = parity_bounds(spot, strike, RFR, DIV_YIELD, T)
-                        observed = parity_data['call'] - parity_data['put']
-                        if observed < lower - 0.10 or observed > upper + 0.10:
-                            parity_warn = "!"
-
-                    is_undervalued = "Under" in verdict
-                    scan_buf.append({
-                        'date': date,
-                        'type': types_v[j],
-                        'strike': strike,
-                        'ev': ev_at_ask,
-                        'vol': float(vol_v[j]),
-                        'is_earnings': is_earnings,
-                        'is_good': is_undervalued,
-                    })
-
-                    breakeven = strike + market_price if kind_str == "call" else strike - market_price
-                    tag = ""
-                    if is_undervalued:
-                        tag = "green"
-                    elif "Over" in verdict:
-                        tag = "red"
-                    if parity_warn:
-                        verdict = f"{verdict} {parity_warn}"
-                    if filter_under_only and "Under" not in verdict:
-                        continue
-
-                    vals = (
-                        date, types_v[j], f"{strike:.2f}", int(vol_v[j]),
-                        oi, f"{market_price:.2f}", f"{sp:.0f}%",
-                        f"{breakeven:.2f}", f"{iv:.1%}",
-                        f"{fair:.2f}", f"{ev_at_ask:+.2f}",
-                        f"{greeks['delta']:.3f}", f"{greeks['gamma']:.4f}",
-                        f"{greeks['theta']:.3f}", f"{greeks['vega']:.3f}",
-                        f"{pop:.0f}%", verdict,
-                    )
-                    if filter_under_only:
-                        under_rows.append((edge_pct, vals, tag))
-                    else:
-                        ui_batch.append((vals, tag))
-                        if len(ui_batch) >= UI_BATCH_SIZE:
-                            flush_ui()
-
-            except Exception as e:
-                self.log(f"Options fetch error for {date}: {e}")
-
-        if filter_under_only and under_rows:
-            under_rows.sort(key=lambda r: r[0], reverse=True)
-            for _pct, vals, tag in under_rows:
-                ui_batch.append((vals, tag))
-                if len(ui_batch) >= UI_BATCH_SIZE:
-                    flush_ui()
-
-        flush_ui()
-        if scan_buf:
+        if result.scan_buf:
             with self._scan_lock:
-                self.scan_data.extend(scan_buf)
-
+                self.scan_data.extend(result.scan_buf)
