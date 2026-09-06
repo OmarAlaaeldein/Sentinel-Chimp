@@ -70,22 +70,23 @@ class TestDailyEMA:
         np.testing.assert_allclose(got.values, exp.values)
 
     def test_intraday_bars_do_not_use_bar_span_200(self):
-        """Regression: EMA_200 on 1m bars must equal daily EMA mapped as-of, not 200 bars."""
+        """Regression: EMA_200 on intraday bars must equal daily EMA mapped as-of, not 200 bars."""
         rng = np.random.default_rng(0)
-        # 10 trading days of 1m RTH-ish bars (simplified: 78 bars/day @ 5m-equivalent density)
         bars_per_day = 78
         n_days = 30
         daily_close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n_days)))
         daily_idx = pd.bdate_range("2024-01-01", periods=n_days)
         daily = pd.Series(daily_close, index=daily_idx)
 
-        # Build intraday index: each day has bars_per_day timestamps
+        # RTH-ish 5m bars in America/New_York (09:30 + 5m*k)
         bar_times = []
         bar_closes = []
         for i, d in enumerate(daily_idx):
             for m in range(bars_per_day):
-                bar_times.append(pd.Timestamp(d) + pd.Timedelta(minutes=5 * m))
-                # intraday noise around that day's close
+                ts = pd.Timestamp(d, tz="America/New_York") + pd.Timedelta(
+                    hours=9, minutes=30 + 5 * m
+                )
+                bar_times.append(ts)
                 bar_closes.append(daily_close[i] * (1 + 0.0001 * math.sin(m)))
         bar_df = pd.DataFrame({"Close": bar_closes}, index=pd.DatetimeIndex(bar_times))
 
@@ -93,27 +94,70 @@ class TestDailyEMA:
         attach_daily_emas(bar_df, daily)
         right = bar_df["EMA_200"]
 
-        # Mapped daily EMA should track daily series, not hug intraday noise like bar-span EMA
         daily_ema200 = compute_ema_series(daily, 200)
-        # last bar of last day should match last daily EMA
-        assert right.iloc[-1] == pytest.approx(float(daily_ema200.iloc[-1]), rel=1e-9)
+        # Post-close bar on last day sees that day's completed daily EMA
+        after_close = pd.Timestamp(daily_idx[-1], tz="America/New_York") + pd.Timedelta(
+            hours=16, minutes=30
+        )
+        # append a synthetic after-close print for the assert
+        bar_df2 = bar_df.copy()
+        bar_df2.loc[after_close, "Close"] = daily_close[-1]
+        attach_daily_emas(bar_df2, daily)
+        assert bar_df2["EMA_200"].loc[after_close] == pytest.approx(
+            float(daily_ema200.iloc[-1]), rel=1e-9
+        )
         # bar-span EMA_200 differs materially on this sample
         assert abs(float(wrong.iloc[-1]) - float(right.iloc[-1])) > 0.01
+
+    def test_intraday_morning_no_same_day_ema_lookahead(self):
+        """Morning bars must not see the same session's daily EMA (completed-close rule)."""
+        daily_idx = pd.DatetimeIndex(
+            ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"]
+        )
+        daily = pd.Series([100.0, 110.0, 120.0, 130.0, 140.0], index=daily_idx)
+        emas = compute_daily_emas(daily, spans=(5,))
+        morning = pd.DatetimeIndex(
+            [pd.Timestamp("2024-01-08 10:00:00", tz="America/New_York")]
+        )
+        after = pd.DatetimeIndex(
+            [pd.Timestamp("2024-01-08 16:30:00", tz="America/New_York")]
+        )
+        mapped_am = map_daily_columns_to_bars(morning, emas)
+        mapped_pm = map_daily_columns_to_bars(after, emas)
+        assert float(mapped_am["EMA_5"].iloc[0]) == pytest.approx(
+            float(emas["EMA_5"].iloc[-2]), rel=1e-12
+        )
+        assert float(mapped_pm["EMA_5"].iloc[0]) == pytest.approx(
+            float(emas["EMA_5"].iloc[-1]), rel=1e-12
+        )
+
+    def test_daily_chart_ema_includes_same_day_close(self):
+        """Daily→daily as-of must still include that day's close in EMA_*."""
+        daily_idx = pd.bdate_range("2024-01-02", periods=10)
+        daily = pd.Series(np.linspace(100, 120, 10), index=daily_idx)
+        emas = compute_daily_emas(daily, spans=(5,))
+        mapped = map_daily_columns_to_bars(daily_idx, emas)
+        assert float(mapped["EMA_5"].iloc[-1]) == pytest.approx(
+            float(emas["EMA_5"].iloc[-1]), rel=1e-12
+        )
 
     def test_map_preserves_bar_order(self):
         daily = pd.DataFrame(
             {"EMA_5": [1.0, 2.0, 3.0]},
             index=pd.bdate_range("2024-01-01", periods=3),
         )
-        # bars intentionally not strictly increasing after shuffle of construction
-        idx = pd.to_datetime(
-            ["2024-01-03 10:00", "2024-01-01 10:00", "2024-01-02 15:00"]
-        )
+        # bars intentionally not chronological in construction order
+        idx = pd.DatetimeIndex([
+            pd.Timestamp("2024-01-03 10:00", tz="America/New_York"),
+            pd.Timestamp("2024-01-01 10:00", tz="America/New_York"),
+            pd.Timestamp("2024-01-02 15:00", tz="America/New_York"),
+        ])
         mapped = map_daily_columns_to_bars(idx, daily)
         assert list(mapped.index) == list(idx)
-        assert mapped["EMA_5"].iloc[0] == pytest.approx(3.0)  # Jan 3
-        assert mapped["EMA_5"].iloc[1] == pytest.approx(1.0)  # Jan 1
-        assert mapped["EMA_5"].iloc[2] == pytest.approx(2.0)  # Jan 2
+        # Morning / before RTH close → prior completed daily only
+        assert mapped["EMA_5"].iloc[0] == pytest.approx(2.0)  # Jan 3 10:00 → Jan 2
+        assert pd.isna(mapped["EMA_5"].iloc[1])  # Jan 1 10:00 → nothing prior completed
+        assert mapped["EMA_5"].iloc[2] == pytest.approx(1.0)  # Jan 2 15:00 → Jan 1
 
 
 # -------------------- EWMA vol (math OK) --------------------
@@ -190,6 +234,36 @@ class TestIchimoku:
         src = j - 26  # 51
         exp_sb = (highs[src - 51 : src + 1].max() + lows[src - 51 : src + 1].min()) / 2.0
         assert df["Ichimoku_Senkou_B"].iloc[j] == pytest.approx(exp_sb)
+
+    def test_ichimoku_windows_use_rth_not_extended_hours(self):
+        """Premarket spikes must not enter Tenkan/Kijun once RTH-filtered."""
+        from ui.chart import prepare_plot_frame
+
+        times = []
+        for d in pd.bdate_range("2024-01-02", periods=5):
+            for hour in (4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15):
+                times.append(pd.Timestamp(d, tz="America/New_York") + pd.Timedelta(hours=hour))
+        idx = pd.DatetimeIndex(times)
+        n = len(idx)
+        close = np.full(n, 100.0)
+        high = np.full(n, 101.0)
+        low = np.full(n, 99.0)
+        for i, ts in enumerate(idx):
+            if ts.hour < 9:
+                high[i], low[i], close[i] = 200.0, 50.0, 125.0
+        df = pd.DataFrame(
+            {"Open": close, "High": high, "Low": low, "Close": close, "Volume": 1e6},
+            index=idx,
+        )
+        # Wrong path: compute on eth+rth then filter (historical bug)
+        polluted = df.copy()
+        calculate_ichimoku(polluted)
+        plot_polluted, _, _ = prepare_plot_frame(polluted, "60m")
+        # Right path: filter first, then Ichimoku
+        plot_clean, _, _ = prepare_plot_frame(df.copy(), "60m")
+        calculate_ichimoku(plot_clean)
+        assert float(plot_clean["Ichimoku_Tenkan"].iloc[-1]) == pytest.approx(100.0)
+        assert float(plot_polluted["Ichimoku_Tenkan"].iloc[-1]) != pytest.approx(100.0)
 
 
 # -------------------- Fib swing --------------------
