@@ -58,10 +58,18 @@ from ui.theme import (
     log_colors,
     chart_colors,
     _font,
+    FONT_LOG,
 )
 from ui.chart import prepare_plot_frame, draw_main_chart
 from ui.news import open_news_feed, open_news_reader
 from ui.options_explorer import build_options_explorer, OPTION_COLS
+from ui.options_3d import (
+    build_plotly_figure,
+    style_mpl_3d_axes,
+    filter_rows_for_plot,
+    CAT_EARN_UNDER,
+    CAT_EARN_OVER,
+)
 from ui.prefs import load_prefs, save_prefs
 
 
@@ -251,7 +259,7 @@ class MarketApp:
 
         _log = log_colors()
         self.log_box = tk.Text(
-            log_frame, height=6, font=_font(9, mono=True),
+            log_frame, height=6, font=_font(FONT_LOG, mono=True),
             bg=_log["bg"], fg=_log["fg"],
             insertbackground=_log["insertbackground"],
             selectbackground=_log["selectbackground"],
@@ -1173,8 +1181,7 @@ class MarketApp:
         self.btn_opt.config(state="normal", text=f"Open {self.current_ticker} Options")
     
     def visualize_3d(self, option_type):
-        """Interactive 3D Plot with Uniform Color Types (Fixes Ragged Array Error)."""
-        # Snapshot scan_data under the lock since a scan thread may be appending.
+        """Interactive 3D landscape: Days × Strike × EV@Ask ($) with readable chrome."""
         with self._scan_lock:
             if not getattr(self, 'scan_data', None):
                 messagebox.showinfo("3D Plot", "No data to plot. Please run a Scan first.")
@@ -1185,128 +1192,130 @@ class MarketApp:
             return
 
         vis_win = Toplevel(self.root)
-        vis_win.title(f"3D Analysis: {self.current_ticker} {option_type}s")
-        vis_win.geometry("1000x850")
+        vis_win.title(f"3D Analysis: {self.current_ticker} {option_type}s — EV@Ask ($)")
+        vis_win.geometry("1100x900")
         vis_win.configure(bg=APP_BG)
 
-        # --- CONTROLS ---
-        ctrl_frame = ttk.LabelFrame(vis_win, text="Filter Conditions", padding=10)
+        ctrl_frame = ttk.LabelFrame(
+            vis_win, text="Filter · color = EV@Ask ($) = Fair − Ask",
+            padding=10, style="Card.TLabelframe",
+        )
         ctrl_frame.pack(side="top", fill="x", padx=10, pady=5)
 
         var_earn_under = tk.BooleanVar(value=True)
-        var_earn_over  = tk.BooleanVar(value=True)
-        var_reg_under  = tk.BooleanVar(value=True)
-        var_reg_over   = tk.BooleanVar(value=True)
+        var_earn_over = tk.BooleanVar(value=True)
+        var_reg_under = tk.BooleanVar(value=True)
+        var_reg_over = tk.BooleanVar(value=True)
 
-        # --- FIGURE ---
-        fig = Figure(figsize=(8, 6), dpi=100, facecolor=APP_BG)
+        fig = Figure(figsize=(9, 6.5), dpi=110, facecolor=APP_BG)
         ax = fig.add_subplot(111, projection='3d')
         ax.set_facecolor(APP_BG)
-        
+
         canvas = FigureCanvasTkAgg(fig, master=vis_win)
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        # --- BOTTOM BUTTON ---
         btn_frame = ttk.Frame(vis_win)
         btn_frame.pack(fill="x", pady=10)
-        btn_export = ttk.Button(btn_frame, text="Save HTML (Current View)", state="normal")
-        btn_export.pack(fill="x", padx=50)
+        btn_export = ttk.Button(
+            btn_frame,
+            text="Save interactive HTML (Plotly — colorbar + heatmap)",
+            style="Accent.TButton",
+        )
+        btn_export.pack(fill="x", padx=40)
 
-        # --- REFRESH FUNCTION ---
+        # Snapshot holders for HTML export
+        export_state = {"rows": []}
+
         def refresh_plot():
-            ax.clear()
-            
-            dates_x, strikes, evs, colors, sizes = [], [], [], [], []
-            date_labels, vols = [], []
-            
-            today = datetime.now()
-            all_evs = [r['ev'] for r in base_data]
-            cmap = plt.get_cmap('RdYlGn')
-            norm = plt.Normalize(vmin=min(all_evs), vmax=max(all_evs))
-
-            for row in base_data:
-                is_earn = row['is_earnings']
-                is_good = row['is_good']
-                
-                visible = False
-                c = (0.5, 0.5, 0.5, 1.0) # Default gray tuple
-                s = 20
-
-                # Filter Logic
-                if is_earn:
-                    if is_good:
-                        if var_earn_under.get():
-                            visible = True
-                            c = mcolors.to_rgba('#00ffff') 
-                            s = 50
-                    else:
-                        if var_earn_over.get():
-                            visible = True
-                            c = mcolors.to_rgba('#af00ff') 
-                            s = 50
-                else:
-                    if is_good:
-                        if var_reg_under.get():
-                            visible = True
-                            c = cmap(norm(row['ev']))
-                    else:
-                        if var_reg_over.get():
-                            visible = True
-                            c = cmap(norm(row['ev']))
-
-                if visible:
-                    try:
-                        dt = datetime.strptime(row['date'], "%Y-%m-%d")
-                        days = (dt - today).days
-                        
-                        dates_x.append(days)
-                        strikes.append(float(row['strike']))
-                        evs.append(float(row['ev']))
-                        colors.append(c) # Now this list only contains Tuples!
-                        sizes.append(s)
-                        date_labels.append(row['date'])
-                        vols.append(row['vol'])
-                    except:
-                        continue
-
-            # Plotting
-            if dates_x:
-                ax.scatter(dates_x, strikes, evs, c=colors, s=sizes, 
-                           edgecolors='black', linewidth=0.5, alpha=0.9)
-
-            ax.set_xlabel('Days', color='white'); ax.set_ylabel('Strike', color='white'); ax.set_zlabel('EV', color='white')
-            ax.set_title(f"{self.current_ticker} {option_type} Landscape", color='white')
-            ax.tick_params(colors='white'); ax.grid(color='gray', linestyle='--', linewidth=0.5)
-            
-            # --- SNAPSHOT DATA FOR EXPORT ---
-            btn_export.config(command=lambda 
-                d=dates_x, s=strikes, e=evs, dl=date_labels, v=vols, c=colors: 
-                self.save_3d_html(option_type, d, s, e, dl, v, c)
+            nonlocal ax
+            fig.clf()
+            ax = fig.add_subplot(111, projection='3d')
+            ax.set_facecolor(APP_BG)
+            rows = filter_rows_for_plot(
+                base_data,
+                show_earn_under=var_earn_under.get(),
+                show_earn_over=var_earn_over.get(),
+                show_under=var_reg_under.get(),
+                show_over=var_reg_over.get(),
             )
+            export_state["rows"] = rows
 
+            today = datetime.now()
+            dates_x, strikes, evs, colors, sizes = [], [], [], [], []
+            all_evs = [float(r['ev']) for r in base_data if r.get('ev') is not None]
+            if not all_evs:
+                style_mpl_3d_axes(ax, self.current_ticker, option_type)
+                canvas.draw()
+                return
+            cmap = plt.get_cmap('RdYlGn')
+            vmax = max(abs(min(all_evs)), abs(max(all_evs)), 0.05)
+            norm = plt.Normalize(vmin=-vmax, vmax=vmax)
+
+            for row in rows:
+                try:
+                    dt = datetime.strptime(row['date'], "%Y-%m-%d")
+                    days = (dt - today).days
+                    ev = float(row['ev'])
+                    cat = row.get('category', '')
+                    dates_x.append(days)
+                    strikes.append(float(row['strike']))
+                    evs.append(ev)
+                    if cat == CAT_EARN_UNDER:
+                        colors.append(mcolors.to_rgba('#00e6e6'))
+                        sizes.append(64)
+                    elif cat == CAT_EARN_OVER:
+                        colors.append(mcolors.to_rgba('#c850ff'))
+                        sizes.append(64)
+                    else:
+                        colors.append(cmap(norm(ev)))
+                        sizes.append(36)
+                except Exception:
+                    continue
+
+            if dates_x:
+                sc = ax.scatter(
+                    dates_x, strikes, evs, c=colors, s=sizes,
+                    edgecolors='#0b0f14', linewidth=0.6, alpha=0.92, depthshade=True,
+                )
+                # Colorbar for EV@Ask meaning
+                try:
+                    mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+                    mappable.set_array([])
+                    cbar = fig.colorbar(mappable, ax=ax, shrink=0.65, pad=0.08)
+                    cbar.set_label('EV@Ask ($)', color='#e8eef7', fontsize=11)
+                    cbar.ax.yaxis.set_tick_params(color='#8b9bb4', labelcolor='#8b9bb4', labelsize=10)
+                except Exception:
+                    pass
+
+            style_mpl_3d_axes(ax, self.current_ticker, option_type)
+            btn_export.config(command=lambda: self.save_3d_html(option_type, export_state["rows"]))
             canvas.draw()
 
-        # --- CHECKBOXES ---
-        cb_eu = ttk.Checkbutton(ctrl_frame, text="Earnings (Good)", variable=var_earn_under, command=refresh_plot)
-        cb_eo = ttk.Checkbutton(ctrl_frame, text="Earnings (Bad)", variable=var_earn_over, command=refresh_plot)
-        cb_ru = ttk.Checkbutton(ctrl_frame, text="Undervalued (Regular)", variable=var_reg_under, command=refresh_plot)
-        cb_ro = ttk.Checkbutton(ctrl_frame, text="Overvalued (Regular)", variable=var_reg_over, command=refresh_plot)
+        ttk.Label(ctrl_frame, text="[Cyan]", foreground="#00e6e6").pack(side="left")
+        ttk.Checkbutton(
+            ctrl_frame, text="Earnings Under", variable=var_earn_under, command=refresh_plot,
+        ).pack(side="left", padx=8)
+        ttk.Label(ctrl_frame, text="[Magenta]", foreground="#c850ff").pack(side="left")
+        ttk.Checkbutton(
+            ctrl_frame, text="Earnings Over", variable=var_earn_over, command=refresh_plot,
+        ).pack(side="left", padx=8)
+        ttk.Label(ctrl_frame, text="[RdYlGn]", foreground="#90ee90").pack(side="left")
+        ttk.Checkbutton(
+            ctrl_frame, text="Under (regular)", variable=var_reg_under, command=refresh_plot,
+        ).pack(side="left", padx=8)
+        ttk.Checkbutton(
+            ctrl_frame, text="Over (regular)", variable=var_reg_over, command=refresh_plot,
+        ).pack(side="left", padx=8)
 
-        ttk.Label(ctrl_frame, text="[Cyan]", foreground="#00ffff").pack(side="left")
-        cb_eu.pack(side="left", padx=10)
-        ttk.Label(ctrl_frame, text="[Purple]", foreground="#af00ff").pack(side="left")
-        cb_eo.pack(side="left", padx=10)
-        ttk.Label(ctrl_frame, text="[Greenish]", foreground="#90ee90").pack(side="left")
-        cb_ru.pack(side="left", padx=10)
-        ttk.Label(ctrl_frame, text="[Reddish]", foreground="#ffcccb").pack(side="left")
-        cb_ro.pack(side="left", padx=10)
-
-        # Initial Render
         refresh_plot()
-    
-    def save_3d_html(self, option_type, dates, strikes, evs, date_labels, vol, colors_list):
+
+    def save_3d_html(self, option_type, rows):
+        """Export Plotly HTML with EV@Ask colorbar, hover, camera, optional heatmap."""
         if not PLOTLY_AVAILABLE:
             messagebox.showerror("Error", "Plotly not installed.")
+            return
+        if not rows:
+            messagebox.showinfo("3D Plot", "Nothing visible with current filters.")
             return
 
         filename = filedialog.asksaveasfilename(
@@ -1314,58 +1323,41 @@ class MarketApp:
             defaultextension=".html",
             filetypes=[("HTML Files", "*.html")]
         )
-        if not filename: return
+        if not filename:
+            return
 
         try:
-            # Convert Matplotlib Tuples (0.0-1.0) to Plotly CSS Strings (rgb(0-255))
-            plotly_colors = []
-            for c in colors_list:
-                r, g, b = int(c[0] * 255), int(c[1] * 255), int(c[2] * 255)
-                plotly_colors.append(f"rgb({r}, {g}, {b})")
+            today = datetime.now()
+            days, strikes, evs, labels, vols, cats = [], [], [], [], [], []
+            for row in rows:
+                try:
+                    dt = datetime.strptime(row['date'], "%Y-%m-%d")
+                    days.append((dt - today).days)
+                    strikes.append(float(row['strike']))
+                    evs.append(float(row['ev']))
+                    labels.append(row['date'])
+                    vols.append(float(row.get('vol') or 0))
+                    cats.append(row.get('category', 'under'))
+                except Exception:
+                    continue
 
-            hover_texts = []
-            for d_str, stk, val, vols, c_code in zip(date_labels, strikes, evs, vol, plotly_colors):
-                # Check for Cyan (0, 255, 255)
-                if "0, 255, 255" in str(c_code):
-                    type_str = "<b style='color:cyan'>EARNINGS (GOOD)</b>"
-                # Check for Purple (175, 0, 255) -> derived from #af00ff
-                elif "175, 0, 255" in str(c_code):
-                    type_str = "<b style='color:magenta'>EARNINGS (BAD)</b>"
-                else:
-                    type_str = "<b>REGULAR</b>"
-
-                txt = (f"{type_str}<br><b>Date:</b> {d_str}<br>"
-                       f"<b>Strike:</b> ${stk}<br><b>Vol:</b> {int(vols)}<br><b>EV:</b> {val:+.2f}")
-                hover_texts.append(txt)
-
-            fig = go.Figure(data=[go.Scatter3d(
-                x=dates, y=strikes, z=evs,
-                mode='markers',
-                marker=dict(
-                    size=5,
-                    color=plotly_colors, 
-                    opacity=0.9
-                ),
-                text=hover_texts, 
-                hoverinfo="text"
-            )])
-
-            fig.update_layout(
-                title=f"{self.current_ticker} {option_type} Landscape (Filtered)",
-                scene=dict(
-                    xaxis_title='Days to Expiry', yaxis_title='Strike', zaxis_title='EV',
-                    bgcolor=APP_BG,
-                    xaxis=dict(backgroundcolor=APP_BG, color="white"),
-                    yaxis=dict(backgroundcolor=APP_BG, color="white"),
-                    zaxis=dict(backgroundcolor=APP_BG, color="white"),
-                ),
-                paper_bgcolor=APP_BG, font=dict(color="white")
+            fig = build_plotly_figure(
+                self.current_ticker,
+                option_type,
+                days,
+                strikes,
+                evs,
+                labels,
+                vols,
+                cats,
+                include_heatmap=True,
             )
-
             plot(fig, filename=filename, auto_open=True)
-
+            self.log(f"Saved 3D HTML → {filename}")
         except Exception as e:
             self.log(f"HTML Export Error: {e}")
+            messagebox.showerror("Export Error", str(e))
+
     def on_hover(self, event):
         if event.inaxes != self.ax or self.last_plot_df is None or self.last_plot_df.empty:
             if self.hover_annot:
@@ -1411,7 +1403,7 @@ class MarketApp:
                     xytext=(10, 10),      # Reduced offset (closer to cursor)
                     textcoords="offset points",
                     color="white",        # Keep your Dark Mode text color
-                    fontsize=8,
+                    fontsize=10,
                     fontweight="bold",
                     bbox=dict(
                         boxstyle="round,pad=0.3", 

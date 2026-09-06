@@ -183,3 +183,19 @@ Reworked so “Under/Over” means a **tradeable** edge, not a circular mid-vs-b
 | Undervalued scan | Candidates sorted by `edge_pct` descending before UI flush |
 
 Helpers live in `core/options_scan.py` (`tradeable_edge`, `scan_verdict`, liquidity/moneyness filters).
+
+## Options Explorer UX (2026-09-06) — presentation only
+
+Second look at labels / colors (no pricing-semantics change):
+
+| UI | Meaning |
+| :--- | :--- |
+| **Mid $** | `(bid+ask)/2` — previously labeled bare "Price" |
+| **Fair $** | BS2002 at **forecast vol only** (EWMA ± optional GARCH) |
+| **EV@Ask $** | `Fair − Ask` (buy-side tradeable edge); colorbar / Z in 3D |
+| **Green row** | Verdict contains **Under** (edge vs ask cleared hurdles) |
+| **Red row** | Verdict contains **Over** (edge vs bid cleared hurdles) |
+| **No tint** | **Fair** — no tradeable edge after dollar + % hurdles |
+
+Explorer footer + 3D filter copy now say Under/Over (not "Good/Bad"). Rules table above remains authoritative.
+
