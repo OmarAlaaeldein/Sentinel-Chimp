@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version / tag name (e.g. 1.7 or v1.7)"
+        description: "Version / tag name (e.g. 1.8 or v1.8)"
         required: true
-        default: "1.7"
+        default: "1.8"
   push:
     tags:
       - "v*"
@@ -25,13 +25,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: Sentinel-Windows-x64.zip
+            artifact: Sentinel.exe
             platform: windows
           - os: ubuntu-latest
-            artifact: Sentinel-Linux-x64.zip
+            artifact: Sentinel-Linux-x64
             platform: linux
           - os: macos-latest
-            artifact: Sentinel-macOS-unsigned.zip
+            artifact: Sentinel-macOS-unsigned.dmg
             platform: macos
 
     steps:
@@ -48,7 +48,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk tk-dev zip
+          sudo apt-get install -y python3-tk tk-dev
 
       - name: Install release dependencies
         run: |
@@ -98,7 +98,7 @@ jobs:
           else
             TAG="${GITHUB_REF_NAME}"
           fi
-          # Normalize: strip leading v for display name, keep tag as given
+          # Normalize: strip leading whitespace
           TAG="${TAG# }"
           if [[ -z "$TAG" ]]; then
             echo "Empty tag" >&2
@@ -125,28 +125,32 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            release-assets/Sentinel-Windows-x64.zip
-            release-assets/Sentinel-Linux-x64.zip
-            release-assets/Sentinel-macOS-unsigned.zip
+            release-assets/Sentinel.exe
+            release-assets/Sentinel-Linux-x64
+            release-assets/Sentinel-macOS-unsigned.dmg
           body: |
-            ## Sentinel Chimp ${{ steps.tag.outputs.tag }} — Lite Mode multi-platform release
+            ## Sentinel Chimp ${{ steps.tag.outputs.tag }} — Lite Mode native installers
 
             Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
+
+            ### What's new
+            - **UI readability / 3D:** clearer fonts, improved Options Explorer labels, richer EV@Ask 3D visualization (PR #8)
+            - **Native release assets** (no zip packs): Windows `.exe`, macOS `.dmg`, Linux single binary
 
             ### Downloads
             | Platform | Artifact |
             | --- | --- |
-            | **Windows x64** | `Sentinel-Windows-x64.zip` → extract and run `Sentinel.exe` |
-            | **Linux x64** | `Sentinel-Linux-x64.zip` → `chmod +x Sentinel && ./Sentinel` |
-            | **macOS (unsigned)** | `Sentinel-macOS-unsigned.zip` → see Gatekeeper note below |
+            | **Windows x64** | `Sentinel.exe` — download and run |
+            | **Linux x64** | `Sentinel-Linux-x64` — `chmod +x` then run |
+            | **macOS (unsigned)** | `Sentinel-macOS-unsigned.dmg` — open DMG, then see Gatekeeper note |
 
             ### macOS Gatekeeper (unsigned)
             This macOS build is **not code-signed** and **not notarized**.
-            - Right-click `Sentinel.app` → **Open**, then confirm; or
-            - `xattr -dr com.apple.quarantine Sentinel.app && open Sentinel.app`
+            - Open the DMG, then **right-click** `Sentinel.app` → **Open**, and confirm; or
+            - `xattr -dr com.apple.quarantine /path/to/Sentinel.app && open /path/to/Sentinel.app`
 
             ### Linux
-            Desktop environment with Tk recommended. See `README-RUN.txt` inside the zip.
+            Desktop environment with Tk recommended. Mark executable if needed: `chmod +x Sentinel-Linux-x64 && ./Sentinel-Linux-x64`
 
             ### What's in Lite Mode
             Charting, technicals, Bjerksund-Stensland options math, EWMA/HV vol, Options Finder, 3D plot — **included**.

@@ -45,17 +45,17 @@ A threaded, non-blocking GUI featuring a professional Dark Mode interface with a
 
 ## 📦 Compatibility & Release Info
 
-Prebuilt **Lite Mode** packages are published on the [Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/releases) page for **Windows**, **Linux**, and **unsigned macOS**.
+Prebuilt **Lite Mode** native installers/binaries are published on the [Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/releases) page for **Windows**, **Linux**, and **unsigned macOS** (no zip packs).
 
 | Artifact | Platform |
 | :--- | :--- |
-| `Sentinel-Windows-x64.zip` | Windows 10/11 x64 — extract and run `Sentinel.exe` |
-| `Sentinel-Linux-x64.zip` | Linux x64 — `chmod +x Sentinel && ./Sentinel` |
-| `Sentinel-macOS-unsigned.zip` | macOS — **unsigned** (Gatekeeper: right-click → Open) |
+| `Sentinel.exe` | Windows 10/11 x64 — download and run |
+| `Sentinel-Linux-x64` | Linux x64 — `chmod +x Sentinel-Linux-x64 && ./Sentinel-Linux-x64` |
+| `Sentinel-macOS-unsigned.dmg` | macOS — open DMG; **unsigned** (Gatekeeper: right-click → Open) |
 
 To ensure this tool works on standard trading laptops without requiring NVIDIA GPUs or massive libraries, the **pre-compiled Release Package** differs from the source code:
 
-| Feature | Source Code (`.py`) | Release Package (`.exe` / `.app` / Linux binary) |
+| Feature | Source Code (`.py`) | Release Package (`.exe` / `.dmg` / Linux binary) |
 | :--- | :---: | :---: |
 | **Charting & Technicals** | ✅ Included | ✅ Included |
 | **Bjerksund-Stensland Math** | ✅ Included | ✅ Included |
@@ -90,24 +90,24 @@ To use the AI Sentiment engine, you must run from the source:
     ```
 
 ### Option B: Prebuilt Releases (Lite Mode)
-Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/releases)** — no Python required.
+Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/releases)** — no Python required. Assets are native binaries/installers (not zips).
 
 **Windows**
-1. Download `Sentinel-Windows-x64.zip`.
-2. Extract and run `Sentinel.exe`.
+1. Download `Sentinel.exe`.
+2. Run it (Windows Defender may scan the unsigned exe on first launch).
 
 **Linux**
-1. Download `Sentinel-Linux-x64.zip`.
-2. Extract, then:
+1. Download `Sentinel-Linux-x64`.
+2. Make executable and run:
    ```bash
-   chmod +x Sentinel
-   ./Sentinel
+   chmod +x Sentinel-Linux-x64
+   ./Sentinel-Linux-x64
    ```
 
 **macOS (unsigned)**
-1. Download `Sentinel-macOS-unsigned.zip`.
-2. Extract `Sentinel.app`.
-3. Because the app is **not signed/notarized**, first launch via **right-click → Open** (or `xattr -dr com.apple.quarantine Sentinel.app`).
+1. Download `Sentinel-macOS-unsigned.dmg`.
+2. Open the DMG and run (or copy) `Sentinel.app`.
+3. Because the app is **not signed/notarized**, first launch via **right-click → Open** (or `xattr -dr com.apple.quarantine /path/to/Sentinel.app`).
 
 ### Option C: Build macOS locally
 1.  Build the macOS app bundle:
