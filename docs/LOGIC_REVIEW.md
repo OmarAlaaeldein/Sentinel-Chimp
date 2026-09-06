@@ -232,3 +232,6 @@ Vertical dashed markers when an earnings date falls in the visible window. Sourc
 ### Watchlist
 
 Persistent `watchlist.json` (`ui/watchlist.py`); combobox + add/remove next to ticker; prefs still hold overlay booleans in `user_prefs.json`.
+
+### P/E Percentile datetime units (2026-09-06)
+yfinance daily history often indexes as `datetime64[s]` while `get_earnings_dates` uses `datetime64[us]`. `pd.merge_asof` requires identical units — both sides are normalized to naive `datetime64[us]` via `MarketApp._as_naive_datetime64_us` before the as-of merge.

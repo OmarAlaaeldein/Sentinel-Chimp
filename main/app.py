@@ -674,9 +674,8 @@ class MarketApp:
                 return None, "NO_EARNINGS_HISTORY"
 
             eps_df = pd.DataFrame({"reported_eps": eps_series})
-            eps_df["report_date"] = pd.to_datetime(eps_df.index, errors='coerce', utc=True)
+            eps_df["report_date"] = MarketApp._as_naive_datetime64_us(eps_df.index)
             eps_df = eps_df.dropna(subset=["report_date"]).sort_values("report_date")
-            eps_df["report_date"] = eps_df["report_date"].dt.tz_convert(None)
             eps_df = eps_df.drop_duplicates(subset=["report_date"], keep="last")
             eps_df["ttm_eps"] = eps_df["reported_eps"].rolling(4).sum()
             eps_df = eps_df.dropna(subset=["ttm_eps"])
@@ -690,6 +689,25 @@ class MarketApp:
         except Exception as e:
             self.log(f"Historical EPS fetch error: {e}")
             return None, "NO_EARNINGS_HISTORY"
+
+
+    @staticmethod
+    def _as_naive_datetime64_us(values):
+        """Normalize timestamps for merge_asof (avoids s vs us unit mismatch)."""
+        ts = pd.to_datetime(values, errors="coerce", utc=True)
+        if isinstance(ts, pd.Series):
+            if getattr(ts.dt, "tz", None) is not None:
+                ts = ts.dt.tz_convert(None)
+            return ts.astype("datetime64[us]")
+        if isinstance(ts, pd.DatetimeIndex):
+            if ts.tz is not None:
+                ts = ts.tz_convert(None)
+            return ts.astype("datetime64[us]")
+        # Fallback scalar/array path
+        ts = pd.DatetimeIndex(ts)
+        if ts.tz is not None:
+            ts = ts.tz_convert(None)
+        return pd.Series(ts.astype("datetime64[us]"))
 
     def calculate_pe_percentile(self, ticker_obj):
         """Computes a strict TTM-based P/E percentile using historical reported EPS."""
@@ -713,12 +731,16 @@ class MarketApp:
                 return
 
             hist_df = hist[["Close"]].copy().dropna()
-            hist_df["date"] = pd.to_datetime(hist_df.index, errors='coerce', utc=True).tz_convert(None)
+            hist_df["date"] = self._as_naive_datetime64_us(hist_df.index)
             hist_df = hist_df.dropna(subset=["date"]).sort_values("date")
+
+            eps_timeline = eps_timeline.copy()
+            eps_timeline["report_date"] = self._as_naive_datetime64_us(eps_timeline["report_date"])
+            eps_timeline = eps_timeline.dropna(subset=["report_date"]).sort_values("report_date")
 
             merged = pd.merge_asof(
                 hist_df[["date", "Close"]],
-                eps_timeline.sort_values("report_date"),
+                eps_timeline,
                 left_on="date",
                 right_on="report_date",
                 direction="backward"
