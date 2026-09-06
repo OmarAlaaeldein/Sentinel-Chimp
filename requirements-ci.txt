@@ -1,5 +1,5 @@
 # Lean CI deps — no torch / transformers / accelerate (FinBERT optional at runtime).
-numpy>=1.24.0
+numpy>=2.5.2
 pandas>=2.1.0
 yfinance>=0.2.40
 matplotlib>=3.8.0
