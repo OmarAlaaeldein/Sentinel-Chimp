@@ -40,8 +40,9 @@ pyinstaller --onefile --noconsole --clean ^
     --exclude-module "tkinter.test" ^
     --exclude-module "notebook" ^
     --exclude-module "scipy" ^
+    --exclude-module "accelerate" ^
     --collect-submodules "matplotlib" ^
-    "%ROOT%Sentinel.py"
+    "%ROOT%sentinel.py"
 
 echo.
 echo Build Complete. Check the 'dist' folder.

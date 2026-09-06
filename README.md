@@ -45,11 +45,17 @@ A threaded, non-blocking GUI featuring a professional Dark Mode interface optimi
 
 ## 📦 Compatibility & Release Info
 
-The app can be used as a prebuilt executable on **Windows** and as a packaged app on **macOS**.
+Prebuilt **Lite Mode** packages are published on the [Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/releases) page for **Windows**, **Linux**, and **unsigned macOS**.
+
+| Artifact | Platform |
+| :--- | :--- |
+| `Sentinel-Windows-x64.zip` | Windows 10/11 x64 — extract and run `Sentinel.exe` |
+| `Sentinel-Linux-x64.zip` | Linux x64 — `chmod +x Sentinel && ./Sentinel` |
+| `Sentinel-macOS-unsigned.zip` | macOS — **unsigned** (Gatekeeper: right-click → Open) |
 
 To ensure this tool works on standard trading laptops without requiring NVIDIA GPUs or massive libraries, the **pre-compiled Release Package** differs from the source code:
 
-| Feature | Source Code (`.py`) | Release Package (`.exe` / `.app`) |
+| Feature | Source Code (`.py`) | Release Package (`.exe` / `.app` / Linux binary) |
 | :--- | :---: | :---: |
 | **Charting & Technicals** | ✅ Included | ✅ Included |
 | **Bjerksund-Stensland Math** | ✅ Included | ✅ Included |
@@ -70,7 +76,7 @@ To use the AI Sentiment engine, you must run from the source:
 
 1.  **Clone the Repo**
     ```bash
-    git clone [https://github.com/omaralaaeldein/Sentinel-Chimp.git](https://github.com/omaralaaeldein/Sentinel-Chimp.git)
+    git clone https://github.com/OmarAlaaeldein/Sentinel-Chimp.git
     cd Sentinel-Chimp
     ```
 2.  **Install Dependencies**
@@ -83,13 +89,27 @@ To use the AI Sentiment engine, you must run from the source:
     python sentinel.py
     ```
 
-### Option B: Using the Release Package (Windows)
-1.  Download the latest `.zip` from the **Releases** tab.
-2.  Extract the folder.
-3.  Run `Sentinel.exe`.
-4.  *No Python installation required.*
+### Option B: Prebuilt Releases (Lite Mode)
+Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/releases)** — no Python required.
 
-### Option C: Using the macOS Executable/App Bundle
+**Windows**
+1. Download `Sentinel-Windows-x64.zip`.
+2. Extract and run `Sentinel.exe`.
+
+**Linux**
+1. Download `Sentinel-Linux-x64.zip`.
+2. Extract, then:
+   ```bash
+   chmod +x Sentinel
+   ./Sentinel
+   ```
+
+**macOS (unsigned)**
+1. Download `Sentinel-macOS-unsigned.zip`.
+2. Extract `Sentinel.app`.
+3. Because the app is **not signed/notarized**, first launch via **right-click → Open** (or `xattr -dr com.apple.quarantine Sentinel.app`).
+
+### Option C: Build macOS locally
 1.  Build the macOS app bundle:
     ```bash
     ./build_macos.sh --auto --onedir --install-deps
