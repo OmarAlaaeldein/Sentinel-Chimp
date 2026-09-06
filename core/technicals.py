@@ -155,22 +155,65 @@ def _normalize_index_to_naive_utc(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return idx
 
 
+def _index_looks_intraday(index: pd.DatetimeIndex) -> bool:
+    """True for intraday charts (tight bar spacing or non-midnight timestamps)."""
+    idx = pd.DatetimeIndex(index)
+    if len(idx) >= 2:
+        ordered = idx.sort_values()
+        med = pd.Series(ordered).diff().median()
+        if pd.notna(med) and med < pd.Timedelta(hours=12):
+            return True
+    # Sparse / single bar: any non-midnight clock time ⇒ intraday print
+    for ts in idx:
+        t = pd.Timestamp(ts)
+        if getattr(t, "tzinfo", None) is not None or getattr(t, "tz", None) is not None:
+            t = t.tz_convert("America/New_York")
+        if t.hour != 0 or t.minute != 0 or t.second != 0 or t.microsecond != 0:
+            return True
+    return False
+
+
+def _stamp_daily_at_rth_close(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Mark each daily bar as available at 16:00 America/New_York (naive UTC).
+
+    Morning intraday bars must not see the same session's close/EMA (look-ahead).
+    """
+    idx = pd.DatetimeIndex(index)
+    if getattr(idx, "tz", None) is not None:
+        et = idx.tz_convert("America/New_York")
+    else:
+        # Session date at midnight — interpret as US equity calendar date in ET.
+        et = idx.tz_localize(
+            "America/New_York", ambiguous="infer", nonexistent="shift_forward"
+        )
+    stamped = et.normalize() + pd.Timedelta(hours=16)
+    return stamped.tz_convert("UTC").tz_localize(None)
+
+
 def map_daily_columns_to_bars(
     bar_index: pd.DatetimeIndex,
     daily_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Forward-fill daily columns onto an arbitrary bar timeline (as-of merge).
 
-    Each bar receives the last completed daily value as of that bar's timestamp.
-    Prevents intraday charts from treating ``EMA_200`` as 200 *minute* bars.
+    Each bar receives the last **completed** daily value as of that bar's
+    timestamp. On intraday charts, daily rows are stamped at RTH close
+    (16:00 America/New_York) so morning bars do not see the same-day close.
+    Daily→daily mapping leaves timestamps unchanged so the close bar includes
+    that day in the EMA. Prevents treating ``EMA_200`` as 200 *minute* bars.
     """
     if daily_df is None or daily_df.empty or len(bar_index) == 0:
         return pd.DataFrame(index=bar_index)
 
-    bar_ts = _normalize_index_to_naive_utc(pd.DatetimeIndex(bar_index))
+    bar_index = pd.DatetimeIndex(bar_index)
+    bar_ts = _normalize_index_to_naive_utc(bar_index)
     bars = pd.DataFrame({"_ts": bar_ts, "_orig": np.arange(len(bar_ts))})
     daily = daily_df.copy()
-    daily.index = _normalize_index_to_naive_utc(pd.DatetimeIndex(daily.index))
+    daily_idx = pd.DatetimeIndex(daily.index)
+    if _index_looks_intraday(bar_index):
+        daily.index = _stamp_daily_at_rth_close(daily_idx)
+    else:
+        daily.index = _normalize_index_to_naive_utc(daily_idx)
     daily = daily.sort_index()
     daily = daily[~daily.index.duplicated(keep="last")]
     daily_reset = daily.reset_index()

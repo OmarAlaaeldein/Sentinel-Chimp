@@ -1036,11 +1036,8 @@ class MarketApp:
             except Exception as e:
                 self.log(f"Daily EMA attach skipped: {e}")
 
-            # Ichimoku on the chart timeframe (toggle draws it)
-            try:
-                calculate_ichimoku(df)
-            except Exception as e:
-                self.log(f"Ichimoku calc skipped: {e}")
+            # Ichimoku is computed on the RTH-filtered plot frame in update_chart
+            # (windows/displacement must not count extended-hours bars).
             
             last = df_tech.iloc[-1]
             
@@ -1129,6 +1126,12 @@ class MarketApp:
             if plot_df.empty or len(x_vals) == 0:
                 self.log("Chart skipped: empty after filter")
                 return
+
+            # Ichimoku on the plotted (RTH) bars so 9/26/52 + displace ignore eth.
+            try:
+                calculate_ichimoku(plot_df)
+            except Exception as e:
+                self.log(f"Ichimoku calc skipped: {e}")
 
             self.last_period = period
             cone = None

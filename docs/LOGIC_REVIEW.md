@@ -207,6 +207,7 @@ Explorer footer + 3D filter copy now say Under/Over (not "Good/Bad"). Rules tabl
 | :--- | :--- |
 | Chart EMA 5/21/63/200 | **Bug (fixed):** overlays used `Close.ewm(span=N)` on the **active chart interval**. On 1m/5m charts, “EMA 200” meant 200 bars (~hours), not 200 trading days — overlays hugged price and felt broken. |
 | Fix | Compute EMAs on the **1y daily** close series (`attach_daily_emas`) and as-of-map onto chart bars. Legend labels are `EMA Nd`. |
+| Same-day look-ahead | **Bug (fixed):** intraday as-of used midnight daily timestamps, so morning bars saw that session’s close/EMA. Daily rows stamped at **16:00 America/New_York** when the bar index is intraday; daily→daily unchanged. |
 | EWMA vol (RiskMetrics λ=0.94) | **Math OK:** closed-form matches sequential recursion; applied to **log returns** (not prices); annualized `√(var·252)`. Used for options FV / cone σ. |
 | Cone x-axis | **Display fix:** `bars_per_trading_day(interval)` so +30 trading days is not +30 intraday bars. |
 
@@ -222,7 +223,7 @@ Retracement uses the **latest confirmed fractal swing** (default 5/5 left/right 
 
 ### Ichimoku
 
-Standard Hosoda 9/26/52 with 26-bar displacement (Tenkan/Kijun/Senkou A/B/Chikou). Toggle **Ichimoku** (default off). Lite Mode — pure pandas.
+Standard Hosoda 9/26/52 with 26-bar displacement (Tenkan/Kijun/Senkou A/B/Chikou). Toggle **Ichimoku** (default off). Lite Mode — pure pandas. Computed on the **RTH-filtered** plot frame so windows/displace ignore extended-hours bars.
 
 ### Earnings markers
 
