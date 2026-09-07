@@ -54,6 +54,10 @@ def garch11_vol_forecast(
         if n < 60:
             return 0.0, info
 
+        # Demean: the GARCH(1,1) QMLE models variance around the mean.
+        # Daily equity drift is tiny but non-zero; using raw squares would
+        # fold mu^2 into the variance target.
+        returns = returns - float(np.mean(returns))
         r2 = returns * returns
         var_bar = float(np.mean(r2))
         if var_bar <= 0.0 or not math.isfinite(var_bar):
@@ -251,6 +255,99 @@ def probability_cone(
     upper = p0 * np.exp(+scale)
     lower = p0 * np.exp(-scale)
     return days, upper, lower
+
+
+def probability_cone_bands(
+    p0: float,
+    sigma: float,
+    horizon_days: int = 30,
+    trading_days_per_year: int = 252,
+    drift: float = 0.0,
+    levels: Tuple[float, ...] = (1.0, 2.0),
+    include_t0: bool = True,
+) -> Tuple[np.ndarray, dict]:
+    """Lognormal cone with drift and multiple sigma bands.
+
+    For trading-day horizon ``t`` and level ``z``::
+
+        Upper_z = P0 * exp(μ t/N + z σ √(t/N))
+        Lower_z = P0 * exp(μ t/N − z σ √(t/N))
+
+    with ``μ`` the annualized expected drift (default 0, matching
+    :func:`probability_cone`) and ``N`` trading days/year. ``z = 1``
+    spans ≈68% and ``z = 2`` ≈95% under lognormality. Returns
+    ``(days, {"1.0": (upper, lower), ...})`` keyed by level.
+    """
+    horizon_days = int(horizon_days)
+    if horizon_days < 0:
+        raise ValueError("horizon_days must be >= 0")
+    if trading_days_per_year <= 0:
+        raise ValueError("trading_days_per_year must be > 0")
+    if not math.isfinite(p0) or p0 <= 0:
+        raise ValueError("p0 must be a finite positive price")
+    if not math.isfinite(sigma) or sigma < 0:
+        raise ValueError("sigma must be a finite non-negative vol")
+    if not math.isfinite(drift):
+        raise ValueError("drift must be finite")
+    levels = tuple(float(z) for z in levels)
+    if not levels or any(not math.isfinite(z) or z <= 0 for z in levels):
+        raise ValueError("levels must be non-empty positive sigma multiples")
+
+    start = 0 if include_t0 else 1
+    days = np.arange(start, horizon_days + 1, dtype=np.float64)
+    if days.size == 0:
+        return days, {}
+    t_years = days / float(trading_days_per_year)
+    bands = {}
+    for z in levels:
+        width = z * float(sigma) * np.sqrt(t_years)
+        center = float(drift) * t_years
+        bands[f"{z:g}"] = (
+            p0 * np.exp(center + width),
+            p0 * np.exp(center - width),
+        )
+    return days, bands
+
+
+def prob_above(
+    spot: float,
+    barrier: float,
+    r: float,
+    q: float,
+    sigma: float,
+    T: float,
+) -> float:
+    """Risk-neutral P(S_T > barrier) under GBM with drift ``r − q``.
+
+    ``N(d2)`` with ``d2 = [ln(S/H) + (r − q − σ²/2)T] / (σ√T)`` — the same
+    digital used for the scan's probability-of-profit column. Requires
+    ``spot, barrier > 0`` and ``σ, T > 0``; returns ``nan`` otherwise.
+    """
+    if (
+        not all(math.isfinite(v) for v in (spot, barrier, r, q, sigma, T))
+        or spot <= 0
+        or barrier <= 0
+        or sigma <= 0
+        or T <= 0
+    ):
+        return math.nan
+    d2 = (math.log(spot / barrier) + (r - q - 0.5 * sigma * sigma) * T) / (
+        sigma * math.sqrt(T)
+    )
+    return 0.5 * (1.0 + math.erf(d2 / math.sqrt(2.0)))
+
+
+def prob_below(
+    spot: float,
+    barrier: float,
+    r: float,
+    q: float,
+    sigma: float,
+    T: float,
+) -> float:
+    """Risk-neutral P(S_T < barrier) = 1 − :func:`prob_above`."""
+    p = prob_above(spot, barrier, r, q, sigma, T)
+    return 1.0 - p if math.isfinite(p) else math.nan
 
 
 def blend_forecast_vol(

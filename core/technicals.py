@@ -58,8 +58,10 @@ def calculate_technicals(df):
     df['MACD_Hist'] = df['MACD'] - df['Signal']
 
     # 3. Bollinger Bands with %B and Bandwidth
+    # Bollinger's definition uses the population std (ddof=0); pandas
+    # defaults to the sample std (ddof=1), which widens bands ~2.6% at N=20.
     df['SMA_20'] = close.rolling(window=20).mean()
-    df['STD_20'] = close.rolling(window=20).std()
+    df['STD_20'] = close.rolling(window=20).std(ddof=0)
     df['BB_Upper'] = df['SMA_20'] + (df['STD_20'] * 2)
     df['BB_Lower'] = df['SMA_20'] - (df['STD_20'] * 2)
     bb_range = df['BB_Upper'] - df['BB_Lower']
@@ -206,14 +208,23 @@ def map_daily_columns_to_bars(
         return pd.DataFrame(index=bar_index)
 
     bar_index = pd.DatetimeIndex(bar_index)
-    bar_ts = _normalize_index_to_naive_utc(bar_index)
+    # merge_asof requires identical datetime units; yfinance mixes
+    # datetime64[s] (intraday) and datetime64[us] (daily), so normalize
+    # both sides to naive datetime64[us] (same as the P/E percentile merge).
+    bar_ts = pd.DatetimeIndex(_normalize_index_to_naive_utc(bar_index)).astype(
+        "datetime64[us]"
+    )
     bars = pd.DataFrame({"_ts": bar_ts, "_orig": np.arange(len(bar_ts))})
     daily = daily_df.copy()
     daily_idx = pd.DatetimeIndex(daily.index)
     if _index_looks_intraday(bar_index):
-        daily.index = _stamp_daily_at_rth_close(daily_idx)
+        daily.index = pd.DatetimeIndex(
+            _stamp_daily_at_rth_close(daily_idx)
+        ).astype("datetime64[us]")
     else:
-        daily.index = _normalize_index_to_naive_utc(daily_idx)
+        daily.index = pd.DatetimeIndex(
+            _normalize_index_to_naive_utc(daily_idx)
+        ).astype("datetime64[us]")
     daily = daily.sort_index()
     daily = daily[~daily.index.duplicated(keep="last")]
     daily_reset = daily.reset_index()

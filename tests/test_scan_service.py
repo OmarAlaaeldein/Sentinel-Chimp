@@ -14,6 +14,7 @@ from core.scan_service import (
     earnings_contract_set,
     interpolate_rfr,
     normalize_div_yield,
+    resolve_dividend_yield,
     resolve_forecast_vol,
     scan_option_chains,
     OptionScanRow,
@@ -28,6 +29,45 @@ class TestHelpers:
         assert normalize_div_yield(0.0294) == pytest.approx(0.0294)
         assert normalize_div_yield(2.94) == pytest.approx(0.0294)
         assert normalize_div_yield(-1) is None
+
+    def test_resolve_div_yield_percent_units(self):
+        """Live yfinance quotes info.dividendYield in percent — even < 1.
+
+        SPY reports 0.98 (= 0.98%); the old '> 1' heuristic read it as 98%.
+        """
+        class P:
+            def get_fast_info(self, t):
+                return {}
+            def get_info(self, t):
+                return {"dividendYield": 0.98,
+                        "trailingAnnualDividendYield": 0.0073}
+        assert resolve_dividend_yield(P(), object()) == pytest.approx(0.0098)
+
+    def test_resolve_div_yield_trailing_decimal(self):
+        class P:
+            def get_fast_info(self, t):
+                return {}
+            def get_info(self, t):
+                return {"dividendYield": None,
+                        "trailingAnnualDividendYield": 0.0073}
+        assert resolve_dividend_yield(P(), object()) == pytest.approx(0.0073)
+
+    def test_resolve_div_yield_rejects_absurd(self):
+        class P:
+            def get_fast_info(self, t):
+                return {}
+            def get_info(self, t):
+                return {"dividendYield": 98.0,  # special dividend / bad tick
+                        "trailingAnnualDividendYield": None}
+        assert resolve_dividend_yield(P(), object()) == 0.0
+
+    def test_resolve_div_yield_fast_info_decimal(self):
+        class P:
+            def get_fast_info(self, t):
+                return {"dividend_yield": 0.012}
+            def get_info(self, t):
+                return {"dividendYield": 1.2}
+        assert resolve_dividend_yield(P(), object()) == pytest.approx(0.012)
 
     def test_resolve_forecast_vol_ewma_and_blend(self):
         assert resolve_forecast_vol(0.2, 0.4, False) == pytest.approx(0.2)
@@ -95,7 +135,8 @@ class FakeProvider:
         return self.spot
 
     def get_info(self, ticker):
-        return {"dividendYield": 0.01}
+        # yfinance info.dividendYield is quoted in percent (1.0 = 1.0%)
+        return {"dividendYield": 1.0}
 
     def get_fast_info(self, ticker):
         return {"dividend_yield": 0.01, "last_price": self.spot}
@@ -209,6 +250,41 @@ class TestScanOptionChains:
         assert seen  # at least one flush
         vals, tag = seen[0]
         assert len(vals) == 17
+
+    def test_expired_contracts_skipped(self):
+        provider = FakeProvider(spot=100.0)
+        stock = provider.create_ticker("TEST")
+        result = scan_option_chains(
+            data_provider=provider,
+            stock=stock,
+            spot=100.0,
+            dates=["2000-01-03"],
+            all_exps=["2000-01-03"],
+            ewma_vol=0.55,
+            dividend_yield=0.01,
+            short_rate=0.045,
+            long_rate=0.04,
+            log=lambda *a: None,
+        )
+        assert result.rows == []
+
+    def test_pop_in_range(self):
+        provider = FakeProvider(spot=100.0)
+        stock = provider.create_ticker("TEST")
+        exp = provider.get_option_expirations(stock)[0]
+        result = scan_option_chains(
+            data_provider=provider,
+            stock=stock,
+            spot=100.0,
+            dates=[exp],
+            ewma_vol=0.55,
+            dividend_yield=0.01,
+            short_rate=0.045,
+            long_rate=0.04,
+        )
+        assert result.rows
+        for r in result.rows:
+            assert 0.0 <= r.pop <= 100.0
 
     def test_tree_vals_format(self):
         row = OptionScanRow(

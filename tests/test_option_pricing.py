@@ -432,5 +432,45 @@ class TestNormalDist:
             assert VegaChimpCore.n(x) > 0
 
 
+class TestBinomialAmerican:
+    """CRR lattice cross-check for the BS2002 closed form."""
+
+    def test_q0_call_equals_european(self):
+        euro = VegaChimpCore.bs_price(100, 100, 0.05, 0.0, 0.25, 1.0, "call")
+        lat = VegaChimpCore.binomial_american(
+            100, 100, 1.0, 0.05, 0.0, 0.25, "call", n=800,
+        )
+        assert abs(lat - euro) < 0.02
+
+    def test_dominance(self):
+        for kind in ("call", "put"):
+            lat = VegaChimpCore.binomial_american(
+                100, 100, 1.0, 0.05, 0.02, 0.25, kind, n=2000,
+            )
+            euro = VegaChimpCore.bs_price(100, 100, 0.05, 0.02, 0.25, 1.0, kind)
+            # CRR converges with ~1/n oscillation; allow discretization slack.
+            assert lat >= euro - 0.01
+            assert lat >= 0.0
+
+    def test_agrees_with_bs2002(self):
+        # BS2002 is a lower bound; lattice should print at/above it, close by.
+        for params, kind in [
+            ((100, 100, 0.5, 0.08, 0.12, 0.20), "put"),
+            ((100, 100, 0.5, 0.08, 0.04, 0.20), "call"),
+            ((90, 100, 1.0, 0.05, 0.03, 0.30), "put"),
+        ]:
+            lat = VegaChimpCore.binomial_american(*params, kind, n=800)
+            closed = VegaChimpCore.bjerksund_stensland(*params, kind)
+            assert lat >= closed - 0.02
+            assert abs(lat - closed) < 0.15
+
+    def test_parity_bounds(self):
+        S, K, r, q, sig, T = 100, 100, 0.05, 0.02, 0.25, 1.0
+        call = VegaChimpCore.binomial_american(S, K, T, r, q, sig, "call", n=400)
+        put = VegaChimpCore.binomial_american(S, K, T, r, q, sig, "put", n=400)
+        lower, upper = VegaChimpCore.american_put_call_parity_bounds(S, K, r, q, T)
+        assert lower <= call - put <= upper
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -21,6 +21,8 @@ from core.vol_models import (
     blend_forecast_vol,
     fit_quadratic_smile,
     garch11_vol_forecast,
+    prob_above,
+    prob_below,
     smile_vol_arr,
 )
 from core.options_scan import (
@@ -49,7 +51,13 @@ def to_finite_float(value: Any) -> Optional[float]:
 
 
 def normalize_div_yield(div: Any) -> Optional[float]:
-    """Normalize dividend yield to decimal (e.g. 0.0294 for 2.94%)."""
+    """Best-effort normalization of an ambiguous dividend yield to decimal.
+
+    Legacy heuristic: values > 1 are read as percent (2.94 → 0.0294).
+    Prefer the per-field resolvers below — yfinance ``info.dividendYield``
+    is quoted in **percent** (even below 1, e.g. SPY ``0.98`` = 0.98%),
+    so the bare ``> 1`` test misreads sub-1% percent yields as decimals.
+    """
     if div is None:
         return None
     try:
@@ -63,19 +71,62 @@ def normalize_div_yield(div: Any) -> Optional[float]:
     return d
 
 
-def resolve_dividend_yield(data_provider, stock_obj) -> float:
-    """Priority: fast_info → info.dividendYield → trailing; else 0.0."""
+def _as_decimal_yield(value: Any, *, percent_units: bool) -> Optional[float]:
+    """Convert one yield quote to decimal, clamping to a sane [0, 0.25] range.
+
+    Parameters
+    ----------
+    percent_units : bool
+        True when the source quotes in percent (yfinance
+        ``info.dividendYield``, e.g. ``0.98`` = 0.98%); False for decimal
+        fractions (``trailingAnnualDividendYield``, ``fast_info``).
+    """
+    if value is None:
+        return None
     try:
-        fast_div = normalize_div_yield(
-            data_provider.get_fast_info(stock_obj).get("dividend_yield")
+        d = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(d) or d < 0:
+        return None
+    if percent_units:
+        d = d / 100.0
+    elif d > 1:
+        # Defensive: a decimal fraction can never exceed 100%.
+        d = d / 100.0
+    if d > 0.25:
+        # Special-dividend / data-error guard (no common equity sustains >25%).
+        return None
+    return d
+
+
+def resolve_dividend_yield(data_provider, stock_obj) -> float:
+    """Dividend yield as a decimal fraction.
+
+    Per-source units (verified against live yfinance quotes, 2026-09):
+    ``fast_info.dividend_yield`` and ``trailingAnnualDividendYield`` are
+    decimal fractions; ``info.dividendYield`` is **percent** — including
+    sub-1% values (SPY ``0.98`` = 0.98%, AAPL ``0.34`` = 0.34%) that the
+    old ``> 1`` heuristic misread as 98% / 34%.
+    Priority: fast_info → info.dividendYield → trailing; else 0.0.
+    """
+    try:
+        fast_info = data_provider.get_fast_info(stock_obj)
+        fast_div = _as_decimal_yield(
+            fast_info.get("dividend_yield")
+            if isinstance(fast_info, dict)
+            else getattr(fast_info, "get", lambda *a: None)("dividend_yield"),
+            percent_units=False,
         )
         if fast_div is not None:
             return fast_div
         info = data_provider.get_info(stock_obj)
-        div = normalize_div_yield(info.get("dividendYield"))
+        div = _as_decimal_yield(info.get("dividendYield"), percent_units=True)
         if div is not None:
             return div
-        div = normalize_div_yield(info.get("trailingAnnualDividendYield"))
+        div = _as_decimal_yield(
+            info.get("trailingAnnualDividendYield"), percent_units=False
+        )
         if div is not None:
             return div
     except Exception:
@@ -398,7 +449,11 @@ def scan_option_chains(
 
             exp_date = datetime.strptime(date, "%Y-%m-%d").date()
             trading_days = int(np.busday_count(today, exp_date))
-            T = max(trading_days / 252.0, 1 / 252)
+            if trading_days < 0:
+                _log(f"Skipping expired contract {date}")
+                continue
+            # 0DTE (expires today): half a session remains on average.
+            T = max(trading_days / 252.0, 0.5 / 252.0)
             RFR = interpolate_rfr(_short_rate, _long_rate, T)
 
             chain = data_provider.get_option_chain(stock, date)
@@ -442,10 +497,8 @@ def scan_option_chains(
                 bucket = parity_map.setdefault(s, {})
                 bucket[str(types[i]).lower()] = float(mid[i])
 
-            sqrtT = math.sqrt(T)
             is_earnings = date in earnings_contracts
             parity_bounds = VegaChimpCore.american_put_call_parity_bounds
-            Ncdf = VegaChimpCore.N
 
             kind_is_call = types == "CALL"
             oi_int = np.where(np.isfinite(oi_arr), oi_arr, 0.0)
@@ -551,13 +604,17 @@ def scan_option_chains(
                         breakeven_price = strike - market_price
                     if breakeven_price <= 0:
                         pop = 0.0
+                    elif kind_str == "call":
+                        pop = prob_above(
+                            spot, breakeven_price, RFR, DIV_YIELD, iv_mkt, T
+                        ) * 100.0
                     else:
-                        d2_pop = (
-                            math.log(spot / breakeven_price)
-                            + (RFR - DIV_YIELD - 0.5 * iv_mkt * iv_mkt) * T
-                        ) / (iv_mkt * sqrtT)
-                        pop = Ncdf(d2_pop) * 100 if kind_str == "call" else Ncdf(-d2_pop) * 100
-                        pop = max(0.0, min(100.0, pop))
+                        pop = prob_below(
+                            spot, breakeven_price, RFR, DIV_YIELD, iv_mkt, T
+                        ) * 100.0
+                    if not math.isfinite(pop):
+                        pop = 0.0
+                    pop = max(0.0, min(100.0, pop))
                 except Exception:
                     pop = 0.0
 
@@ -653,25 +710,31 @@ def run_ticker_scan(
     *,
     under_only: bool = False,
     max_expiries: Optional[int] = None,
+    expiries: Optional[Sequence[str]] = None,
     option_type: str = "all",
     use_garch_blend: bool = False,
     use_smile_vol: bool = False,
     use_american_greeks: bool = True,
+    dividend_yield: Optional[float] = None,
     log: Optional[LogFn] = None,
 ) -> Tuple[TickerAnalysis, ScanResult]:
     """End-to-end: analyze ticker context, then scan option chains."""
     analysis = analyze_ticker(data_provider, symbol, log=log)
     stock = data_provider.create_ticker(analysis.ticker)
-    expiries = list(data_provider.get_option_expirations(stock) or ())
+    all_exps = list(data_provider.get_option_expirations(stock) or ())
+    if expiries is not None:
+        dates = [e for e in all_exps if any(e.startswith(x) for x in expiries)]
+    else:
+        dates = list(all_exps)
     if max_expiries is not None and max_expiries > 0:
-        expiries = expiries[: int(max_expiries)]
+        dates = dates[: int(max_expiries)]
     projected = load_projected_earnings(data_provider, stock)
     result = scan_option_chains(
         data_provider=data_provider,
         stock=stock,
         spot=analysis.spot,
-        dates=expiries,
-        all_exps=list(data_provider.get_option_expirations(stock) or ()),
+        dates=dates,
+        all_exps=all_exps,
         projected_earnings=projected,
         ewma_vol=analysis.ewma_vol,
         garch_vol=analysis.garch_vol,
@@ -681,6 +744,7 @@ def run_ticker_scan(
         use_american_greeks=use_american_greeks,
         option_type=option_type,
         under_only=under_only,
+        dividend_yield=dividend_yield,
         log=log,
     )
     return analysis, result

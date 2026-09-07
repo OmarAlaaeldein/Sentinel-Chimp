@@ -66,9 +66,12 @@ def ref_macd(close: pd.Series):
 
 
 def ref_bollinger(close: pd.Series, window=20, num_std=2):
-    """Reference Bollinger Bands: SMA, Upper, Lower, %B, Bandwidth."""
+    """Reference Bollinger Bands: SMA, Upper, Lower, %B, Bandwidth.
+
+    Bollinger's definition takes the population std (ddof=0).
+    """
     sma = close.rolling(window).mean()
-    std = close.rolling(window).std()
+    std = close.rolling(window).std(ddof=0)
     upper = sma + num_std * std
     lower = sma - num_std * std
     bw = upper - lower

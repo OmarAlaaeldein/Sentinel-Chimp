@@ -141,6 +141,36 @@ class TestDailyEMA:
             float(emas["EMA_5"].iloc[-1]), rel=1e-12
         )
 
+    def test_mismatched_datetime_units_s_vs_us(self):
+        """Live yfinance mixes datetime64[s] (intraday) and [us] (daily).
+
+        merge_asof raises MergeError on mixed units; the mapper must
+        normalize both sides so EMAs still attach (regression: EMAs
+        silently vanished from all plots).
+        """
+        daily_idx = pd.bdate_range("2024-01-02", periods=10).astype("datetime64[us]")
+        daily = pd.Series(np.linspace(100, 120, 10), index=daily_idx)
+        emas = compute_daily_emas(daily, spans=(5,))
+        assert str(emas.index.dtype) == "datetime64[us]"
+        bars = pd.DatetimeIndex([
+            pd.Timestamp("2024-01-12 10:00", tz="America/New_York"),
+            pd.Timestamp("2024-01-12 15:00", tz="America/New_York"),
+            pd.Timestamp("2024-01-15 10:00", tz="America/New_York"),
+        ]).astype("datetime64[s, America/New_York]")
+        mapped = map_daily_columns_to_bars(bars, emas)  # must not raise
+        assert mapped["EMA_5"].notna().all()
+        # Morning bars see the prior completed daily close (no look-ahead):
+        # Jan 12 10:00/15:00 -> Jan 11; Jan 15 10:00 -> Jan 12.
+        assert float(mapped["EMA_5"].iloc[0]) == pytest.approx(
+            float(emas["EMA_5"].iloc[-3]), rel=1e-12
+        )
+        assert float(mapped["EMA_5"].iloc[2]) == pytest.approx(
+            float(emas["EMA_5"].iloc[-2]), rel=1e-12
+        )
+        bar_df = pd.DataFrame({"Close": [121.0, 122.0, 123.0]}, index=bars)
+        attach_daily_emas(bar_df, daily)  # must not raise
+        assert bar_df["EMA_5"].notna().all()
+
     def test_map_preserves_bar_order(self):
         daily = pd.DataFrame(
             {"EMA_5": [1.0, 2.0, 3.0]},

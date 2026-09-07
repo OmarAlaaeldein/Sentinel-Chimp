@@ -403,6 +403,55 @@ class VegaChimpCore:
             print("[Warning] Bjerksund-Stensland 2002 failed, falling back to Black-Scholes.")
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
 
+    @staticmethod
+    def binomial_american(S, K, T, r, q, sigma, option_type='call', n=1000):
+        """Cox-Ross-Rubinstein binomial American pricer (independent cross-check).
+
+        Recombining tree with risk-neutral probability
+        ``p = (e^((r−q)dt) − d) / (u − d)``, ``u = e^(σ√dt)``, ``d = 1/u``,
+        backward induction with early-exercise max at every node. Converges
+        to the true American value as ``n → ∞``; use it to validate the
+        BS2002 closed form (which is a feasible-strategy lower bound, so it
+        typically prints a touch below this lattice on long-dated contracts).
+        """
+        if option_type not in {'call', 'put'}:
+            raise ValueError("option_type must be 'call' or 'put'")
+        if S <= 0 or K <= 0:
+            return 0.0
+        if T <= 0:
+            return max(S - K, 0.0) if option_type == 'call' else max(K - S, 0.0)
+        if sigma <= 1e-8:
+            european = VegaChimpCore.bs_price(S, K, r, q, sigma, T, option_type)
+            intrinsic = max(S - K, 0.0) if option_type == 'call' else max(K - S, 0.0)
+            return max(european, intrinsic)
+
+        n = max(int(n), 1)
+        dt = T / n
+        u = math.exp(sigma * math.sqrt(dt))
+        d = 1.0 / u
+        disc = math.exp(-r * dt)
+        p = (math.exp((r - q) * dt) - d) / (u - d)
+        # Clamp rounding noise; a p outside [0,1] means dt is too coarse
+        # for (r−q, σ) — fall back to the closed form instead of NaNs.
+        if not 0.0 <= p <= 1.0:
+            return VegaChimpCore.bjerksund_stensland(S, K, T, r, q, sigma, option_type)
+
+        downs = np.arange(n + 1)
+        prices = S * (u ** (n - downs)) * (d ** downs)
+        if option_type == 'call':
+            vals = np.maximum(prices - K, 0.0)
+        else:
+            vals = np.maximum(K - prices, 0.0)
+        for i in range(n - 1, -1, -1):
+            vals = disc * (p * vals[:-1] + (1.0 - p) * vals[1:])
+            downs = np.arange(i + 1)
+            prices = S * (u ** (i - downs)) * (d ** downs)
+            if option_type == 'call':
+                vals = np.maximum(vals, prices - K)
+            else:
+                vals = np.maximum(vals, K - prices)
+        return float(vals[0])
+
 
 # ---------------------------------------------------------------------------
 # Vectorized / batch helpers (numpy). Used by chain scans.
@@ -801,7 +850,8 @@ def american_greeks(S, K, r, q, sig, T, kind, dS=None, dSig=0.01, dT=1.0 / 365.0
     p_t = price(S, K, T_dn, r, q, sig, kind)
     theta = (p_t - p0) / 1.0  # already one calendar-day bump
 
-    # rho (per 1% rate): bump r by 1e-4 absolute (=1bp) then scale — match euro
+    # rho per 1% rate move: central difference with h=1pp, scaled by 0.01
+    # (dV/dr * 0.01); matches the analytic bs_greeks rho convention.
     dr = 0.01
     p_ru = price(S, K, T, r + dr, q, sig, kind)
     p_rd = price(S, K, T, r - dr, q, sig, kind)

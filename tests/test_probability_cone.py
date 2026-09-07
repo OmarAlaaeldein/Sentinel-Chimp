@@ -7,7 +7,13 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from core.vol_models import probability_cone, blend_forecast_vol
+from core.vol_models import (
+    probability_cone,
+    probability_cone_bands,
+    prob_above,
+    prob_below,
+    blend_forecast_vol,
+)
 
 
 class TestProbabilityCone:
@@ -58,6 +64,54 @@ class TestProbabilityCone:
             probability_cone(100.0, -0.1)
         with pytest.raises(ValueError):
             probability_cone(100.0, 0.2, horizon_days=-1)
+
+
+class TestConeBands:
+    def test_level_one_matches_plain_cone(self):
+        d1, u1, l1 = probability_cone(100.0, 0.30, horizon_days=10)
+        d2, bands = probability_cone_bands(100.0, 0.30, horizon_days=10)
+        assert np.allclose(d1, d2)
+        assert np.allclose(bands["1"][0], u1)
+        assert np.allclose(bands["1"][1], l1)
+
+    def test_two_sigma_wider(self):
+        _, bands = probability_cone_bands(100.0, 0.30, horizon_days=30)
+        w1 = bands["1"][0][-1] - bands["1"][1][-1]
+        w2 = bands["2"][0][-1] - bands["2"][1][-1]
+        assert w2 > w1 > 0
+
+    def test_drift_shifts_center(self):
+        _, bands = probability_cone_bands(
+            100.0, 0.30, horizon_days=30, drift=0.05,
+        )
+        mid = np.sqrt(bands["1"][0] * bands["1"][1])
+        expected = 100.0 * np.exp(0.05 * np.arange(31) / 252.0)
+        assert np.allclose(mid, expected, rtol=0, atol=1e-9)
+
+    def test_rejects_bad_levels(self):
+        with pytest.raises(ValueError):
+            probability_cone_bands(100.0, 0.2, levels=())
+        with pytest.raises(ValueError):
+            probability_cone_bands(100.0, 0.2, levels=(-1.0,))
+
+
+class TestProbBarrier:
+    def test_complements(self):
+        p_up = prob_above(100.0, 105.0, 0.05, 0.02, 0.25, 0.5)
+        p_dn = prob_below(100.0, 105.0, 0.05, 0.02, 0.25, 0.5)
+        assert p_up + p_dn == pytest.approx(1.0)
+        assert 0.0 < p_up < 0.5  # OTM barrier under positive drift... sanity band
+
+    def test_matches_manual_d2(self):
+        S, H, r, q, sig, T = 100.0, 100.0, 0.05, 0.02, 0.25, 1.0
+        d2 = (math.log(S / H) + (r - q - 0.5 * sig * sig) * T) / (sig * math.sqrt(T))
+        expected = 0.5 * (1.0 + math.erf(d2 / math.sqrt(2.0)))
+        assert prob_above(S, H, r, q, sig, T) == pytest.approx(expected)
+
+    def test_nan_on_bad_inputs(self):
+        assert math.isnan(prob_above(100.0, 0.0, 0.05, 0.02, 0.25, 0.5))
+        assert math.isnan(prob_above(100.0, 105.0, 0.05, 0.02, 0.0, 0.5))
+        assert math.isnan(prob_below(-1.0, 105.0, 0.05, 0.02, 0.25, 0.5))
 
 
 class TestBlendForecastVol:
