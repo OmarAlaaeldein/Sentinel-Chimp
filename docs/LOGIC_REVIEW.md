@@ -43,7 +43,7 @@ No fabricated citations were introduced.
 | Technicals | `core/technicals.py` | Wilder / Appel / Bollinger / StochRSI / VWAP daily reset / OBV / ADX / %R / CCI |
 | FinBERT | `core/sentiment.py` | Lazy load; `id2label` → pos/neg indices; `eval()` + `no_grad` |
 | Term RFR | `main/app.py` + `YFinanceProvider.fetch_rate_curve` | ^IRX / ^TNX interpolate by T |
-| Fair vol (options scan) | `fetch_options_batch` + `core/options_scan` | Forecast vol only (EWMA ± GARCH blend); contract IV is display/Greeks only |
+| Fair vol (options scan) | `scan_option_chains` (`core/scan_service.py`) + `core/options_scan` | Forecast vol only (EWMA ± GARCH blend); contract IV is display/Greeks only |
 | Batch BS2002 | `bjerksund_stensland_batch` | Vectorized φ/Ψ/M; scanner uses when n≥64 |
 | American FD Greeks | `american_greeks(_batch)` | Δ/Γ/ν/Θ on BS2002; default in scanner |
 | GARCH(1,1) | `core/vol_models.py` | Optional; display always when fit ok |
@@ -90,8 +90,8 @@ Pricing semantics for the options scan were later reworked (see “Options scan 
 - Added `bjerksund_stensland_batch`, vectorized `_M` / `_φ` / `_ψ` / American-call
   core in `core/pricing.py` (Abramowitz–Stegun 7.1.26 `erf` ≈ 1.4e-7; price
   vs scalar max |Δ| ≈ 2e-5).
-- Scanner (`fetch_options_batch`) uses batch when ≥64 eligible contracts per
-  expiry; scalar below that (numpy overhead otherwise wins).
+- Scanner (`scan_option_chains`; GUI `MarketApp.fetch_options_batch` is a thin adapter) uses batch when ≥64 eligible contracts per
+  expiry; scalar below that (numpy overhead otherwise wins). Liquidity/ATM prefilters are vectorized numpy masks (v2.1+).
 - Microbench (box):
 
   | n | batch | scalar | speedup |
@@ -113,7 +113,7 @@ for smile phenomenology (fit itself is OLS quadratic, **not** SVI).
 EWMA (RiskMetrics λ=0.94) remains the default historical-vol path. Flags on
 `MarketApp`: `use_garch_blend=False`, `use_smile_vol=False`.
 
-GARCH fit cost ≈ 8 ms / 252 returns (coarse grid + coordinate refine; no SciPy).
+GARCH fit cost ≈ a few ms / 252 returns (small coarse grid + coordinate refine, v2.1+; no SciPy).
 
 ### 3. American Greeks — **kept**
 
@@ -160,7 +160,7 @@ Tests: core suite + cone/prefs helpers — see latest pytest count on `main`.
 | Probability cone (`probability_cone`, chart overlay, Prob Cone toggle) | Landed |
 | GUI toggles for `use_garch_blend` / `use_smile_vol` + vol-label hint | Landed |
 | Fib levels (checkbox; default off) | Landed |
-| GitHub Actions CI (`requirements-ci.txt` + `docs/github-actions-ci.yml`) | Template on main; `.github/workflows/ci.yml` needs `workflow` OAuth scope to publish |
+| GitHub Actions CI (`requirements-ci.txt`) | Live: `.github/workflows/ci.yml` (template kept at `docs/github-actions-ci.yml`) |
 | UI peel (chart / news / options) | Landed |
 
 Cone σ uses EWMA by default; when GARCH blend is on, same 50/50 blend as the options FV path (`blend_forecast_vol`).
@@ -235,3 +235,14 @@ Persistent `watchlist.json` (`ui/watchlist.py`); combobox + add/remove next to t
 
 ### P/E Percentile datetime units (2026-09-06)
 yfinance daily history often indexes as `datetime64[s]` while `get_earnings_dates` uses `datetime64[us]`. `pd.merge_asof` requires identical units — both sides are normalized to naive `datetime64[us]` via `MarketApp._as_naive_datetime64_us` before the as-of merge.
+
+## Resource discipline (v2.1) — no pricing-semantics change
+
+| Area | Change |
+| :--- | :--- |
+| Data caches | `YFinanceProvider` history (32) + chain (128) caches size-capped with TTL + oldest-first eviction |
+| GUI caches | News capped at 5 tickers / 150 headlines; valuation cache capped at 16 entries; log widget trimmed to a ~300-line tail; chart frames released on ticker change |
+| Imports | `matplotlib.pyplot`, `plotly`, `torch`/`transformers` lazy — cold start avoids them until the feature is used |
+| Scan | Vectorized liquidity/ATM masks; GARCH grid 64→16 + `max_iter` 80→32 |
+| Sentiment | Chunked inference (32 headlines/batch) instead of one giant padded batch |
+| Deps | `requirements.txt` drops `pytest` (CI-only) and `accelerate` (unused) |

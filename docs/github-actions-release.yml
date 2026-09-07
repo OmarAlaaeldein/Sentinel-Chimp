@@ -1,3 +1,5 @@
+# ARCHIVED TEMPLATE — the live workflow is .github/workflows/release.yml.
+# Kept for reference only; do not copy back without diffing.
 name: Release
 
 on:

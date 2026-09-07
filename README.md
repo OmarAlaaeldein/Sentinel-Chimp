@@ -43,10 +43,10 @@ A threaded, non-blocking GUI featuring a professional Dark Mode interface with a
 * **Risk:** ATR (Average True Range) for volatility-based stop losses.
 * **Fundamental Context:** Displays P/E Ratios (TTM/Fwd) and calculates a **P/E Percentile** to show if the stock is historically cheap or expensive.
 
-### 4. AI Sentiment Engine (Source Code Only)
+### 4. AI Sentiment Engine (Source Code Only, Off by Default)
 * **Model:** Powered by `ProsusAI/finbert` (Financial BERT).
-* **Function:** Scrapes news headlines (Yahoo/Google RSS) and computes a sentiment score (-1 to +1) using a Transformer model specifically fine-tuned for financial text.
-* *Note: Requires PyTorch and Transformers libraries.*
+* **Function:** Scrapes news headlines (Yahoo/Google RSS, capped at 150) and computes a sentiment score (0–1 scale, 0.5 = neutral) using a Transformer model specifically fine-tuned for financial text.
+* *Note: Requires PyTorch and Transformers libraries; disabled in-app by default (`use_sentiment = False`).*
 
 ---
 
@@ -69,7 +69,7 @@ To ensure this tool works on standard trading laptops without requiring NVIDIA G
 | **EWMA/HV Volatility Logic** | ✅ Included | ✅ Included |
 | **Options Scanner** | ✅ Included | ✅ Included |
 | **3D Visualizer** | ✅ Included | ✅ Included |
-| **AI Sentiment (FinBERT)** | ✅ **Active** | ❌ **Disabled** |
+| **AI Sentiment (FinBERT)** | ⚠️ Source only, **off by default** | ❌ **Disabled** |
 
 **Why is AI disabled in the release?**
 The AI engine relies on `PyTorch` and `Transformers`, which can add over 1GB to the file size and may cause compatibility issues on computers without specific drivers. The Release Package is optimized for speed and portability.
@@ -110,14 +110,23 @@ python -m sentinel_cli analyze LULU --json
 python sentinel.py scan LULU --under-only --max-expiries 6
 python sentinel.py scan LULU --type call --garch --json
 python -m main.cli scan AMD --under-only --max-expiries 4 --type put
+
+# Offline math self-test (no network): BSM/BS2002/IV/EWMA/cone checks
+python sentinel.py verify
 ```
 
 | Flag | Meaning |
 | :--- | :--- |
 | `--under-only` | Only Under / Earnings Under, ranked by edge % |
 | `--max-expiries N` | First N listed expirations |
-| `--type call|put|all` | Side filter (default `all`) |
+| `--expiry DATE` | Only this expiry (prefix match); repeatable |
+| `--type call\|put\|all` | Side filter (default `all`) |
 | `--garch` | 50/50 EWMA+GARCH forecast vol blend |
+| `--smile` | Smooth display IV with per-expiry quadratic smile |
+| `--euro-greeks` | Analytic European Greeks instead of American FD |
+| `--div YIELD` | Dividend override: decimal (`0.0098`) or percent (`0.98`) |
+| `--limit N` | Print only the first N rows |
+| `--csv PATH` | Also write full scan rows to CSV |
 | `--json` | Machine-readable output |
 
 `python sentinel.py` with **no args** still launches the GUI.
@@ -169,8 +178,11 @@ Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/rele
 | `core/data.py` | `DataProvider` ABC + `YFinanceProvider` |
 | `core/vol_models.py` | Probability cone, GARCH(1,1), quadratic smile |
 | `core/options_scan.py` | Tradeable-edge / liquidity filters for Options Finder |
-| `ui/` | Theme, chart, news, options explorer, tooltip, prefs |
+| `core/scan_service.py` | Shared scan + analyze orchestration (GUI + CLI) |
+| `ui/` | Theme, chart, news, options explorer, 3D plot, watchlist, prefs, tooltip |
 | `main/app.py` | `MarketApp` controller |
+| `main/cli.py` | Headless CLI (`analyze` / `scan` / `verify`) |
+| `sentinel_cli.py` | Thin `python -m sentinel_cli` alias |
 | `docs/LOGIC_REVIEW.md` | Paper mapping, scan rules, perf notes |
 | `to_do.md` | Roadmap with live statuses |
 
@@ -189,6 +201,14 @@ Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/rele
     * **Green** = Under (candidate long); **Red** = Over (candidate write). See `docs/LOGIC_REVIEW.md`.
     * **3D Plot** visualizes the filtered surface.
 5.  **Export:** CSV scan results or HTML 3D plots.
+
+---
+
+## ⚡ Performance notes (v2.1+)
+
+* **Bounded caches:** history/chain/news/valuation caches are size-capped with TTL eviction — long sessions can't grow memory without bound.
+* **Lazy heavy imports:** `matplotlib.pyplot`, `plotly`, and `torch`/`transformers` load only when their feature is used, keeping cold startup light.
+* **Cheaper scans:** vectorized liquidity/ATM filters, leaner GARCH fit, throttled chart hover, capped log widget and news list (150 headlines).
 
 ---
 

@@ -184,11 +184,35 @@ PYI_ARGS=(
   --noconfirm
   --clean
   --windowed
+  --strip
   --name Sentinel
   --exclude-module tkinter.test
   --exclude-module notebook
+  # --- v2.2.2 size trims (no feature impact; plotly kept for 3D export) ---
+  --exclude-module pandas.tests
+  --exclude-module numpy.tests
+  --exclude-module matplotlib.tests
+  --exclude-module unittest
+  --exclude-module doctest
+  --exclude-module pydoc
+  --exclude-module IPython
+  --exclude-module ipykernel
+  --exclude-module matplotlib.backends.backend_qt5agg
+  --exclude-module matplotlib.backends.backend_qt6agg
+  --exclude-module matplotlib.backends.backend_qtagg
+  --exclude-module matplotlib.backends.backend_wx
+  --exclude-module matplotlib.backends.backend_wxagg
+  --exclude-module matplotlib.backends.backend_gtk3agg
+  --exclude-module matplotlib.backends.backend_gtk3cairo
+  --exclude-module matplotlib.backends.backend_gtk4agg
+  --exclude-module matplotlib.backends.backend_gtk4cairo
+  --exclude-module matplotlib.backends.backend_nbagg
+  --exclude-module matplotlib.backends.backend_cairo
   --collect-submodules matplotlib
 )
+
+# UPX is ignored by PyInstaller v6 on macOS, so no --upx-dir here
+# (kept out deliberately; harmless to add but does nothing).
 
 if [[ "$MODE" == "lite" ]]; then
   PYI_ARGS+=(

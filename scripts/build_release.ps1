@@ -24,7 +24,28 @@ $Exclude = @(
   "--exclude-module", "scipy",
   "--exclude-module", "accelerate",
   "--exclude-module", "tkinter.test",
-  "--exclude-module", "notebook"
+  "--exclude-module", "notebook",
+  # --- v2.2.2 size trims (no feature impact) ---
+  "--exclude-module", "pandas.tests",
+  "--exclude-module", "numpy.tests",
+  "--exclude-module", "matplotlib.tests",
+  "--exclude-module", "unittest",
+  "--exclude-module", "doctest",
+  "--exclude-module", "pydoc",
+  "--exclude-module", "IPython",
+  "--exclude-module", "ipykernel",
+  "--exclude-module", "matplotlib.backends.backend_qt5agg",
+  "--exclude-module", "matplotlib.backends.backend_qt6agg",
+  "--exclude-module", "matplotlib.backends.backend_qtagg",
+  "--exclude-module", "matplotlib.backends.backend_wx",
+  "--exclude-module", "matplotlib.backends.backend_wxagg",
+  "--exclude-module", "matplotlib.backends.backend_gtk3agg",
+  "--exclude-module", "matplotlib.backends.backend_gtk3cairo",
+  "--exclude-module", "matplotlib.backends.backend_gtk4agg",
+  "--exclude-module", "matplotlib.backends.backend_gtk4cairo",
+  "--exclude-module", "matplotlib.backends.backend_nbagg",
+  "--exclude-module", "matplotlib.backends.backend_cairo"
+  # NOTE: plotly is intentionally KEPT — the 3D HTML export needs it.
 )
 
 $PyiArgs = @(
@@ -35,6 +56,22 @@ $PyiArgs = @(
   "--name", "Sentinel",
   "--collect-submodules", "matplotlib"
 ) + $Exclude
+
+# UPX binary compression when `upx` is on PATH (effective on Windows).
+# MSVC runtimes are excluded (stability). Skipped silently when absent.
+$Upx = Get-Command upx -ErrorAction SilentlyContinue
+if ($Upx) {
+  $UpxDir = Split-Path -Parent $Upx.Source
+  Write-Host "[INFO] UPX found at $UpxDir — enabling binary compression"
+  $PyiArgs += @(
+    "--upx-dir", $UpxDir,
+    "--upx-exclude", "vcruntime*.dll",
+    "--upx-exclude", "msvcp*.dll",
+    "--upx-exclude", "msvcr*.dll"
+  )
+} else {
+  Write-Host "[INFO] UPX not found — skipping binary compression (choco install upx to enable)"
+}
 
 $Icon = Join-Path $Root "logo.ico"
 if (Test-Path $Icon) {

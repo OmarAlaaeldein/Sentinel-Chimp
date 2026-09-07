@@ -48,7 +48,13 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk tk-dev
+          sudo apt-get install -y python3-tk tk-dev binutils upx-ucl
+
+      - name: Install UPX (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          choco install upx -y --no-progress
 
       - name: Install release dependencies
         run: |
@@ -133,7 +139,14 @@ jobs:
 
             Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
 
-            ### What's new in 2.1
+            ### What's new in 2.2.2
+            - **Smaller binaries:** UPX compression (Windows), `--strip` (Linux/macOS), plus excludes for test subpackages, stdlib test helpers, and unused Qt/Wx/GTK/Cairo backends. plotly and 3D export fully kept.
+
+            ### What's new in 2.2
+            - **Left panel fix:** Technicals values wrap instead of clipping (pane min-width, wrapping value column, shorter Vol/Bollinger strings)
+            - **Docs refresh:** full CLI flag table + `verify`, accurate project structure, sentiment corrections (off by default, 0–1 scale), v2.1 performance notes, archived workflow templates marked superseded
+
+            ### What's new in 2.1 (also in this release)
             - **Lower footprint:** bounded data/chain/news/valuation caches, news cap 1000 → 150 headlines, trimmed system log, hover throttled, lazy `matplotlib.pyplot` / `plotly` / `torch` imports at startup
             - **Faster scans:** vectorized liquidity/ATM filters, leaner GARCH fit (~4–5×), chunked sentiment inference
             - **Leaner packages:** `requirements.txt` drops `pytest` (CI-only) and `accelerate` (unused); stale screenshots, spec, and distilBERT ignores removed

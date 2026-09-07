@@ -1,3 +1,5 @@
+# ARCHIVED TEMPLATE — the live workflow is .github/workflows/ci.yml.
+# Kept for reference only; do not copy back without diffing.
 name: CI
 
 on:

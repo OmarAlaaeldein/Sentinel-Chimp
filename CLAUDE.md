@@ -47,7 +47,7 @@ python -m pip install -r requirements.txt
 ```
 
 CI-lean deps (no torch): `requirements-ci.txt`.  
-`transformers` / `torch` / `accelerate` are optional (sentiment from source only).
+`transformers` / `torch` are optional (sentiment from source only).
 
 ## Architecture
 
@@ -62,14 +62,15 @@ CI-lean deps (no torch): `requirements-ci.txt`.
 | `core/scan_service.py` | Shared options-scan + ticker analyze (GUI + CLI) |
 | `ui/*` | Theme, chart, news, options explorer, tooltip, prefs |
 | `main/app.py` | `MarketApp` controller + remaining orchestration |
-| `main/cli.py` | Headless argparse CLI (`analyze` / `scan`) |
+| `main/cli.py` | Headless argparse CLI (`analyze` / `scan` / `verify`) |
 | `sentinel.py` | Launcher (GUI or CLI) + re-exports for tests / scripts |
 | `sentinel_cli.py` | Thin `python -m sentinel_cli` alias |
 
 ## Key Patterns
 
 - **Threading:** I/O in daemon threads; UI via `root.after(0, …)`
-- **Caching:** TTL caches for history, rates, option chains
+- **Caching:** bounded TTL caches for history, rates, option chains, news, valuation
+- **Startup discipline:** `matplotlib.pyplot`, `plotly`, `torch`/`transformers` import lazily; sentiment engine loads only if enabled
 - **Optional features:** `TRANSFORMERS_AVAILABLE`, `PLOTLY_AVAILABLE`; GUI flags `use_garch_blend`, `use_smile_vol`, `show_prob_cone`, `show_fib`
 - **Options Finder:** Fair = American price under **forecast vol**; compare to **ask/bid** with spread/OI/ATM gates (not mid-only / not IV-circular)
 - **Shutdown:** `on_close` → `os._exit(0)`
@@ -79,4 +80,4 @@ CI-lean deps (no torch): `requirements-ci.txt`.
 - `to_do.md` — roadmap with live done/pending statuses
 - `docs/LOGIC_REVIEW.md` — paper map, scan rules, perf notes
 - `plan.md` — historical audit (status block at top is authoritative over older “missing” sections)
-- `docs/github-actions-ci.yml` — CI template (publishing `.github/workflows/` needs `workflow` OAuth scope)
+- `docs/github-actions-ci.yml` — original CI template (live workflow: `.github/workflows/ci.yml`)
