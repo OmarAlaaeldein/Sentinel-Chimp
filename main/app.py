@@ -177,8 +177,12 @@ class MarketApp:
         self.paned = ttk.PanedWindow(root, orient="horizontal")
         self.paned.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.left_frame = ttk.Frame(self.paned, width=350)
+        self.left_frame = ttk.Frame(self.paned, width=380)
         self.paned.add(self.left_frame, weight=1)
+        try:
+            self.paned.paneconfigure(self.left_frame, minsize=330)
+        except Exception:
+            pass
 
         self.lbl_price = ttk.Label(self.left_frame, text="---", style="Price.TLabel")
         self.lbl_price.pack(anchor="center", pady=(14, 8))
@@ -187,6 +191,12 @@ class MarketApp:
             self.left_frame, text="Technicals", padding=12, style="Card.TLabelframe",
         )
         self.grid_frame.pack(fill="x", pady=5, padx=4)
+        # Name column hugs content; value column takes spare width and wraps
+        # instead of clipping when the pane is narrow.
+        self.grid_frame.columnconfigure(0, weight=0)
+        self.grid_frame.columnconfigure(1, weight=1)
+        self._metric_value_labels = []
+        self.grid_frame.bind("<Configure>", self._sync_metric_wrap)
         
         self.lbl_rsi = self.add_row(self.grid_frame, "RSI (14d)", 0, "Relative Strength Index. Range 0-100.")
         self.lbl_stoch = self.add_row(self.grid_frame, "Stoch RSI", 1, "Stochastic RSI.\n\nMore sensitive than standard RSI.\nUse this to time specific entries/exits within a trend.\n0.0 = Max Oversold, 1.0 = Max Overbought.")
@@ -380,13 +390,12 @@ class MarketApp:
         hv = float(getattr(self, "hv_30", 0.0) or 0.0)
         ewma = float(getattr(self, "ewma_vol", 0.0) or 0.0)
         garch_vol = float(getattr(self, "garch_vol", 0.0) or 0.0)
-        garch_txt = f" | GARCH: {garch_vol:.1%}" if garch_vol > 0 else ""
-        blend_mark = " [blend]" if self.use_garch_blend else ""
-        smile_mark = " [smile]" if self.use_smile_vol else ""
+        # Two short lines (blend/smile state lives in the row tooltip).
+        lines = [f"HV: {hv:.1%} | EWMA: {ewma:.1%}"]
+        if garch_vol > 0:
+            lines.append(f"GARCH: {garch_vol:.1%}")
         if hasattr(self, "lbl_vol") and self.lbl_vol is not None:
-            self.lbl_vol.config(
-                text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}{garch_txt}{blend_mark}{smile_mark}"
-            )
+            self.lbl_vol.config(text="\n".join(lines))
         if self._vol_tooltip is not None:
             self._vol_tooltip.set_text(self._vol_why_text())
 
@@ -537,9 +546,28 @@ class MarketApp:
             q = ttk.Label(f, text="?", style="Hint.TLabel", padding=(4, 0))
             q.pack(side="left")
             Tooltip(q, tooltip_text)
-        lbl = ttk.Label(parent, text="---", style="MetricValue.TLabel")
+        lbl = ttk.Label(
+            parent, text="---", style="MetricValue.TLabel", justify="right",
+        )
         lbl.grid(row=row, column=1, sticky="e", padx=8, pady=3)
+        if parent is getattr(self, "grid_frame", None):
+            self._metric_value_labels.append(lbl)
         return lbl
+
+    def _sync_metric_wrap(self, event=None):
+        """Wrap value labels to the visible width so numbers never clip."""
+        frame = getattr(self, "grid_frame", None)
+        if frame is None:
+            return
+        try:
+            avail = max(120, int(frame.winfo_width()) - 190)
+        except Exception:
+            return
+        for lbl in getattr(self, "_metric_value_labels", []):
+            try:
+                lbl.configure(wraplength=avail)
+            except Exception:
+                pass
 
     def load_data(self, period="5d", interval="5m"):
         """Refreshes chart data and updates fundamentals only on ticker change."""
@@ -1305,23 +1333,19 @@ class MarketApp:
             bb_pos = "Oversold"; bb_c = "green"
         pctb = data.get('BB_PctB')
         bw = data.get('BB_Width')
-        bb_extra = ""
+        bb_lines = [f"{bb_pos} [{data['BB_Lower']:.2f}-{data['BB_Upper']:.2f}]"]
         if pd.notna(pctb) and pd.notna(bw):
-            bb_extra = f" | %B:{pctb:.2f} BW:{bw:.2f}"
-        self.lbl_bb.config(text=f"{bb_pos}{bb_extra}\n[{data['BB_Lower']:.2f}-{data['BB_Upper']:.2f}]", foreground=bb_c)
+            bb_lines.append(f"%B:{pctb:.2f} BW:{bw:.2f}")
+        self.lbl_bb.config(text="\n".join(bb_lines), foreground=bb_c)
         
         self.lbl_atr.config(text=f"${data['ATR']:.2f}")
         
-        # --- EWMA & HV DISPLAY ---
+        # --- EWMA & HV DISPLAY (two short lines; flags live in the tooltip) ---
         self.ewma_vol = float(ewma) if ewma is not None else 0.0
-        garch_txt = ""
+        vol_lines = [f"HV: {hv:.1%} | EWMA: {ewma:.1%}"]
         if garch_vol is not None and garch_vol > 0:
-            garch_txt = f" | GARCH: {garch_vol:.1%}"
-        blend_mark = " [blend]" if self.use_garch_blend else ""
-        smile_mark = " [smile]" if self.use_smile_vol else ""
-        self.lbl_vol.config(
-            text=f"HV: {hv:.1%} | EWMA: {ewma:.1%}{garch_txt}{blend_mark}{smile_mark}"
-        )
+            vol_lines.append(f"GARCH: {garch_vol:.1%}")
+        self.lbl_vol.config(text="\n".join(vol_lines))
         if self._vol_tooltip is not None:
             self._vol_tooltip.set_text(self._vol_why_text())
         

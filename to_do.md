@@ -1,7 +1,7 @@
 # 🛡️ Sentinel 2.0
 **Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
 
-*Last updated: 2026-09-06 — statuses reflect `main` after watchlist / Ichimoku / earnings / Fib / EMA / P/E fixes.*
+*Last updated: 2026-09-07 — statuses reflect `main` after v2.1 resource/discipline pass.*
 
 ---
 
@@ -20,6 +20,8 @@
 | Fib from latest fractal swing | Not window high/low |
 | Math audit | EMA look-ahead + Ichimoku RTH (PR #12) |
 | P/E Percentile datetime units | History `[s]` vs earnings `[us]` merge_asof |
+| v2.1 resource pass | Bounded caches; lazy pyplot/plotly/torch; news cap 150; vectorized scan filters; leaner GARCH; `requirements.txt` minus pytest/accelerate |
+| Left-panel truncation fix | Wrapping value column + shorter Vol/BB strings + pane min-width |
 
 ---
 

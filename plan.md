@@ -23,8 +23,7 @@ Implemented (among other items):
 
 Still open / optional backlog:
 - Full SVI / local-vol smile (quadratic OLS is the lite path)
-- Ichimoku (D3); econ calendar overlays; watchlists; semantic arb / fund-bias filter
-- Publishing `.github/workflows/ci.yml` needs a GitHub token with `workflow` scope (template lives in `docs/github-actions-ci.yml`)
+- Ichimoku Senkou extension past last bar; econ calendar (FOMC/CPI) overlays; semantic arb / fund-bias filter
 - Stricter FinBERT label-order assert (validation already present)
 
 ---
