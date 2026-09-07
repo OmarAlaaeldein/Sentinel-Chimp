@@ -66,10 +66,16 @@ class YFinanceProvider(DataProvider):
         cache_duration: float = 60.0,
         rate_cache_duration: float = 300.0,
         chain_cache_duration: float = 60.0,
+        max_df_entries: int = 32,
+        max_chain_entries: int = 128,
     ):
         self.cache_duration = cache_duration
         self.rate_cache_duration = rate_cache_duration
         self.chain_cache_duration = chain_cache_duration
+        # Bounded TTL caches: entries are pruned (expired first, then oldest)
+        # on every save so long sessions can't grow them without bound.
+        self.max_df_entries = max_df_entries
+        self.max_chain_entries = max_chain_entries
         self._data_cache = {}
         self._data_cache_lock = threading.Lock()
         self._rate_cache = None  # (short, long, ts) or None
@@ -119,6 +125,20 @@ class YFinanceProvider(DataProvider):
         key = (symbol, period, interval)
         with self._data_cache_lock:
             self._data_cache[key] = (df, time.time())
+            self._prune_locked(
+                self._data_cache, self.cache_duration, self.max_df_entries
+            )
+
+    @staticmethod
+    def _prune_locked(cache: dict, ttl: float, max_entries: int) -> None:
+        """Drop expired entries, then oldest-first until under ``max_entries``."""
+        now = time.time()
+        for key, (_val, ts) in list(cache.items()):
+            if now - ts >= ttl:
+                del cache[key]
+        while len(cache) > max_entries:
+            oldest = min(cache.items(), key=lambda kv: kv[1][1])[0]
+            del cache[oldest]
 
     def clear_cache(self):
         with self._data_cache_lock:
@@ -154,6 +174,9 @@ class YFinanceProvider(DataProvider):
         chain = ticker.option_chain(expiration)
         with self._chain_cache_lock:
             self._chain_cache[key] = (chain, now)
+            self._prune_locked(
+                self._chain_cache, self.chain_cache_duration, self.max_chain_entries
+            )
         return chain
 
     def fetch_rate_curve(self) -> Tuple[float, float]:

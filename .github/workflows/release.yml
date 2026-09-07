@@ -133,14 +133,11 @@ jobs:
 
             Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
 
-            ### What's new in 2.0
-            - **Headless CLI:** `analyze` / `scan` plus new offline `verify` math self-test; scan flags `--smile --euro-greeks --expiry --limit --csv --div` (`sentinel.py verify`, `sentinel.py scan SPY --under-only`)
-            - **Critical dividend fix:** yfinance quotes `dividendYield` in percent even below 1% — SPY printed as 98% yield and corrupted every fair value; now resolved per-source (SPY → 0.98%)
-            - **EMA overlays restored:** `datetime64[s]` vs `[us]` merge fix in the daily-EMA as-of mapping (all intervals, no same-day look-ahead)
-            - **New math:** CRR binomial American cross-check, drift + 1σ/2σ probability-cone bands, risk-neutral POP helpers; Bollinger now uses population σ, GARCH demeans returns
-            - **Scan hygiene:** expired contracts skipped, 0DTE uses half-session T
-            - **UI readability / 3D:** clearer fonts, improved Options Explorer labels, richer EV@Ask 3D visualization
-            - **Native release assets** (no zip packs): Windows `.exe`, macOS `.dmg`, Linux single binary
+            ### What's new in 2.1
+            - **Lower footprint:** bounded data/chain/news/valuation caches, news cap 1000 → 150 headlines, trimmed system log, hover throttled, lazy `matplotlib.pyplot` / `plotly` / `torch` imports at startup
+            - **Faster scans:** vectorized liquidity/ATM filters, leaner GARCH fit (~4–5×), chunked sentiment inference
+            - **Leaner packages:** `requirements.txt` drops `pytest` (CI-only) and `accelerate` (unused); stale screenshots, spec, and distilBERT ignores removed
+            - **Build fix:** macOS sentiment auto-detect now reads `main/app.py` where the flag lives
 
             ### Downloads
             | Platform | Artifact |

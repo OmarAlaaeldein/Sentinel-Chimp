@@ -19,14 +19,16 @@ import webbrowser
 import csv
 import re
 import html
-import matplotlib.pyplot as plt
+# NOTE: matplotlib.pyplot and plotly are imported lazily inside visualize_3d /
+# save_3d_html so plain chart usage avoids their import cost (~100ms+ / RAM).
+# Only the lightweight Figure/Canvas pieces load at startup.
 import matplotlib.colors as mcolors
 
 try:
-    import plotly.graph_objects as go
-    from plotly.offline import plot
-    PLOTLY_AVAILABLE = True
-except ImportError:
+    import importlib.util as _importlib_util
+    PLOTLY_AVAILABLE = _importlib_util.find_spec("plotly") is not None
+    del _importlib_util
+except Exception:  # pragma: no cover - defensive
     PLOTLY_AVAILABLE = False
 
 # Suppress SSL warnings
@@ -43,7 +45,9 @@ from core.technicals import (
     calculate_ichimoku,
     bars_per_trading_day,
 )
-from core.sentiment import sentiment_engine
+# NOTE: core.sentiment pulls in torch/transformers when installed — import it
+# lazily (see init_model_bg) so startup stays light while sentiment is off.
+sentiment_engine = None
 from core.data import YFinanceProvider
 from core.vol_models import (
     garch11_vol_forecast, blend_forecast_vol,
@@ -87,13 +91,13 @@ class MarketApp:
         self._chart_palette = chart_colors()
         self.data_provider = YFinanceProvider(cache_duration=60)
 
-        self.headline_limit = 1000
-        self.data_cache = {}
-        self.DATA_CACHE_DURATION = 60 
+        self.headline_limit = 150
         self.sent_cache = {}
-        self.SENT_CACHE_DURATION = 1800 
+        self.SENT_CACHE_DURATION = 1800
+        self.SENT_CACHE_MAX_TICKERS = 5
         self.valuation_cache = {}
         self.VALUATION_CACHE_DURATION = 3600
+        self.VALUATION_CACHE_MAX_ENTRIES = 16
         self.pe_fwd = None
         self.pe_ttm = None
         self.peg_ratio = None
@@ -264,6 +268,7 @@ class MarketApp:
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         self.canvas.get_tk_widget().configure(bg=_cp["figure"])
         self.hover_annot = None
+        self._last_hover_ts = 0.0
         self.last_plot_df = None
         self.canvas.mpl_connect('motion_notify_event', self.on_hover)
 
@@ -331,7 +336,6 @@ class MarketApp:
             self.log("AI Sentiment is currently disabled.")
         self.scan_data = []
         self._scan_lock = threading.Lock()
-        self._data_cache_lock = threading.Lock()
         self._sent_cache_lock = threading.Lock()
         self._valuation_cache_lock = threading.Lock()
         self._earnings_lock = threading.Lock()
@@ -481,6 +485,10 @@ class MarketApp:
         os._exit(0)
 
     def init_model_bg(self, model_name):
+        global sentiment_engine
+        if sentiment_engine is None:
+            from core.sentiment import sentiment_engine as _engine
+            sentiment_engine = _engine
         self.root.after(0, lambda: self.lbl_model_status.config(text=f"Loading {model_name}..."))
         success = sentiment_engine.load_model(model_name)
         
@@ -500,6 +508,9 @@ class MarketApp:
         full_msg = f"[{timestamp}] {msg}\n"
         def _append():
             self.log_box.insert("end", full_msg)
+            # Bound widget memory: keep only the tail of the log.
+            if int(self.log_box.index("end-1c").split(".")[0]) > 400:
+                self.log_box.delete("1.0", "end-100l")
             self.log_box.see("end")
         self.root.after(0, _append)
         print(full_msg)
@@ -544,10 +555,13 @@ class MarketApp:
             
             # Clear caches and reset drift for the new stock
             self.data_provider.clear_cache()
-            with self._data_cache_lock:
-                self.data_cache.clear()
             with self._sent_cache_lock:
                 self.sent_cache.clear()
+            with self._valuation_cache_lock:
+                self.valuation_cache.clear()
+            # Release previous chart frames so only one ticker's data is live.
+            self._last_chart_df = None
+            self.last_plot_df = None
             self.projected_earnings = []
             self.earnings_dates = []
             
@@ -685,6 +699,15 @@ class MarketApp:
             eps_timeline = eps_df[["report_date", "ttm_eps"]].copy()
             with self._valuation_cache_lock:
                 self.valuation_cache[cache_key] = (eps_timeline, time.time())
+                now = time.time()
+                for key, (_v, ts) in list(self.valuation_cache.items()):
+                    if now - ts >= self.VALUATION_CACHE_DURATION:
+                        del self.valuation_cache[key]
+                while len(self.valuation_cache) > self.VALUATION_CACHE_MAX_ENTRIES:
+                    oldest = min(
+                        self.valuation_cache.items(), key=lambda kv: kv[1][1]
+                    )[0]
+                    del self.valuation_cache[oldest]
             return eps_timeline, None
         except Exception as e:
             self.log(f"Historical EPS fetch error: {e}")
@@ -903,6 +926,10 @@ class MarketApp:
         headlines_for_ai = [x['title'] for x in all_news]
         
         if self.use_sentiment:
+            global sentiment_engine
+            if sentiment_engine is None:
+                from core.sentiment import sentiment_engine as _engine
+                sentiment_engine = _engine
             current_model = sentiment_engine.models[sentiment_engine.current_model_name]
             if current_model["loaded"]:
                 self.log(f"AI Analyzing {len(headlines_for_ai)} headlines...")
@@ -915,6 +942,16 @@ class MarketApp:
 
         with self._sent_cache_lock:
             self.sent_cache[ticker] = (avg_score, all_news, time.time())
+            # Bound: drop expired tickers, then oldest-first.
+            now = time.time()
+            for key, (_v, _n, ts) in list(self.sent_cache.items()):
+                if now - ts >= self.SENT_CACHE_DURATION:
+                    del self.sent_cache[key]
+            while len(self.sent_cache) > self.SENT_CACHE_MAX_TICKERS:
+                oldest = min(
+                    self.sent_cache.items(), key=lambda kv: kv[1][2]
+                )[0]
+                del self.sent_cache[oldest]
         return avg_score, all_news
 
     def treeview_sort_column(self, tv, col, reverse):
@@ -1352,6 +1389,19 @@ class MarketApp:
         ax = fig.add_subplot(111, projection='3d')
         ax.set_facecolor(APP_BG)
 
+        def _close_3d():
+            try:
+                from matplotlib import pyplot as _plt
+                _plt.close(fig)
+            except Exception:
+                pass
+            try:
+                vis_win.destroy()
+            except Exception:
+                pass
+
+        vis_win.protocol("WM_DELETE_WINDOW", _close_3d)
+
         canvas = FigureCanvasTkAgg(fig, master=vis_win)
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
@@ -1369,6 +1419,7 @@ class MarketApp:
 
         def refresh_plot():
             nonlocal ax
+            from matplotlib import pyplot as plt
             fig.clf()
             ax = fig.add_subplot(111, projection='3d')
             ax.set_facecolor(APP_BG)
@@ -1455,6 +1506,11 @@ class MarketApp:
         if not PLOTLY_AVAILABLE:
             messagebox.showerror("Error", "Plotly not installed.")
             return
+        try:
+            from plotly.offline import plot as _plot
+        except ImportError:
+            messagebox.showerror("Error", "Plotly not installed.")
+            return
         if not rows:
             messagebox.showinfo("3D Plot", "Nothing visible with current filters.")
             return
@@ -1493,13 +1549,18 @@ class MarketApp:
                 cats,
                 include_heatmap=True,
             )
-            plot(fig, filename=filename, auto_open=True)
+            _plot(fig, filename=filename, auto_open=True)
             self.log(f"Saved 3D HTML → {filename}")
         except Exception as e:
             self.log(f"HTML Export Error: {e}")
             messagebox.showerror("Export Error", str(e))
 
     def on_hover(self, event):
+        # Throttle: motion events fire per-pixel; redraw at most ~15Hz.
+        now = time.monotonic()
+        if now - self._last_hover_ts < 0.06:
+            return
+        self._last_hover_ts = now
         if event.inaxes != self.ax or self.last_plot_df is None or self.last_plot_df.empty:
             if self.hover_annot:
                 self.hover_annot.set_visible(False)

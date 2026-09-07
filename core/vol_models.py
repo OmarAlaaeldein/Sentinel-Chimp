@@ -24,7 +24,7 @@ import numpy as np
 def garch11_vol_forecast(
     log_returns,
     days: int = 252,
-    max_iter: int = 80,
+    max_iter: int = 32,
 ) -> Tuple[float, dict]:
     """Fit a variance-targeted GARCH(1,1) and return annualized σ forecast.
 
@@ -79,10 +79,12 @@ def garch11_vol_forecast(
                 var = omega + alpha * r2[i] + beta * var
             return ll
 
-        # Coarse grid (α, β) on the stationarity triangle
+        # Coarse grid (α, β) on the stationarity triangle.
+        # Kept small on purpose: this runs per chart refresh / scan, and the
+        # forecast only needs to be in the right neighborhood for blending.
         best = (1e300, 0.05, 0.90)
-        for alpha in (0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.15, 0.20):
-            for beta in (0.70, 0.75, 0.80, 0.85, 0.88, 0.90, 0.92, 0.94):
+        for alpha in (0.04, 0.08, 0.12, 0.18):
+            for beta in (0.75, 0.82, 0.88, 0.92):
                 if alpha + beta >= 0.995:
                     continue
                 score = nll(alpha, beta)
@@ -358,7 +360,7 @@ def blend_forecast_vol(
 ) -> float:
     """Historical-vol input for the cone / FV path.
 
-    Mirrors ``fetch_options_batch``: when ``use_garch_blend`` and GARCH > 0,
+    Mirrors ``scan_option_chains``: when ``use_garch_blend`` and GARCH > 0,
     return a convex blend; otherwise return EWMA (or 0 if invalid).
     """
     ewma = float(ewma) if ewma is not None and math.isfinite(ewma) else 0.0

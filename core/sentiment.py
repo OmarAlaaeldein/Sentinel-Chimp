@@ -102,20 +102,27 @@ class SentimentEngine:
         try:
             # Move inputs to the same device as the model
             device = next(target["model"].parameters()).device
-            inputs = target["tokenizer"](clean_texts, return_tensors="pt", truncation=True,
-                                          padding=True, max_length=128).to(device)
-            
-            with torch.no_grad():
-                outputs = target["model"](**inputs)
-            
-            probs = F.softmax(outputs.logits, dim=-1)
+            # Chunked inference: one giant padded batch of N headlines costs
+            # O(N * max_len) RAM; 32-at-a-time keeps the peak flat.
+            scores_clean = []
+            for chunk_start in range(0, len(clean_texts), 32):
+                chunk = clean_texts[chunk_start:chunk_start + 32]
+                inputs = target["tokenizer"](chunk, return_tensors="pt", truncation=True,
+                                              padding=True, max_length=128).to(device)
 
-            pos_idx = target.get("pos_idx", 0)
-            neg_idx = target.get("neg_idx", 1)
-            pos = probs[:, pos_idx]
-            neg = probs[:, neg_idx]
-            # Convert back to CPU for list conversion
-            scores_clean = (0.5 + (pos * 0.5) - (neg * 0.5)).cpu().tolist()
+                with torch.no_grad():
+                    outputs = target["model"](**inputs)
+
+                probs = F.softmax(outputs.logits, dim=-1)
+
+                pos_idx = target.get("pos_idx", 0)
+                neg_idx = target.get("neg_idx", 1)
+                pos = probs[:, pos_idx]
+                neg = probs[:, neg_idx]
+                # Convert back to CPU for list conversion
+                scores_clean.extend(
+                    (0.5 + (pos * 0.5) - (neg * 0.5)).cpu().tolist()
+                )
                 
             full_scores = []
             idx = 0

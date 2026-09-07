@@ -15,7 +15,7 @@ INSTALL_DEPS=0
 usage() {
   echo "Usage: ./build_macos.sh [--auto|--lite|--full] [--onedir|--onefile] [--install-deps]"
   echo
-  echo "  --auto     Detect mode from self.use_sentiment in sentinel.py (default)"
+  echo "  --auto     Detect mode from self.use_sentiment in main/app.py (default)"
   echo "  --lite     Exclude heavy AI dependencies"
   echo "  --full     Include AI dependencies from requirements.txt"
   echo "  --onedir   Build Sentinel.app as a directory bundle (default)"
@@ -67,7 +67,8 @@ fi
 
 detect_sentiment_flag() {
   local assignment
-  assignment="$(grep -Eo 'self\.use_sentiment\s*=\s*(True|False)' "$APP_SCRIPT" | head -n1 || true)"
+  # Flag lives in main/app.py (MarketApp); sentinel.py is just the launcher.
+  assignment="$(grep -Eo 'self\.use_sentiment\s*=\s*(True|False)' "$ROOT/main/app.py" | head -n1 || true)"
   if [[ -z "$assignment" ]]; then
     return 1
   fi
@@ -96,7 +97,7 @@ if [[ "$MODE_REQUEST" == "auto" ]]; then
     echo "[INFO] Detected self.use_sentiment = $SENTIMENT_FLAG -> $MODE build mode"
   else
     MODE="lite"
-    echo "[WARN] Could not detect self.use_sentiment in sentinel.py; defaulting to lite mode"
+    echo "[WARN] Could not detect self.use_sentiment in main/app.py; defaulting to lite mode"
   fi
 else
   MODE="$MODE_REQUEST"

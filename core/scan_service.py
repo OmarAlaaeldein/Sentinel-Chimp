@@ -26,10 +26,13 @@ from core.vol_models import (
     smile_vol_arr,
 )
 from core.options_scan import (
+    MAX_SPREAD_FRAC,
+    MIN_MID,
+    MIN_OI,
+    MIN_VOLUME,
+    STRIKE_BAND,
     SCAN_RULES_LOG,
     delta_in_band,
-    near_atm_strike,
-    quote_passes_liquidity,
     scan_verdict,
 )
 
@@ -38,6 +41,48 @@ UiBatchFn = Callable[[List[Tuple[tuple, str]]], None]
 
 _BATCH_N = 64
 UI_BATCH_SIZE = 40
+
+
+def _liquid_mask(
+    bid: np.ndarray, ask: np.ndarray, oi: np.ndarray, vol: np.ndarray
+) -> np.ndarray:
+    """Vectorized :func:`quote_passes_liquidity` with identical semantics."""
+    bid = np.asarray(bid, dtype=float)
+    ask = np.asarray(ask, dtype=float)
+    oi = np.asarray(oi, dtype=float)
+    vol = np.asarray(vol, dtype=float)
+    mid = 0.5 * (bid + ask)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        spread_ok = ((ask - bid) / mid) <= MAX_SPREAD_FRAC
+    ok = (
+        np.isfinite(bid)
+        & np.isfinite(ask)
+        & (bid > 0.0)
+        & (ask > 0.0)
+        & (ask >= bid)
+        & (mid >= MIN_MID)
+        & (mid > 0.0)
+        & spread_ok
+        & ~((oi < MIN_OI) & (vol < MIN_VOLUME))
+    )
+    return ok
+
+
+def _atm_mask(strikes: np.ndarray, spot: float) -> np.ndarray:
+    """Vectorized :func:`near_atm_strike` with identical semantics."""
+    strikes = np.asarray(strikes, dtype=float)
+    try:
+        s = float(spot)
+    except (TypeError, ValueError):
+        return np.zeros(strikes.shape, dtype=bool)
+    if not math.isfinite(s) or s <= 0.0:
+        return np.zeros(strikes.shape, dtype=bool)
+    ok = (
+        np.isfinite(strikes)
+        & (strikes > 0.0)
+        & (np.abs(strikes / s - 1.0) <= STRIKE_BAND)
+    )
+    return ok
 
 
 def to_finite_float(value: Any) -> Optional[float]:
@@ -503,13 +548,8 @@ def scan_option_chains(
             kind_is_call = types == "CALL"
             oi_int = np.where(np.isfinite(oi_arr), oi_arr, 0.0)
 
-            liquid = np.array([
-                quote_passes_liquidity(bid[i], ask[i], oi_int[i], vol[i])
-                for i in range(len(strikes))
-            ], dtype=bool)
-            atm = np.array([
-                near_atm_strike(strikes[i], spot) for i in range(len(strikes))
-            ], dtype=bool)
+            liquid = _liquid_mask(bid, ask, oi_int, vol)
+            atm = _atm_mask(strikes, spot)
             valid = (
                 liquid & atm
                 & np.isfinite(mid) & (mid > 0)
@@ -541,6 +581,8 @@ def scan_option_chains(
 
             vol_input = np.full(idx.size, float(forecast_vol), dtype=float)
             kinds = np.where(is_call_v, "call", "put")
+            # Vectorized BS2002 once the slice is big enough to amortize
+            # overhead; scalar loop below it (scalar path is exact and cheap).
             if idx.size >= _BATCH_N:
                 fair_v = VegaChimpCore.bjerksund_stensland_batch(
                     spot, strikes_v, T, RFR, DIV_YIELD, vol_input, kinds,
