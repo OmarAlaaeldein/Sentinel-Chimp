@@ -82,7 +82,50 @@ EXCLUDE_ARGS=(
   --exclude-module accelerate
   --exclude-module tkinter.test
   --exclude-module notebook
+  # --- v2.2.2 size trims (no feature impact) ---
+  # Test subpackages are never imported at runtime.
+  --exclude-module pandas.tests
+  --exclude-module numpy.tests
+  --exclude-module matplotlib.tests
+  # Stdlib test/doc helpers: unreachable from app code.
+  --exclude-module unittest
+  --exclude-module doctest
+  --exclude-module pydoc
+  # Interactive shells: GUI/CLI never use them.
+  --exclude-module IPython
+  --exclude-module ipykernel
+  # GUI backends we never select (runtime backend is TkAgg).
+  --exclude-module matplotlib.backends.backend_qt5agg
+  --exclude-module matplotlib.backends.backend_qt6agg
+  --exclude-module matplotlib.backends.backend_qtagg
+  --exclude-module matplotlib.backends.backend_wx
+  --exclude-module matplotlib.backends.backend_wxagg
+  --exclude-module matplotlib.backends.backend_gtk3agg
+  --exclude-module matplotlib.backends.backend_gtk3cairo
+  --exclude-module matplotlib.backends.backend_gtk4agg
+  --exclude-module matplotlib.backends.backend_gtk4cairo
+  --exclude-module matplotlib.backends.backend_nbagg
+  --exclude-module matplotlib.backends.backend_cairo
+  # NOTE: plotly is intentionally KEPT — the 3D HTML export needs it.
+  # NOTE: --collect-submodules matplotlib stays too: with no explicit
+  # mpl_toolkits import in code, it keeps the 3D projection working.
 )
+
+# UPX binary compression when `upx` is on PATH. PyInstaller v6 honors it on
+# Windows (our .exe); elsewhere it is ignored. MSVC runtimes are excluded
+# from compression (stability). Never fails the build when upx is absent.
+if command -v upx >/dev/null 2>&1; then
+  UPX_DIR="$(dirname "$(command -v upx)")"
+  echo "[INFO] UPX found at $UPX_DIR — enabling binary compression"
+  EXCLUDE_ARGS+=(
+    --upx-dir "$UPX_DIR"
+    --upx-exclude "vcruntime*.dll"
+    --upx-exclude "msvcp*.dll"
+    --upx-exclude "msvcr*.dll"
+  )
+else
+  echo "[INFO] UPX not found — skipping binary compression (pip/apt/choco install upx to enable)"
+fi
 
 mkdir -p "$ROOT/dist"
 rm -rf "$ROOT/build" "$ROOT/dist/Sentinel" "$ROOT/dist/Sentinel.app" \
@@ -96,6 +139,7 @@ if [[ "$PLATFORM" == "linux" ]]; then
     --clean
     --onefile
     --noconsole
+    --strip
     --name Sentinel
     --collect-submodules matplotlib
     "${EXCLUDE_ARGS[@]}"
@@ -127,6 +171,7 @@ elif [[ "$PLATFORM" == "macos" ]]; then
     --clean
     --windowed
     --onedir
+    --strip
     --name Sentinel
     --collect-submodules matplotlib
     "${EXCLUDE_ARGS[@]}"

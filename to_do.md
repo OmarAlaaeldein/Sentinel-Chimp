@@ -1,7 +1,7 @@
 # 🛡️ Sentinel 2.0
 **Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
 
-*Last updated: 2026-09-07 — statuses reflect `main` at v2.2 (docs refresh + panel fix on top of v2.1).*
+*Last updated: 2026-09-07 — statuses reflect `main` at v2.2.2 (smaller binaries on top of v2.2).*
 
 ---
 
@@ -23,6 +23,7 @@
 | v2.1 resource pass | Bounded caches; lazy pyplot/plotly/torch; news cap 150; vectorized scan filters; leaner GARCH; `requirements.txt` minus pytest/accelerate |
 | v2.2 left-panel truncation fix | Wrapping value column + shorter Vol/BB strings + pane min-width |
 | v2.2 docs refresh | CLI flags, structure, sentiment accuracy, perf notes, template markers |
+| v2.2.2 smaller binaries | UPX (Win) + `--strip` (Linux/mac) + test/backend excludes; plotly + 3D kept |
 
 ---
 

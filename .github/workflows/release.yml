@@ -48,7 +48,13 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk tk-dev
+          sudo apt-get install -y python3-tk tk-dev binutils upx-ucl
+
+      - name: Install UPX (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          choco install upx -y --no-progress
 
       - name: Install release dependencies
         run: |
@@ -132,6 +138,9 @@ jobs:
             ## Sentinel Chimp ${{ steps.tag.outputs.tag }} — Lite Mode native installers
 
             Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
+
+            ### What's new in 2.2.2
+            - **Smaller binaries:** UPX compression (Windows), `--strip` (Linux/macOS), plus excludes for test subpackages, stdlib test helpers, and unused Qt/Wx/GTK/Cairo backends. plotly and 3D export fully kept.
 
             ### What's new in 2.2
             - **Left panel fix:** Technicals values wrap instead of clipping (pane min-width, wrapping value column, shorter Vol/Bollinger strings)
