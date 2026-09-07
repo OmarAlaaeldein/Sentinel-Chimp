@@ -1,7 +1,7 @@
 # 🛡️ Sentinel 2.0
 **Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
 
-*Last updated: 2026-09-07 — statuses reflect `main` at v2.2.2 (smaller binaries on top of v2.2).*
+*Last updated: 2026-09-07 — statuses reflect `main` at v2.2.3 (runtime module restore on top of v2.2.2).*
 
 ---
 
@@ -24,6 +24,7 @@
 | v2.2 left-panel truncation fix | Wrapping value column + shorter Vol/BB strings + pane min-width |
 | v2.2 docs refresh | CLI flags, structure, sentiment accuracy, perf notes, template markers |
 | v2.2.2 smaller binaries | UPX (Win) + `--strip` (Linux/mac) + test/backend excludes; plotly + 3D kept |
+| v2.2.3 binary startup fix | Restored `unittest` and `pydoc` stdlib modules for PyInstaller; Windows CLI console encoding |
 
 ---
 

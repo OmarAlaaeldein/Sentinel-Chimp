@@ -139,8 +139,12 @@ jobs:
 
             Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
 
+            ### What's new in 2.2.3
+            - **Native binary startup fix:** Restored `unittest` and `pydoc` stdlib modules in PyInstaller builds (required at runtime by `pyparsing` / `matplotlib` and `pyarrow`), fixing startup failure on Windows, macOS, and Linux
+            - **Windows terminal encoding:** UTF-8 stream reconfigure and ASCII-safe symbols for `verify` CLI
+
             ### What's new in 2.2.2
-            - **Smaller binaries:** UPX compression (Windows), `--strip` (Linux/macOS), plus excludes for test subpackages, stdlib test helpers, and unused Qt/Wx/GTK/Cairo backends. plotly and 3D export fully kept.
+            - **Smaller binaries:** UPX compression (Windows), `--strip` (Linux/macOS), plus excludes for test subpackages and unused Qt/Wx/GTK/Cairo backends. plotly and 3D export fully kept.
 
             ### What's new in 2.2
             - **Left panel fix:** Technicals values wrap instead of clipping (pane min-width, wrapping value column, shorter Vol/Bollinger strings)

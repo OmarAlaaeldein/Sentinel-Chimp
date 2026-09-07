@@ -16,6 +16,17 @@ import math
 import sys
 from typing import List, Optional, Sequence
 
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import numpy as np
 
 from core.data import YFinanceProvider
@@ -237,7 +248,7 @@ def cmd_verify(_args: argparse.Namespace) -> int:
 
     def check(name: str, cond: bool, detail: str = "") -> None:
         status = "PASS" if cond else "FAIL"
-        print(f"[{status}] {name}" + (f" — {detail}" if detail else ""))
+        print(f"[{status}] {name}" + (f" - {detail}" if detail else ""))
         if not cond:
             failures.append(name)
 
@@ -249,7 +260,7 @@ def cmd_verify(_args: argparse.Namespace) -> int:
     p = V.bs_price(100, 100, 0.05, 0.0, 0.20, 1.0, "put")
     check("BSM ATM put = 5.5735 (Hull)", abs(p - 5.5735) < 1e-3, f"{p:.4f}")
     c2 = V.bs_price(42, 40, 0.10, 0.0, 0.20, 0.5, "call")
-    check("BSM 42/40 call ≈ 4.76 (Hull)", abs(c2 - 4.76) < 0.02, f"{c2:.4f}")
+    check("BSM 42/40 call ~ 4.76 (Hull)", abs(c2 - 4.76) < 0.02, f"{c2:.4f}")
 
     # --- Put-call parity ---
     S, K, r, q, sig, T = 110, 100, 0.05, 0.02, 0.25, 0.5
@@ -258,7 +269,7 @@ def cmd_verify(_args: argparse.Namespace) -> int:
     parity = S * math.exp(-q * T) - K * math.exp(-r * T)
     check("European put-call parity", abs((C - P) - parity) < 1e-9)
 
-    # --- Greeks: call − put delta = e^(−qT) ---
+    # --- Greeks: call - put delta = e^(-qT) ---
     gc = V.bs_greeks(100, 100, 0.05, 0.02, 0.25, 1.0, "call")
     gp = V.bs_greeks(100, 100, 0.05, 0.02, 0.25, 1.0, "put")
     check("delta spread = discount factor",
@@ -273,7 +284,7 @@ def cmd_verify(_args: argparse.Namespace) -> int:
     check("IV zero at lower bound",
           V.implied_vol(0, 50, 200, 0.05, 0.0, 1.0, "call") == 0.0)
 
-    # --- BS2002 paper anchors (Tables 1–3, ±0.01) ---
+    # --- BS2002 paper anchors (Tables 1-3, +-0.01) ---
     check("BS2002 T1 call 4.69",
           abs(V.bjerksund_stensland(100, 100, 0.5, 0.08, 0.12, 0.20, "call") - 4.69) < 0.01)
     check("BS2002 T1 put 6.37",
@@ -286,18 +297,18 @@ def cmd_verify(_args: argparse.Namespace) -> int:
     # --- American dominance + q=0 call identity ---
     am_c = V.bjerksund_stensland(100, 100, 1.0, 0.05, 0.02, 0.25, "call")
     eu_c = V.bs_price(100, 100, 0.05, 0.02, 0.25, 1.0, "call")
-    check("American call ≥ European", am_c >= eu_c - 1e-9)
+    check("American call >= European", am_c >= eu_c - 1e-9)
     am0 = V.bjerksund_stensland(100, 100, 1.0, 0.05, 0.0, 0.25, "call")
     eu0 = V.bs_price(100, 100, 0.05, 0.0, 0.25, 1.0, "call")
     check("q=0 American call = European", abs(am0 - eu0) < 0.01)
     lo, hi = V.american_put_call_parity_bounds(100, 100, 0.05, 0.02, 1.0)
     am_p = V.bjerksund_stensland(100, 100, 1.0, 0.05, 0.02, 0.25, "put")
-    check("American C−P within bounds", lo <= am_c - am_p <= hi)
+    check("American C-P within bounds", lo <= am_c - am_p <= hi)
 
     # --- Binomial lattice agrees with BS2002 ---
     lat = V.binomial_american(100, 100, 0.5, 0.08, 0.12, 0.20, "put", n=400)
     bs2002 = V.bjerksund_stensland(100, 100, 0.5, 0.08, 0.12, 0.20, "put")
-    check("CRR lattice ≈ BS2002 put", abs(lat - bs2002) < 0.05,
+    check("CRR lattice ~ BS2002 put", abs(lat - bs2002) < 0.05,
           f"lattice={lat:.4f} bs2002={bs2002:.4f}")
 
     # --- Bivariate normal: rho=0 factorization, M(0,0,0.5)=1/3 ---

@@ -44,9 +44,6 @@ pyinstaller --onefile --noconsole --clean ^
     --exclude-module "pandas.tests" ^
     --exclude-module "numpy.tests" ^
     --exclude-module "matplotlib.tests" ^
-    --exclude-module "unittest" ^
-    --exclude-module "doctest" ^
-    --exclude-module "pydoc" ^
     --exclude-module "IPython" ^
     --exclude-module "ipykernel" ^
     --exclude-module "matplotlib.backends.backend_qt5agg" ^

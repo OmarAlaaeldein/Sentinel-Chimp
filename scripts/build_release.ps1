@@ -15,6 +15,13 @@ $Python = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { "python" }
 Write-Host "[INFO] Python: $Python"
 Write-Host "[INFO] Entry: $AppScript"
 
+# In conda environments on Windows, tcl/tk shared libraries live in Library\bin.
+# Ensure Library\bin is on PATH so PyInstaller's splash feature can resolve them.
+$CondaLibBin = Join-Path (Split-Path -Parent $Python) "Library\bin"
+if (Test-Path $CondaLibBin) {
+  $env:PATH = "$CondaLibBin;" + $env:PATH
+}
+
 $Exclude = @(
   "--exclude-module", "torch",
   "--exclude-module", "transformers",
@@ -29,9 +36,8 @@ $Exclude = @(
   "--exclude-module", "pandas.tests",
   "--exclude-module", "numpy.tests",
   "--exclude-module", "matplotlib.tests",
-  "--exclude-module", "unittest",
-  "--exclude-module", "doctest",
-  "--exclude-module", "pydoc",
+  # NOTE: Do NOT exclude unittest/pydoc — pyparsing (matplotlib dep) unconditionally
+  # imports pyparsing.testing which requires unittest; pandas/pyarrow imports pydoc.
   "--exclude-module", "IPython",
   "--exclude-module", "ipykernel",
   "--exclude-module", "matplotlib.backends.backend_qt5agg",
@@ -85,7 +91,10 @@ if (Test-Path $Splash) {
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "dist") | Out-Null
 
-# Remove stale zip artifacts from prior packaging
+# Clean up running Sentinel processes and stale artifacts
+Stop-Process -Name Sentinel* -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+Remove-Item (Join-Path $Root "dist\Sentinel.exe") -Force -ErrorAction SilentlyContinue
 Get-ChildItem (Join-Path $Root "dist\*.zip") -ErrorAction SilentlyContinue | Remove-Item -Force
 
 Write-Host "[INFO] Running PyInstaller (windows onefile lite)"

@@ -87,10 +87,8 @@ EXCLUDE_ARGS=(
   --exclude-module pandas.tests
   --exclude-module numpy.tests
   --exclude-module matplotlib.tests
-  # Stdlib test/doc helpers: unreachable from app code.
-  --exclude-module unittest
-  --exclude-module doctest
-  --exclude-module pydoc
+  # NOTE: Do NOT exclude unittest/pydoc — pyparsing (matplotlib dep) unconditionally
+  # imports pyparsing.testing which requires unittest; pandas/pyarrow imports pydoc.
   # Interactive shells: GUI/CLI never use them.
   --exclude-module IPython
   --exclude-module ipykernel
