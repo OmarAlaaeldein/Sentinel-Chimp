@@ -17,9 +17,22 @@ Write-Host "[INFO] Entry: $AppScript"
 
 # In conda environments on Windows, tcl/tk shared libraries live in Library\bin.
 # Ensure Library\bin is on PATH so PyInstaller's splash feature can resolve them.
-$CondaLibBin = Join-Path (Split-Path -Parent $Python) "Library\bin"
-if (Test-Path $CondaLibBin) {
-  $env:PATH = "$CondaLibBin;" + $env:PATH
+$ResolvedPython = if (Test-Path $Python) { (Resolve-Path $Python).Path } else {
+  $cmd = Get-Command $Python -ErrorAction SilentlyContinue
+  if ($cmd) {
+    if ($cmd.Source) { $cmd.Source } elseif ($cmd.Path) { $cmd.Path } else { $null }
+  } else { $null }
+}
+
+if ($ResolvedPython) {
+  $PythonDir = Split-Path -Parent $ResolvedPython
+  if ($PythonDir -and (Test-Path $PythonDir)) {
+    $CondaLibBin = Join-Path $PythonDir "Library\bin"
+    if (Test-Path $CondaLibBin) {
+      Write-Host "[INFO] Added Conda Library\bin to PATH: $CondaLibBin"
+      $env:PATH = "$CondaLibBin;" + $env:PATH
+    }
+  }
 }
 
 $Exclude = @(
@@ -67,16 +80,26 @@ $PyiArgs = @(
 # MSVC runtimes are excluded (stability). Skipped silently when absent.
 $Upx = Get-Command upx -ErrorAction SilentlyContinue
 if ($Upx) {
-  $UpxDir = Split-Path -Parent $Upx.Source
-  Write-Host "[INFO] UPX found at $UpxDir — enabling binary compression"
-  $PyiArgs += @(
-    "--upx-dir", $UpxDir,
-    "--upx-exclude", "vcruntime*.dll",
-    "--upx-exclude", "msvcp*.dll",
-    "--upx-exclude", "msvcr*.dll"
-  )
+  $UpxPath = if ($Upx.Source) { $Upx.Source } elseif ($Upx.Path) { $Upx.Path } else { $null }
+  $UpxDir = if ($UpxPath) { Split-Path -Parent $UpxPath } else { $null }
+  if ($UpxDir -and (Test-Path $UpxDir)) {
+    Write-Host "[INFO] UPX found at $UpxDir - enabling binary compression"
+    $PyiArgs += @(
+      "--upx-dir", $UpxDir,
+      "--upx-exclude", "vcruntime*.dll",
+      "--upx-exclude", "msvcp*.dll",
+      "--upx-exclude", "msvcr*.dll"
+    )
+  } else {
+    Write-Host "[INFO] UPX found on PATH - enabling binary compression"
+    $PyiArgs += @(
+      "--upx-exclude", "vcruntime*.dll",
+      "--upx-exclude", "msvcp*.dll",
+      "--upx-exclude", "msvcr*.dll"
+    )
+  }
 } else {
-  Write-Host "[INFO] UPX not found — skipping binary compression (choco install upx to enable)"
+  Write-Host "[INFO] UPX not found - skipping binary compression (choco install upx to enable)"
 }
 
 $Icon = Join-Path $Root "logo.ico"
