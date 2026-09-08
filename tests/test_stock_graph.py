@@ -164,3 +164,75 @@ def test_analyze_divergence_with_mock_data():
     assert d.divergence_status == "LAGGING_PEER"
     assert d.spread_pct > 0.10
     assert "LAG lagging LEAD" in d.summary
+
+
+def test_nasdaq_100_full_coverage():
+    from core.graph_data import get_nasdaq_100_tickers
+    g = build_default_graph()
+    ndx_tickers = get_nasdaq_100_tickers()
+    assert len(ndx_tickers) >= 100
+
+    missing = [t for t in ndx_tickers if t not in g.nodes]
+    assert not missing, f"Missing NASDAQ-100 tickers: {missing}"
+
+
+def test_sp500_sectors_coverage():
+    g = build_default_graph()
+    assert len(g.nodes) >= 200
+    assert len(g.edges) >= 400
+
+    # Verify all 11 GICS sectors are represented
+    sectors = {node.sector for node in g.nodes.values()}
+    expected_sectors = {
+        "Technology", "Semiconductors", "Communication Services",
+        "Consumer Discretionary", "Consumer Staples", "Healthcare",
+        "Financials", "Energy", "Industrials", "Utilities",
+        "Real Estate", "Materials", "Index"
+    }
+    assert expected_sectors.issubset(sectors)
+
+
+def test_non_tech_peers_resolution():
+    g = build_default_graph()
+
+    # Financials: JPM
+    jpm_nbrs = {n.ticker: e.relation for n, e in g.get_neighbors("JPM")}
+    assert "BAC" in jpm_nbrs
+    assert "GS" in jpm_nbrs
+
+    # Healthcare: LLY
+    lly_nbrs = {n.ticker: e.relation for n, e in g.get_neighbors("LLY")}
+    assert "NVO" in lly_nbrs
+
+    # Energy: XOM
+    xom_nbrs = {n.ticker: e.relation for n, e in g.get_neighbors("XOM")}
+    assert "CVX" in xom_nbrs
+    assert "COP" in xom_nbrs
+
+    # Consumer Staples: COST
+    cost_nbrs = {n.ticker: e.relation for n, e in g.get_neighbors("COST")}
+    assert "WMT" in cost_nbrs
+
+    # Industrials: CAT
+    cat_nbrs = {n.ticker: e.relation for n, e in g.get_neighbors("CAT")}
+    assert "DE" in cat_nbrs
+
+
+def test_cross_sector_supply_chain_paths():
+    g = build_default_graph()
+
+    # Nuclear Fuel -> Utility Power -> Hyperscaler Cloud
+    paths = g.find_paths("CCJ", "MSFT", max_depth=3)
+    assert any("CEG" in p for p in paths)
+
+    # Semi Equipment -> Pure-Play Foundry -> AI Accelerator -> AI Server Rack
+    semi_paths = g.find_paths("ASML", "SMCI", max_depth=4)
+    assert any("TSM" in p and "NVDA" in p for p in semi_paths)
+
+
+def test_graph_connectivity_no_isolated_nodes():
+    g = build_default_graph()
+    degrees = {sym: len(g.get_neighbors(sym)) for sym in g.nodes}
+    isolated = [sym for sym, d in degrees.items() if d == 0]
+    assert not isolated, f"Isolated nodes with no relationships: {isolated}"
+

@@ -25,9 +25,14 @@ SECTOR_COLORS = {
     "Technology Hardware": "#3b82f6",     # Blue
     "Communication Services": "#ec4899",  # Pink
     "Consumer Discretionary": "#f97316",  # Orange
+    "Consumer Staples": "#e11d48",        # Rose / Crimson
+    "Healthcare": "#06b6d4",              # Cyan / Medical Blue
+    "Financials": "#10b981",              # Emerald Green
+    "Energy": "#84cc16",                  # Lime Green
     "Utilities": "#eab308",               # Yellow / Amber
-    "Energy": "#84cc16",                  # Lime
-    "Financials": "#10b981",              # Emerald
+    "Industrials": "#f59e0b",             # Amber / Industrial
+    "Real Estate": "#a855f7",             # Purple
+    "Materials": "#d97706",               # Bronze / Ochre
     "Index": "#94a3b8",                   # Slate
     "Unknown": "#64748b",
 }
