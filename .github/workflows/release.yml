@@ -139,6 +139,13 @@ jobs:
 
             Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
 
+            ### What's new in 2.4.0
+            - **Stock Relationship Graph:** Relational market graph (`core/stock_graph.py`, `core/graph_data.py`) spanning the entire NASDAQ-100 and S&P 500 universe (212 nodes, 441 edges) across all 11 GICS sectors
+            - **Quantitative Peer Divergence Scanner:** `sentinel graph divergence TICKER --period 1mo` calculates relative performance spreads, return correlations, and z-score divergence to identify leading outperformers and lagging catch-up candidates
+            - **Peer Network Explorer:** `sentinel graph show [TICKER]` and `sentinel graph peers TICKER` classify supplier, customer, competitor, infrastructure, and energy relationships
+            - **Interactive 2D/3D Network Visualization:** `sentinel graph export [TICKER] --html PATH` generates standalone dark-themed Plotly 2D/3D network maps with force-directed physics layout
+            - **Robust Index Coverage:** Zero isolated nodes, complete sector diversity, and cross-sector supply chain pathfinding
+
             ### What's new in 2.3.0
             - **Local Ollama CLI:** `sentinel models list/show/select/current`, `sentinel profiles list/use`, `sentinel ask`, `sentinel config` for local model discovery, profiles, and prompt queries
             - **Fast CLI startup:** Lazy module imports ensure `sentinel --help` and CLI commands load in milliseconds without initializing heavy numerical or GUI libraries (torch, tkinter, pandas, numpy)

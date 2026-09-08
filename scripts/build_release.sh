@@ -140,6 +140,8 @@ if [[ "$PLATFORM" == "linux" ]]; then
     --strip
     --name Sentinel
     --collect-submodules matplotlib
+    --collect-submodules core
+    --collect-submodules main
     "${EXCLUDE_ARGS[@]}"
   )
   if [[ -f "$ROOT/logo.ico" ]]; then
@@ -172,6 +174,8 @@ elif [[ "$PLATFORM" == "macos" ]]; then
     --strip
     --name Sentinel
     --collect-submodules matplotlib
+    --collect-submodules core
+    --collect-submodules main
     "${EXCLUDE_ARGS[@]}"
   )
   if [[ -f "$ROOT/logo.icns" ]]; then

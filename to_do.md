@@ -1,7 +1,7 @@
 # 🛡️ Sentinel 2.0
 **Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
 
-*Last updated: 2026-09-07 — statuses reflect `main` at v2.3.0 (local Ollama CLI on top of v2.2.3).*
+*Last updated: 2026-09-07 — statuses reflect `main` at v2.4.0 (Stock Relationship Graph & NASDAQ-100/S&P 500 universe on top of v2.3.0).*
 
 ---
 
@@ -26,7 +26,7 @@
 | v2.2.2 smaller binaries | UPX (Win) + `--strip` (Linux/mac) + test/backend excludes; plotly + 3D kept |
 | v2.2.3 binary startup fix | Restored `unittest` and `pydoc` stdlib modules for PyInstaller; Windows CLI console encoding |
 | v2.3.0 local Ollama CLI | `models` / `profiles` / `ask` / `config` commands; lazy imports; CLI JSON/CSV contracts; Python 3.9 staticmethod fix |
-| Stock Graph & Peer Divergence | Relational market network, supplier/peer traversal, 2D/3D Plotly export, lead-lag divergence scanner |
+| v2.4.0 Stock Graph & Peer Divergence | Relational market network (212 nodes, 441 edges), NASDAQ-100 & S&P 500 universe, 2D/3D Plotly export, quantitative lead-lag divergence scanner |
 
 ---
 

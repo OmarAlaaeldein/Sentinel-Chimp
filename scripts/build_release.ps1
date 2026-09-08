@@ -73,7 +73,9 @@ $PyiArgs = @(
   "--onefile",
   "--noconsole",
   "--name", "Sentinel",
-  "--collect-submodules", "matplotlib"
+  "--collect-submodules", "matplotlib",
+  "--collect-submodules", "core",
+  "--collect-submodules", "main"
 ) + $Exclude
 
 # UPX binary compression when `upx` is on PATH (effective on Windows).
