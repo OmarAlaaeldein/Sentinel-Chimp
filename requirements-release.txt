@@ -6,6 +6,6 @@ yfinance>=0.2.40
 matplotlib>=3.8.0
 requests>=2.34.2
 urllib3>=2.7.0
-plotly>=5.18.0
+plotly>=7.0.0
 lxml
 pyinstaller>=6.0.0
