@@ -26,6 +26,7 @@
 | v2.2.2 smaller binaries | UPX (Win) + `--strip` (Linux/mac) + test/backend excludes; plotly + 3D kept |
 | v2.2.3 binary startup fix | Restored `unittest` and `pydoc` stdlib modules for PyInstaller; Windows CLI console encoding |
 | v2.3.0 local Ollama CLI | `models` / `profiles` / `ask` / `config` commands; lazy imports; CLI JSON/CSV contracts; Python 3.9 staticmethod fix |
+| Stock Graph & Peer Divergence | Relational market network, supplier/peer traversal, 2D/3D Plotly export, lead-lag divergence scanner |
 
 ---
 
@@ -34,8 +35,8 @@
 ### 2.2 Fundamental Bias Filter — **Pending**
 Rank option opportunities with a fundamental Z-score (P/E, PEG, Debt/Eq, …). P/E / PEG already shown.
 
-### 2.3 Semantic Arbitrage Scanner — **Pending**
-FinBERT peer clustering / basket divergence. Headline FinBERT exists from source only.
+### 2.3 Semantic Arbitrage & Peer Divergence — **Shipped (Initial)**
+Stock relationship graph, peer basket traversal, spread z-scores, and lead-lag detection live in `core/stock_graph.py` and `sentinel graph`. FinBERT NLP sentiment integration ongoing.
 
 ### 3.1 Set & Forget Scanners — **Pending**
 Background criteria + tray / webhook notifications.

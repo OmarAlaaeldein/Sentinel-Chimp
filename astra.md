@@ -454,3 +454,11 @@ last four error-path tests passed **243 tests with one Plotly skip**; all five
 previous batch failures were resolved. Python compilation, CLI help and
 `git diff --check` passed. Live GUI behavior, release binaries and Yahoo market
 requests were not exercised in this implementation slice.
+
+**Stock Relationship Graph & Peer Divergence Implementation (2026-09-07).**
+- Added `core/stock_graph.py` defining `StockNode`, `GraphEdge`, `RelationType`, and `StockGraph` with support for neighbor traversal, subgraphs, path finding, and JSON serialization. Includes curated 25-node market graph covering semiconductors, hyperscalers, AI servers, enterprise AI, nuclear utilities, and crypto proxies.
+- Added quantitative peer divergence scanner (`analyze_divergence`) calculating relative returns, correlation, return spread, and z-score to identify leading and lagging catch-up candidates.
+- Added `core/graph_viz.py` rendering force-directed 2D and 3D network visualizations via Plotly with Sentinel dark theme and standalone HTML exports.
+- Added `main/graph_cli.py` integrating `sentinel graph show`, `peers`, `divergence`, and `export --html` into the headless CLI with machine-readable `--json` envelope.
+- Test suite expanded to **266 passed tests** (18 new unit and CLI integration tests in `test_stock_graph.py`, `test_graph_viz.py`, and `test_graph_cli.py`).
+

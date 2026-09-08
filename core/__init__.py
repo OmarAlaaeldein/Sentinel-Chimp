@@ -5,6 +5,8 @@ _MODULES = {
     "VegaChimpCore": "pricing", "calculate_technicals": "technicals",
     "SentimentEngine": "sentiment", "sentiment_engine": "sentiment",
     "DataProvider": "data", "YFinanceProvider": "data",
+    "StockGraph": "stock_graph", "StockNode": "stock_graph",
+    "GraphEdge": "stock_graph", "build_default_graph": "stock_graph",
 }
 
 
@@ -22,4 +24,8 @@ __all__ = [
     "sentiment_engine",
     "DataProvider",
     "YFinanceProvider",
+    "StockGraph",
+    "StockNode",
+    "GraphEdge",
+    "build_default_graph",
 ]

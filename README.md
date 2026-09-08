@@ -55,6 +55,30 @@ limits, a 120-second timeout and a five-minute keep-alive. A `done_reason` of `l
 means the token limit stopped generation. This is a basic local prompt command;
 structured explanations of saved market analysis and GUI model selection remain planned in [astra.md](astra.md).
 
+## Stock Relationship Graph & Relative Divergence
+
+Sentinel includes an institutional-grade relational market network connecting suppliers, customers, competitors, clean energy/power providers, and infrastructure partners across major technology, semiconductor, and AI clusters.
+
+```bash
+# Inspect market network summary or focus on a specific company
+python3 sentinel.py graph show
+python3 sentinel.py graph show NVDA --depth 1
+
+# List direct competitors, suppliers, customers, and partners
+python3 sentinel.py graph peers AMD
+
+# Quantitatively detect peer lead-lag divergence and catch-up opportunities
+python3 sentinel.py graph divergence AMD --period 1mo
+
+# Export standalone, interactive 2D or 3D Plotly network graph to HTML
+python3 sentinel.py graph export --html market_network.html
+python3 sentinel.py graph export NVDA --depth 1 --dim 3d --html nvda_cluster_3d.html
+```
+
+* **Lead-Lag Divergence:** Compares target performance against connected peers, computing relative return spreads, daily return correlations, and spread z-scores to flag lagging or leading relative-value opportunities.
+* **Interactive Visualization:** Uses Plotly to render dark-mode force-directed network graphs color-coded by sector and typed relationship edges, exportable to self-contained HTML files without running a GUI.
+* **Machine-Readable:** All graph commands accept `--json` for automated quantitative agents and pipelines.
+
 ## Screenshots
 
 ![Main terminal — AMD chart, technicals, probability cone](Screenshots/main-terminal.png)

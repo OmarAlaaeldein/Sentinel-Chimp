@@ -118,6 +118,8 @@ def build_parser(machine=False) -> argparse.ArgumentParser:
 
     from main.model_cli import add_commands
     add_commands(sub)
+    from main.graph_cli import add_commands as add_graph_commands
+    add_graph_commands(sub)
     return parser
 
 
@@ -376,6 +378,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return cmd_scan(args)
         if args.command == "verify":
             return cmd_verify(args)
+        if args.command == "graph":
+            from main.graph_cli import run as run_graph, render as render_graph
+            render_graph(run_graph(args), args.json)
+            return 0
         from main.model_cli import run, render
         render(run(args), args.json)
         return 0

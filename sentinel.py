@@ -18,6 +18,10 @@ __all__ = [
     "sentiment_engine",
     "DataProvider",
     "YFinanceProvider",
+    "StockGraph",
+    "StockNode",
+    "GraphEdge",
+    "build_default_graph",
     "Tooltip",
     "MarketApp",
 ]
