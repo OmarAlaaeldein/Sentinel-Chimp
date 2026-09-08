@@ -1,7 +1,7 @@
 # 🛡️ Sentinel 2.0
 **Strategic Objective:** Transition from a passive retail dashboard to an active, relative-value quantitative research platform.
 
-*Last updated: 2026-09-07 — statuses reflect `main` at v2.2.3 (runtime module restore on top of v2.2.2).*
+*Last updated: 2026-09-07 — statuses reflect `main` at v2.3.0 (local Ollama CLI on top of v2.2.3).*
 
 ---
 
@@ -25,6 +25,7 @@
 | v2.2 docs refresh | CLI flags, structure, sentiment accuracy, perf notes, template markers |
 | v2.2.2 smaller binaries | UPX (Win) + `--strip` (Linux/mac) + test/backend excludes; plotly + 3D kept |
 | v2.2.3 binary startup fix | Restored `unittest` and `pydoc` stdlib modules for PyInstaller; Windows CLI console encoding |
+| v2.3.0 local Ollama CLI | `models` / `profiles` / `ask` / `config` commands; lazy imports; CLI JSON/CSV contracts; Python 3.9 staticmethod fix |
 
 ---
 
@@ -58,3 +59,9 @@ Full SVI smile; analytic BS2002 Greeks; Ichimoku Senkou extension past last bar.
 | **II** Eyes | Cones; earnings markers; econ calendar | Cones + earnings **done**; FOMC/CPI **pending** |
 | **III** Brain | Semantic arb / fund bias | **Pending** |
 | **IV** Automaton | Background scans | **Pending** |
+
+What remains, by priority
+1. Dependabot PR open — torch >=2.14.0 bump is waiting for review. Torch is source-only (never bundled), so it's low-risk, but give it a glance before merging.
+2. Real backlog (untouched, per to_do.md): fundamental bias filter (2.2), semantic arb scanner (2.3), background/set-and-forget scans (3.1), FOMC/CPI overlays (3.2), alternate data providers, full SVI / analytic BS2002 Greeks.
+3. Small polish, whenever: Stocks.cmd hardcoded conda path, missing logo.icns (macOS builds use the fallback icon), unconfirmed lxml pin, plan.md body kept as archive.
+4. If you want more MB: matplotlib font pruning via spec-file filtering is the remaining lever (~3–4MB), and the macOS bundle deserves a look since it didn't budge.

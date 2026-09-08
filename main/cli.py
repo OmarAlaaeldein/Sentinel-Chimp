@@ -27,16 +27,17 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-import numpy as np
-
-from core.data import YFinanceProvider
-from core.pricing import VegaChimpCore
-from core.scan_service import analyze_ticker, run_ticker_scan
-from core.vol_models import probability_cone
+from core.ollama import LocalModelError
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser(machine=False) -> argparse.ArgumentParser:
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            if machine:
+                raise LocalModelError("INVALID_ARGUMENT", message)
+            super().error(message)
+
+    parser = Parser(
         prog="sentinel",
         description="Sentinel-Chimp CLI — analyze tickers and scan options headlessly.",
     )
@@ -115,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("verify", help="Offline math self-test (no network needed)")
 
+    from main.model_cli import add_commands
+    add_commands(sub)
     return parser
 
 
@@ -140,9 +143,19 @@ def parse_div_yield(raw: Optional[str]) -> Optional[float]:
     return value
 
 
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def _print_analysis(analysis, as_json: bool) -> None:
     if as_json:
-        print(json.dumps(analysis.to_dict(), indent=2, default=str))
+        print(json.dumps(_json_safe(analysis.to_dict()), indent=2, allow_nan=False))
         return
     for line in analysis.summary_lines:
         print(line)
@@ -160,9 +173,13 @@ def _print_scan(analysis, result, *, under_only: bool, as_json: bool,
             "dividend_yield": result.dividend_yield,
             "rules": result.rules_log,
             "count": len(rows),
+            "total_count": len(result.rows),
+            "requested_expiries": result.requested_expiries,
             "rows": [r.to_dict() for r in rows],
+            "errors": result.errors,
+            "status": "partial" if result.errors and len(result.errors) < result.requested_expiries else "error" if result.errors else "ok",
         }
-        print(json.dumps(payload, indent=2, default=str))
+        print(json.dumps(_json_safe(payload), indent=2, allow_nan=False))
         return
 
     for line in analysis.summary_lines:
@@ -192,19 +209,20 @@ def _print_scan(analysis, result, *, under_only: bool, as_json: bool,
 
 
 def _write_csv(path: str, rows) -> None:
-    if not rows:
-        print(f"No rows to write to {path}.")
-        return
-    fieldnames = list(rows[0].to_dict().keys())
-    with open(path, "w", newline="") as fh:
+    from dataclasses import fields
+    from core.scan_service import OptionScanRow
+    fieldnames = [field.name for field in fields(OptionScanRow)]
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
             writer.writerow(r.to_dict())
-    print(f"Wrote {len(rows)} rows to {path}")
+    print(f"Wrote {len(rows)} rows to {path}", file=sys.stderr)
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
+    from core.data import YFinanceProvider
+    from core.scan_service import analyze_ticker
     provider = YFinanceProvider()
     analysis = analyze_ticker(provider, args.ticker)
     _print_analysis(analysis, args.json)
@@ -212,6 +230,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
+    from core.data import YFinanceProvider
+    from core.scan_service import run_ticker_scan
     provider = YFinanceProvider()
 
     def _log(msg: str) -> None:
@@ -231,19 +251,20 @@ def cmd_scan(args: argparse.Namespace) -> int:
         dividend_yield=parse_div_yield(args.div),
         log=_log,
     )
-    # Rules already go to stderr via _log; the text table stays clean.
+    if args.csv:
+        _write_csv(args.csv, result.rows)
     _print_scan(analysis, result, under_only=args.under_only,
                 as_json=args.json, limit=args.limit)
-    if args.csv:
-        rows = result.rows
-        if args.limit is not None and args.limit >= 0:
-            rows = rows[:args.limit]
-        _write_csv(args.csv, rows)
+    if result.errors:
+        return 4 if len(result.errors) == result.requested_expiries else 5
     return 0
 
 
 def cmd_verify(_args: argparse.Namespace) -> int:
     """Offline math self-test: BSM / BS2002 / IV / EWMA / cone / parity."""
+    import numpy as np
+    from core.pricing import VegaChimpCore
+    from core.vol_models import probability_cone
     failures: List[str] = []
 
     def check(name: str, cond: bool, detail: str = "") -> None:
@@ -338,16 +359,34 @@ def cmd_verify(_args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
-    if args.command == "analyze":
-        return cmd_analyze(args)
-    if args.command == "scan":
-        return cmd_scan(args)
-    if args.command == "verify":
-        return cmd_verify(args)
-    parser.error(f"Unknown command: {args.command}")
-    return 2
+    tokens = list(argv) if argv is not None else sys.argv[1:]
+    machine = "--json" in tokens
+    args = argparse.Namespace(json=machine)
+    parser = build_parser(machine=machine)
+    try:
+        args = parser.parse_args(tokens)
+        if args.command == "analyze":
+            return cmd_analyze(args)
+        if args.command == "scan":
+            if args.max_expiries is not None and args.max_expiries <= 0:
+                raise LocalModelError("INVALID_ARGUMENT", "--max-expiries must be positive.")
+            if args.limit is not None and args.limit < 0:
+                raise LocalModelError("INVALID_ARGUMENT", "--limit must be nonnegative.")
+            parse_div_yield(args.div)
+            return cmd_scan(args)
+        if args.command == "verify":
+            return cmd_verify(args)
+        from main.model_cli import run, render
+        render(run(args), args.json)
+        return 0
+    except (LocalModelError, argparse.ArgumentTypeError, OSError, RuntimeError, ValueError) as exc:
+        code = getattr(exc, "code", "COMMAND_FAILED")
+        if getattr(args, "json", False):
+            print(json.dumps({"schema_version": 1, "status": "error",
+                              "error": {"code": code, "message": str(exc)}}, allow_nan=False))
+        else:
+            print(f"Error [{code}]: {exc}", file=sys.stderr)
+        return 2 if code in {"INVALID_ARGUMENT", "INVALID_PROFILE", "INVALID_PROMPT", "INVALID_HOST"} or isinstance(exc, argparse.ArgumentTypeError) else 4
 
 
 if __name__ == "__main__":

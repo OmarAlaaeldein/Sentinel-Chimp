@@ -298,3 +298,18 @@ class TestScanOptionChains:
         assert vals[2] == "100.00"
         assert vals[10] == "+0.30"
         assert vals[16] == "Under"
+
+
+def test_expiry_failure_is_preserved_in_result():
+    provider = FakeProvider()
+    def fail(*args):
+        raise RuntimeError('chain unavailable')
+    provider.get_option_chain = fail
+    result = scan_option_chains(
+        data_provider=provider, stock=provider.create_ticker('TEST'),
+        spot=100, dates=['2099-01-16'], ewma_vol=.3,
+        dividend_yield=0, short_rate=.04, long_rate=.04,
+    )
+    assert result.rows == []
+    assert result.requested_expiries == 1
+    assert result.errors == [{'expiry': '2099-01-16', 'code': 'EXPIRY_FAILED', 'message': 'chain unavailable'}]

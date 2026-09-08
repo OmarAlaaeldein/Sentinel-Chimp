@@ -16,6 +16,8 @@ Batch API: ``bjerksund_stensland_batch``, ``american_greeks`` /
 """
 from __future__ import annotations
 
+import sys
+
 import math
 
 import numpy as np
@@ -400,7 +402,7 @@ class VegaChimpCore:
             return max(price, intrinsic, european)
 
         except (OverflowError, ValueError, ZeroDivisionError):
-            print("[Warning] Bjerksund-Stensland 2002 failed, falling back to Black-Scholes.")
+            print("[Warning] Bjerksund-Stensland 2002 failed, falling back to Black-Scholes.", file=sys.stderr)
             return VegaChimpCore.bs_price(S, K, r, q, sigma, T, 'call')
 
     @staticmethod
@@ -581,7 +583,6 @@ def _psi_arr(S, T, gamma, H, X, x, t, r, b, sigma):
 
 
 # Attach batch API onto VegaChimpCore
-@staticmethod
 def _bs_price_arr(S, K, r, q, sig, T, is_call):
     """Vectorized European BSM. ``is_call`` is a boolean array."""
     S = np.asarray(S, dtype=np.float64)
@@ -624,7 +625,6 @@ def _bs_price_arr(S, K, r, q, sig, T, is_call):
     return out
 
 
-@staticmethod
 def _american_call_arr(S, K, T, r, q, sigma):
     """Vectorized BS2002 American **call** (put via transform in batch API)."""
     S = np.asarray(S, dtype=np.float64)
@@ -754,7 +754,6 @@ VegaChimpCore._american_call_arr = staticmethod(
 )
 
 
-@staticmethod
 def bjerksund_stensland_batch(S, K, T, r, q, sigma, option_type='call'):
     """Batch BS2002 American prices.
 
@@ -816,7 +815,6 @@ def bjerksund_stensland_batch(S, K, T, r, q, sigma, option_type='call'):
     return out
 
 
-@staticmethod
 def american_greeks(S, K, r, q, sig, T, kind, dS=None, dSig=0.01, dT=1.0 / 365.0):
     """Finite-difference Greeks on BS2002 American prices.
 
@@ -866,7 +864,6 @@ def american_greeks(S, K, r, q, sig, T, kind, dS=None, dSig=0.01, dT=1.0 / 365.0
     }
 
 
-@staticmethod
 def american_greeks_batch(S, K, r, q, sigma, T, option_type, dS=None, dSig=0.01,
                           dT=1.0 / 365.0):
     """Vectorized FD Greeks for a chain slice (shared S,T,r,q typical).

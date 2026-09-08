@@ -139,6 +139,12 @@ jobs:
 
             Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
 
+            ### What's new in 2.3.0
+            - **Local Ollama CLI:** `sentinel models list/show/select/current`, `sentinel profiles list/use`, `sentinel ask`, `sentinel config` for local model discovery, profiles, and prompt queries
+            - **Fast CLI startup:** Lazy module imports ensure `sentinel --help` and CLI commands load in milliseconds without initializing heavy numerical or GUI libraries (torch, tkinter, pandas, numpy)
+            - **Hardened scanning & exports:** Clean stdout in JSON mode, full-row CSV exports regardless of `--limit`, empty CSV headers, structured expiry errors, NaN safety, and nonnegative argument validation
+            - **Python 3.9 compatibility:** Fixed module-level staticmethod wrappers affecting batch pricing
+
             ### What's new in 2.2.3
             - **Native binary startup fix:** Restored `unittest` and `pydoc` stdlib modules in PyInstaller builds (required at runtime by `pyparsing` / `matplotlib` and `pyarrow`), fixing startup failure on Windows, macOS, and Linux
             - **Windows terminal encoding:** UTF-8 stream reconfigure and ASCII-safe symbols for `verify` CLI

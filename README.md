@@ -6,6 +6,55 @@
 
 ---
 
+## Local Ollama CLI
+
+Run from source with Python 3.11. Model commands use the Python standard library;
+Ollama must already be running locally with the model installed.
+
+```bash
+python3.11 sentinel.py models list
+python3.11 sentinel.py models show qwen3.5:4b --json
+python3.11 sentinel.py models select qwen3.5:4b --save-as fast --num-ctx 4096 --num-predict 512
+python3.11 sentinel.py profiles list
+python3.11 sentinel.py profiles use fast
+python3.11 sentinel.py models current
+python3.11 sentinel.py ask "Explain implied volatility in two sentences." --profile fast
+python3.11 sentinel.py config --json
+```
+
+`models select` validates the exact installed name, saves its generation settings,
+and sets the default profile. Use `--replace` to overwrite an existing profile.
+Names containing `/` and `:` work as returned by `models list`; aliases remain separate names.
+Selection checks metadata; the first `ask` establishes whether the server can actually load that architecture.
+The GUI's FinBERT sentiment engine is separate from these new CLI profiles.
+
+Every new command accepts `--json`, `--config PATH` and `--host URL` **after the
+leaf command** (for example, `models list --json`). JSON success uses
+`{"schema_version":1,"status":"ok","data":{...}}`; errors use
+`{"schema_version":1,"status":"error","error":{"code":"...","message":"..."}}`.
+There are no interactive prompts. Exit codes: `0` success, `2` invalid CLI input,
+`4` command/config/server failure or every scan expiry failed, `5` partial scan failure.
+`verify` retains its existing text output and failure code `1`.
+Existing analyze/scan success JSON retains its original fields; scan adds `status`,
+`errors`, `requested_expiries` and `total_count`. `--limit` limits displayed/JSON rows;
+`--csv` exports all matched rows, with headers even for an empty result. Export notices go to stderr.
+
+Configuration precedence: `--config` → `SENTINEL_CONFIG` → platform user config.
+Defaults are `~/Library/Application Support/SentinelChimp/config.json` on macOS,
+`%APPDATA%/SentinelChimp/config.json` on Windows, and
+`$XDG_CONFIG_HOME/sentinel-chimp/config.json` (normally `~/.config/...`) on Linux.
+Writes are validated, locked, and atomically replaced. Read-only commands create no config file.
+Host precedence: `--host` → `SENTINEL_OLLAMA_HOST` → `OLLAMA_HOST` →
+`http://127.0.0.1:11434`. `ask` profile precedence: `--profile` → `SENTINEL_PROFILE`
+→ saved default. Host settings are supplied per invocation/environment, not saved in profiles.
+
+The client allows loopback hosts, bypasses HTTP proxies, rejects redirects and
+remote-backed models, and never pulls a model. `ask` sends only the provided prompt,
+limited to 16,000 characters; generation uses the saved temperature/context/token
+limits, a 120-second timeout and a five-minute keep-alive. A `done_reason` of `length`
+means the token limit stopped generation. This is a basic local prompt command;
+structured explanations of saved market analysis and GUI model selection remain planned in [astra.md](astra.md).
+
 ## Screenshots
 
 ![Main terminal — AMD chart, technicals, probability cone](Screenshots/main-terminal.png)

@@ -10,10 +10,6 @@ from __future__ import annotations
 
 import sys
 
-from core.pricing import VegaChimpCore
-from core.technicals import calculate_technicals
-from core.sentiment import SentimentEngine, sentiment_engine
-from core.data import DataProvider, YFinanceProvider
 
 __all__ = [
     "VegaChimpCore",
@@ -29,6 +25,9 @@ __all__ = [
 
 def __getattr__(name: str):
     """Lazy GUI symbols so ``import sentinel`` stays headless-safe."""
+    if name in __all__ and name not in {"MarketApp", "Tooltip"}:
+        import core
+        return getattr(core, name)
     if name == "MarketApp":
         from main.app import MarketApp
         return MarketApp

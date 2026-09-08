@@ -299,6 +299,8 @@ class ScanResult:
     spot: float = 0.0
     dividend_yield: float = 0.0
     rules_log: str = SCAN_RULES_LOG
+    errors: List[dict] = field(default_factory=list)
+    requested_expiries: int = 0
 
 
 @dataclass
@@ -476,6 +478,7 @@ def scan_option_chains(
     rows_out: List[OptionScanRow] = []
     scan_buf: List[dict] = []
     rules_logged = False
+    errors = []
 
     def flush_ui() -> None:
         nonlocal ui_batch
@@ -721,6 +724,7 @@ def scan_option_chains(
                         flush_ui()
 
         except Exception as e:
+            errors.append({"expiry": date, "code": "EXPIRY_FAILED", "message": str(e)})
             _log(f"Options fetch error for {date}: {e}")
 
     if under_only and under_rows:
@@ -743,6 +747,8 @@ def scan_option_chains(
         spot=spot,
         dividend_yield=DIV_YIELD,
         rules_log=SCAN_RULES_LOG,
+        errors=errors,
+        requested_expiries=len(dates),
     )
 
 
