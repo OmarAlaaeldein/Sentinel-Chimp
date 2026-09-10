@@ -85,6 +85,8 @@ python3 sentinel.py graph export NVDA --depth 1 --dim 3d --html nvda_cluster_3d.
 
 ![Options Explorer — tradeable-edge scan](Screenshots/options-explorer.png)
 
+![Stock Relationship Graph — AMD cluster](Screenshots/graph-amd-cluster.png)
+
 
 ## 🚀 Key Features
 ### 5. Watchlist, Ichimoku, Earnings & Fib
