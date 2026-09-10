@@ -357,11 +357,25 @@ class StockGraph:
         return divergences
 
 
-def build_default_graph() -> StockGraph:
-    """Build the curated default market relation graph across NASDAQ-100 and S&P 500 titans."""
+def build_default_graph(*, include_sectivia: bool = True) -> StockGraph:
+    """Build curated market graph, optionally union-merged with cached Sectivia edges.
+
+    Curated ``core/graph_data.py`` is always loaded first. When ``include_sectivia``
+    is True (default), supplier→customer edges from ``data/sectivia/`` are merged
+    (union). Duplicate ``(source, target, relation)`` keys keep the curated edge.
+    Attribution: Supply-chain data: Sectivia (https://sectivia.com), CC BY 4.0
+    """
     from core.graph_data import populate_market_universe
 
     g = StockGraph()
     populate_market_universe(g)
+    if include_sectivia:
+        try:
+            from core.sectivia_import import merge_cached_sectivia
+
+            merge_cached_sectivia(g, optional=True)
+        except Exception:
+            # Offline / missing optional deps must not break default graph.
+            pass
     return g
 

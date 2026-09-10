@@ -364,6 +364,10 @@ def get_market_edges() -> List[GraphEdge]:
     # Memory to AI accelerators
     s("MU", "NVDA", 0.95, "Key supplier of HBM3e high-bandwidth memory for H200 and Blackwell")
     s("MU", "AMD", 0.9, "HBM3e supplier for MI300/325 series accelerators")
+    s("MU", "AVGO", 0.85, "HBM and DRAM for Broadcom custom AI accelerators")
+    s("MRVL", "MSFT", 0.85, "Custom cloud DPUs and optical DSPs for Azure networking")
+    s("MRVL", "GOOGL", 0.85, "Datacenter interconnect silicon for Google Cloud")
+    c("SMCI", "HPE", 0.85, "AI server OEM rivalry in liquid-cooled rack systems")
 
     # Silicon architecture IP licensing
     s("ARM", "AAPL", 0.95, "Instruction set architecture licensing for all Apple devices")
@@ -478,6 +482,11 @@ def get_market_edges() -> List[GraphEdge]:
     c("NOW", "WDAY", 0.85, "Enterprise HR and digital workflow orchestration competition")
     c("NOW", "TEAM", 0.8, "ServiceNow IT Service Management vs Jira Service Management")
     c("SNOW", "MDB", 0.85, "Data warehouse vs operational document database competition")
+    c("SNOW", "ORCL", 0.85, "Cloud data platform vs Oracle Autonomous Database / OCI analytics")
+    c("IBM", "MSFT", 0.8, "Hybrid cloud and enterprise AI platform competition")
+    infra("AMD", "MSFT", 0.9, "Instinct GPUs and EPYC CPUs deployed across Azure AI fleet")
+    infra("AMD", "META", 0.85, "Instinct accelerators for Meta training and inference clusters")
+    infra("AVGO", "GOOGL", 0.9, "Custom TPU-adjacent networking/ASICs for Google Cloud")
     c("SNOW", "DDOG", 0.8, "Cloud data analytics vs observability platform overlap")
     c("PANW", "CRWD", 0.95, "Fierce rivalry in next-generation cybersecurity and endpoint SASE")
     c("CRWD", "FTNT", 0.85, "Endpoint cloud security vs network firewall hardware competition")
@@ -535,6 +544,12 @@ def get_market_edges() -> List[GraphEdge]:
     p("CEG", "NEE", 0.85, "Zero-carbon clean power generation leaders")
     s("FSLR", "NEE", 0.85, "Solar module supplier for NextEra utility-scale solar projects")
     s("FSLR", "DUK", 0.8, "Solar panels for Duke Energy regulated decarbonization buildouts")
+    s("FSLR", "SO", 0.8, "Utility-scale solar modules for Southern Company renewables")
+    s("CCJ", "NEE", 0.8, "Uranium supply exposure for nuclear-adjacent clean power utilities")
+    pwr("CEG", "GOOGL", 0.85, "Nuclear and clean power PPAs supporting Google datacenter load")
+    pwr("AEP", "AMZN", 0.8, "Transmission and generation serving Midwest/AWS datacenter demand")
+    s("EQT", "KMI", 0.8, "Appalachian gas production feeding Kinder Morgan takeaway")
+    c("XOM", "OXY", 0.8, "Permian basin integrated vs E&P competition")
 
     # =========================================================================
     # 5. FINANCIALS, MEGABANKS & PAYMENT NETWORKS
@@ -742,6 +757,13 @@ def get_market_edges() -> List[GraphEdge]:
     c("GM", "F", 0.95, "Historic American automotive rivalry in pickup trucks and SUVs")
     s("TXN", "TSLA", 0.85, "Analog chips and battery management silicon for Tesla EVs")
     s("ADI", "GM", 0.85, "Wireless battery management systems (wBMS) for Ultium EVs")
+    s("ON", "TSLA", 0.9, "SiC traction inverters and power modules for Tesla drivetrains")
+    s("ON", "GM", 0.85, "Silicon carbide and image sensors for GM Ultium EV platforms")
+    s("NXPI", "TSLA", 0.85, "Automotive processors and radar/connectivity silicon for Tesla vehicles")
+    s("NXPI", "F", 0.85, "Vehicle networking and domain controllers for Ford platforms")
+    s("MCHP", "TSLA", 0.8, "Microcontrollers and analog for Tesla body/energy electronics")
+    p("F", "XLY", 0.8, "Automaker correlated with Consumer Discretionary sector ETF")
+    p("GM", "XLY", 0.8, "Automaker correlated with Consumer Discretionary sector ETF")
     c("UBER", "TSLA", 0.85, "Human rideshare network vs upcoming Robotaxi autonomous fleet")
 
     # Fast Food, Coffee & Athletic

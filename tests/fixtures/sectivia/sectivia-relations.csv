@@ -1,0 +1,5 @@
+supplier_id,supplier_ticker,supplier_name,customer_id,customer_ticker,customer_name,sector,supplier_segment,customer_segment
+mu,MU,Micron,nvda,NVDA,Nvidia,ai,Chips & accelerators,Chips & accelerators
+nvda,NVDA,Nvidia,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+on,ON,ON Semiconductor,tsla,TSLA,Tesla,ai,Chips & accelerators,AI software & productivity
+spacex,,SpaceX,asts,ASTS,AST SpaceMobile,forsvar,Space industry & satellites,Space industry & satellites

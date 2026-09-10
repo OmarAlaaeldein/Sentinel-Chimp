@@ -1,0 +1,8 @@
+id,ticker,name,exchange,country,sector,segment,listed,relations
+mu,MU,Micron,NASDAQ,USA,ai,Chips & accelerators,true,2
+nvda,NVDA,Nvidia,NASDAQ,USA,ai,Chips & accelerators,true,3
+msft,MSFT,Microsoft,NASDAQ,USA,ai,Cloud platforms,true,2
+tsla,TSLA,Tesla,NASDAQ,USA,ai,AI software & productivity,true,1
+on,ON,ON Semiconductor,NASDAQ,USA,ai,Chips & accelerators,true,1
+spacex,,SpaceX,,,forsvar,Space industry & satellites,false,1
+asts,ASTS,AST SpaceMobile,NASDAQ,USA,forsvar,Space industry & satellites,true,1

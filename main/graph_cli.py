@@ -4,10 +4,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 from typing import Optional
 
-from core.stock_graph import StockGraph, build_default_graph
+from core.graph_service import (
+    categorize_peers,
+    export_graph_html_file,
+    load_graph,
+    show_connections,
+)
+from core.stock_graph import StockGraph
 
 
 def add_commands(sub: argparse._SubParsersAction) -> None:
@@ -49,12 +54,7 @@ def common_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def get_graph(graph_file: Optional[str] = None) -> StockGraph:
-    if graph_file:
-        p = Path(graph_file)
-        if not p.exists():
-            raise FileNotFoundError(f"Graph file not found: {graph_file}")
-        return StockGraph.load_json(p)
-    return build_default_graph()
+    return load_graph(graph_file)
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -62,63 +62,10 @@ def run(args: argparse.Namespace) -> dict:
     graph = get_graph(getattr(args, "graph_file", None))
 
     if cmd == "show":
-        if args.ticker:
-            sym = args.ticker.upper()
-            node = graph.get_node(sym)
-            if not node:
-                raise ValueError(f"Ticker {sym!r} not found in stock graph.")
-            neighbors = graph.get_neighbors(sym, depth=args.depth)
-            connections = [
-                {
-                    "neighbor": n.ticker,
-                    "name": n.name,
-                    "sector": n.sector,
-                    "relation": edge.relation,
-                    "description": edge.description,
-                    "weight": edge.weight,
-                }
-                for n, edge in neighbors
-            ]
-            return {
-                "action": "show",
-                "ticker": sym,
-                "node": node.to_dict(),
-                "depth": args.depth,
-                "connection_count": len(connections),
-                "connections": connections,
-            }
-        else:
-            # Full summary
-            nodes = [n.to_dict() for n in graph.nodes.values()]
-            return {
-                "action": "summary",
-                "total_nodes": len(nodes),
-                "total_edges": len(graph.edges),
-                "sectors": sorted(list({n["sector"] for n in nodes})),
-                "tickers": sorted([n["ticker"] for n in nodes]),
-            }
+        return show_connections(graph, ticker=args.ticker, depth=args.depth)
 
     if cmd == "peers":
-        sym = args.ticker.upper()
-        node = graph.get_node(sym)
-        if not node:
-            raise ValueError(f"Ticker {sym!r} not found in stock graph.")
-        neighbors = graph.get_neighbors(sym, depth=1)
-        categorized: dict = {}
-        for n, edge in neighbors:
-            categorized.setdefault(edge.relation, []).append({
-                "ticker": n.ticker,
-                "name": n.name,
-                "sector": n.sector,
-                "sub_industry": n.sub_industry,
-                "description": edge.description,
-            })
-        return {
-            "action": "peers",
-            "ticker": sym,
-            "node": node.to_dict(),
-            "peer_categories": categorized,
-        }
+        return categorize_peers(graph, args.ticker)
 
     if cmd == "divergence":
         from core.data import YFinanceProvider
@@ -136,10 +83,10 @@ def run(args: argparse.Namespace) -> dict:
         }
 
     if cmd == "export":
-        from core.graph_viz import build_network_plotly, export_graph_html
         sym = args.ticker.upper() if args.ticker else None
-        fig = build_network_plotly(graph, center_ticker=sym, depth=args.depth, dim=args.dim)
-        saved_path = export_graph_html(fig, args.html)
+        saved_path = export_graph_html_file(
+            graph, args.html, center_ticker=sym, depth=args.depth, dim=args.dim
+        )
         return {
             "action": "export",
             "ticker": sym,
