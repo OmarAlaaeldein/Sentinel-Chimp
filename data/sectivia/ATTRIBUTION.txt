@@ -1,0 +1,6 @@
+Supply-chain data: Sectivia (https://sectivia.com), CC BY 4.0
+License: https://creativecommons.org/licenses/by/4.0/
+Source relations: https://sectivia.com/dataset/sectivia-relations.csv
+Source companies: https://sectivia.com/dataset/sectivia-companies.csv
+Source JSON: https://sectivia.com/dataset/sectivia-supply-chain.json
+Cached for offline use by Sentinel-Chimp; refresh via core.sectivia_import.refresh_sectivia_cache().

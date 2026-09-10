@@ -78,6 +78,8 @@ python3 sentinel.py graph export NVDA --depth 1 --dim 3d --html nvda_cluster_3d.
 * **Lead-Lag Divergence:** Compares target performance against connected peers, computing relative return spreads, daily return correlations, and spread z-scores to flag lagging or leading relative-value opportunities.
 * **Interactive Visualization:** Uses Plotly to render dark-mode force-directed network graphs color-coded by sector and typed relationship edges, exportable to self-contained HTML files without running a GUI.
 * **Machine-Readable:** All graph commands accept `--json` for automated quantitative agents and pipelines.
+* **GUI:** After loading a ticker, click **Graph** (toolbar, next to News) for peers, a short divergence summary, and 2D/3D Plotly HTML export in the browser.
+* **Supply-chain data:** Sectivia overlay (CC BY 4.0) merged with curated `core/graph_data.py`. Attribution: `Supply-chain data: Sectivia (https://sectivia.com), CC BY 4.0`. See [docs/GRAPH_DATA.md](docs/GRAPH_DATA.md).
 
 ## Screenshots
 
@@ -117,6 +119,7 @@ A threaded, non-blocking GUI featuring a professional Dark Mode interface with a
 * **Volume Analysis:** OBV (On-Balance Volume) trend detection and **VWAP Gap** analysis (Intraday Bull/Bear control).
 * **Risk:** ATR (Average True Range) for volatility-based stop losses.
 * **Fundamental Context:** Displays P/E Ratios (TTM/Fwd) and calculates a **P/E Percentile** to show if the stock is historically cheap or expensive.
+* **Stock Relationship Graph:** Toolbar **Graph** button opens peers / divergence / HTML network export (curated + Sectivia supply-chain, CC BY 4.0).
 
 ### 4. AI Sentiment Engine (Source Code Only, Off by Default)
 * **Model:** Powered by `ProsusAI/finbert` (Financial BERT).

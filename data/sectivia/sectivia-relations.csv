@@ -1,0 +1,351 @@
+supplier_id,supplier_ticker,supplier_name,customer_id,customer_ticker,customer_name,sector,supplier_segment,customer_segment
+a,A,Agilent Technologies,abbv,ABBV,AbbVie,medicin,Life science tools,Big pharma
+a,A,Agilent Technologies,pfe,PFE,Pfizer,medicin,Life science tools,Big pharma
+abbv,ABBV,AbbVie,cah,CAH,Cardinal Health,medicin,Big pharma,Distribution & pharmacy infrastructure
+abbv,ABBV,AbbVie,cor,COR,Cencora,medicin,Big pharma,Distribution & pharmacy infrastructure
+abbv,ABBV,AbbVie,mck,MCK,McKesson,medicin,Big pharma,Distribution & pharmacy infrastructure
+abt,ABT,Abbott Laboratories,dgx,DGX,Quest Diagnostics,medicin,Diagnostics,Diagnostics
+abt,ABT,Abbott Laboratories,lh,LH,Labcorp,medicin,Diagnostics,Diagnostics
+adi,ADI,Analog Devices,anet,ANET,Arista Networks,ai,Chips & accelerators,Data centers
+adi,ADI,Analog Devices,dell,DELL,Dell Technologies,ai,Chips & accelerators,Data centers
+alab,ALAB,Astera Labs,amzn,AMZN,Amazon,ai,Data centers,Cloud platforms
+alny,ALNY,Alnylam Pharmaceuticals,cor,COR,Cencora,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+amat,AMAT,Applied Materials,intc,INTC,Intel,ai,Semiconductor equipment & IP,Chips & accelerators
+amat,AMAT,Applied Materials,mu,MU,Micron,ai,Semiconductor equipment & IP,Chips & accelerators
+amd,AMD,AMD,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+amd,AMD,AMD,dell,DELL,Dell Technologies,ai,Chips & accelerators,Data centers
+amd,AMD,AMD,googl,GOOGL,Alphabet,ai,Chips & accelerators,Cloud platforms
+amd,AMD,AMD,meta,META,Meta Platforms,ai,Chips & accelerators,AI software & productivity
+amd,AMD,AMD,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+amd,AMD,AMD,orcl,ORCL,Oracle,ai,Chips & accelerators,Cloud platforms
+amgn,AMGN,Amgen,cor,COR,Cencora,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+amzn,AMZN,Amazon,crm,CRM,Salesforce,ai,Cloud platforms,AI software & productivity
+amzn,AMZN,Amazon,ddog,DDOG,Datadog,ai,Cloud platforms,"Data, analytics & enterprise AI"
+amzn,AMZN,Amazon,duol,DUOL,Duolingo,ai,Cloud platforms,AI software & productivity
+amzn,AMZN,Amazon,intu,INTU,Intuit,ai,Cloud platforms,AI software & productivity
+amzn,AMZN,Amazon,mdb,MDB,MongoDB,ai,Cloud platforms,"Data, analytics & enterprise AI"
+amzn,AMZN,Amazon,pltr,PLTR,Palantir,ai,Cloud platforms,"Data, analytics & enterprise AI"
+amzn,AMZN,Amazon,snow,SNOW,Snowflake,ai,Cloud platforms,"Data, analytics & enterprise AI"
+amzn,AMZN,Amazon,wday,WDAY,Workday,ai,Cloud platforms,AI software & productivity
+anet,ANET,Arista Networks,meta,META,Meta Platforms,ai,Data centers,AI software & productivity
+anet,ANET,Arista Networks,msft,MSFT,Microsoft,ai,Data centers,Cloud platforms
+aph,APH,Amphenol,nvda,NVDA,Nvidia,ai,Data centers,Chips & accelerators
+arm,ARM,Arm Holdings,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+arm,ARM,Arm Holdings,googl,GOOGL,Alphabet,ai,Chips & accelerators,Cloud platforms
+arm,ARM,Arm Holdings,meta,META,Meta Platforms,ai,Chips & accelerators,AI software & productivity
+arm,ARM,Arm Holdings,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+arm,ARM,Arm Holdings,nvda,NVDA,Nvidia,ai,Chips & accelerators,Chips & accelerators
+arm,ARM,Arm Holdings,qcom,QCOM,Qualcomm,ai,Chips & accelerators,Chips & accelerators
+avgo,AVGO,Broadcom,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+avgo,AVGO,Broadcom,anet,ANET,Arista Networks,ai,Chips & accelerators,Data centers
+avgo,AVGO,Broadcom,googl,GOOGL,Alphabet,ai,Chips & accelerators,Cloud platforms
+avgo,AVGO,Broadcom,meta,META,Meta Platforms,ai,Chips & accelerators,AI software & productivity
+avgo,AVGO,Broadcom,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+axp,AXP,American Express,coin,COIN,Coinbase,finans,Payment rails & networks,Brokers & fintech
+axp,AXP,American Express,fi,FI,Fiserv,finans,Payment rails & networks,Payment rails & networks
+axp,AXP,American Express,gpn,GPN,Global Payments,finans,Payment rails & networks,Payment rails & networks
+axp,AXP,American Express,ms,MS,Morgan Stanley,finans,Payment rails & networks,Investment banking & trading
+axp,AXP,American Express,schw,SCHW,Charles Schwab,finans,Payment rails & networks,Brokers & fintech
+bax,BAX,Baxter International,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure
+bdx,BDX,Becton Dickinson,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure
+bdx,BDX,Becton Dickinson,lh,LH,Labcorp,medicin,Medtech & devices,Diagnostics
+biib,BIIB,Biogen,mck,MCK,McKesson,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+bio,BIO,Bio-Rad Laboratories,lh,LH,Labcorp,medicin,Diagnostics,Diagnostics
+bmrn,BMRN,BioMarin Pharmaceutical,cor,COR,Cencora,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+bmy,BMY,Bristol Myers Squibb,cor,COR,Cencora,medicin,Big pharma,Distribution & pharmacy infrastructure
+bmy,BMY,Bristol Myers Squibb,mck,MCK,McKesson,medicin,Big pharma,Distribution & pharmacy infrastructure
+bsx,BSX,Boston Scientific,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure
+bwxt,BWXT,BWX Technologies,gev,GEV,GE Vernova,energi,Nuclear energy & uranium,Power equipment
+cah,CAH,Cardinal Health,cvs,CVS,CVS Health,medicin,Distribution & pharmacy infrastructure,Distribution & pharmacy infrastructure
+cah,CAH,Cardinal Health,unh,UNH,UnitedHealth,medicin,Distribution & pharmacy infrastructure,Distribution & pharmacy infrastructure
+carr,CARR,Carrier Global,dlr,DLR,Digital Realty,ai,"Cooling, power & data center infrastructure",Data centers
+carr,CARR,Carrier Global,eqix,EQIX,Equinix,ai,"Cooling, power & data center infrastructure",Data centers
+cdns,CDNS,Cadence Design Systems,amd,AMD,AMD,ai,Semiconductor equipment & IP,Chips & accelerators
+cdns,CDNS,Cadence Design Systems,avgo,AVGO,Broadcom,ai,Semiconductor equipment & IP,Chips & accelerators
+cdns,CDNS,Cadence Design Systems,intc,INTC,Intel,ai,Semiconductor equipment & IP,Chips & accelerators
+cdns,CDNS,Cadence Design Systems,nvda,NVDA,Nvidia,ai,Semiconductor equipment & IP,Chips & accelerators
+cdns,CDNS,Cadence Design Systems,qcom,QCOM,Qualcomm,ai,Semiconductor equipment & IP,Chips & accelerators
+cien,CIEN,Ciena,eqix,EQIX,Equinix,ai,Data centers,Data centers
+cien,CIEN,Ciena,msft,MSFT,Microsoft,ai,Data centers,Cloud platforms
+cme,CME,CME Group,gs,GS,Goldman Sachs,finans,Exchanges & market data,Investment banking & trading
+cme,CME,CME Group,hood,HOOD,Robinhood,finans,Exchanges & market data,Brokers & fintech
+cme,CME,CME Group,ibkr,IBKR,Interactive Brokers,finans,Exchanges & market data,Brokers & fintech
+cme,CME,CME Group,jpm,JPM,JPMorgan Chase,finans,Exchanges & market data,Banks
+cme,CME,CME Group,ms,MS,Morgan Stanley,finans,Exchanges & market data,Investment banking & trading
+cme,CME,CME Group,schw,SCHW,Charles Schwab,finans,Exchanges & market data,Brokers & fintech
+cohr,COHR,Coherent,anet,ANET,Arista Networks,ai,Data centers,Data centers
+cohr,COHR,Coherent,cien,CIEN,Ciena,ai,Data centers,Data centers
+coin,COIN,Coinbase,blk,BLK,BlackRock,finans,Brokers & fintech,Asset & alternative managers
+cor,COR,Cencora,ci,CI,The Cigna Group,medicin,Distribution & pharmacy infrastructure,Distribution & pharmacy infrastructure
+crdo,CRDO,Credo Technology,amzn,AMZN,Amazon,ai,Data centers,Cloud platforms
+crdo,CRDO,Credo Technology,msft,MSFT,Microsoft,ai,Data centers,Cloud platforms
+crl,CRL,Charles River Laboratories,alny,ALNY,Alnylam Pharmaceuticals,medicin,CDMO & pharma manufacturing,Biotech & innovation
+crl,CRL,Charles River Laboratories,bmrn,BMRN,BioMarin Pharmaceutical,medicin,CDMO & pharma manufacturing,Biotech & innovation
+crl,CRL,Charles River Laboratories,bmy,BMY,Bristol Myers Squibb,medicin,CDMO & pharma manufacturing,Big pharma
+crl,CRL,Charles River Laboratories,incy,INCY,Incyte,medicin,CDMO & pharma manufacturing,Biotech & innovation
+crl,CRL,Charles River Laboratories,lly,LLY,Eli Lilly,medicin,CDMO & pharma manufacturing,Diabetes & metabolic disease
+crl,CRL,Charles River Laboratories,pfe,PFE,Pfizer,medicin,CDMO & pharma manufacturing,Big pharma
+crl,CRL,Charles River Laboratories,regn,REGN,Regeneron,medicin,CDMO & pharma manufacturing,Biotech & innovation
+crl,CRL,Charles River Laboratories,zts,ZTS,Zoetis,medicin,CDMO & pharma manufacturing,Big pharma
+crwv,CRWV,CoreWeave,msft,MSFT,Microsoft,ai,Cloud platforms,Cloud platforms
+csco,CSCO,Cisco,amzn,AMZN,Amazon,ai,Data centers,Cloud platforms
+csco,CSCO,Cisco,msft,MSFT,Microsoft,ai,Data centers,Cloud platforms
+cw,CW,Curtiss-Wright,ceg,CEG,Constellation Energy,energi,Nuclear energy & uranium,Utilities & power producers
+cw,CW,Curtiss-Wright,duk,DUK,Duke Energy,energi,Nuclear energy & uranium,Utilities & power producers
+cw,CW,Curtiss-Wright,smr,SMR,NuScale Power,energi,Nuclear energy & uranium,Nuclear energy & uranium
+cw,CW,Curtiss-Wright,so,SO,Southern Company,energi,Nuclear energy & uranium,Utilities & power producers
+dell,DELL,Dell Technologies,crwv,CRWV,CoreWeave,ai,Data centers,Cloud platforms
+dgx,DGX,Quest Diagnostics,ci,CI,The Cigna Group,medicin,Diagnostics,Distribution & pharmacy infrastructure
+dhr,DHR,Danaher,amgn,AMGN,Amgen,medicin,Life science tools,Biotech & innovation
+dhr,DHR,Danaher,lly,LLY,Eli Lilly,medicin,Life science tools,Diabetes & metabolic disease
+dhr,DHR,Danaher,regn,REGN,Regeneron,medicin,Life science tools,Biotech & innovation
+dlr,DLR,Digital Realty,msft,MSFT,Microsoft,ai,Data centers,Cloud platforms
+dxcm,DXCM,DexCom,cvs,CVS,CVS Health,medicin,Diabetes & metabolic disease,Distribution & pharmacy infrastructure
+eme,EME,EMCOR Group,dlr,DLR,Digital Realty,ai,"Cooling, power & data center infrastructure",Data centers
+eme,EME,EMCOR Group,eqix,EQIX,Equinix,ai,"Cooling, power & data center infrastructure",Data centers
+emr,EMR,Emerson Electric,ceg,CEG,Constellation Energy,energi,Grid & electrification,Utilities & power producers
+emr,EMR,Emerson Electric,duk,DUK,Duke Energy,energi,Grid & electrification,Utilities & power producers
+emr,EMR,Emerson Electric,nee,NEE,NextEra Energy,energi,Grid & electrification,Utilities & power producers
+emr,EMR,Emerson Electric,vst,VST,Vistra,energi,Grid & electrification,Utilities & power producers
+entg,ENTG,Entegris,intc,INTC,Intel,ai,Semiconductor equipment & IP,Chips & accelerators
+entg,ENTG,Entegris,mu,MU,Micron,ai,Semiconductor equipment & IP,Chips & accelerators
+eqix,EQIX,Equinix,amzn,AMZN,Amazon,ai,Data centers,Cloud platforms
+eqix,EQIX,Equinix,msft,MSFT,Microsoft,ai,Data centers,Cloud platforms
+etn,ETN,Eaton,aep,AEP,American Electric Power,energi,Power equipment,Utilities & power producers
+etn,ETN,Eaton,duk,DUK,Duke Energy,energi,Power equipment,Utilities & power producers
+etn,ETN,Eaton,exc,EXC,Exelon,energi,Power equipment,Utilities & power producers
+etn,ETN,Eaton,nee,NEE,NextEra Energy,energi,Power equipment,Utilities & power producers
+fi,FI,Fiserv,pnc,PNC,PNC Financial,finans,Payment rails & networks,Banks
+fi,FI,Fiserv,wfc,WFC,Wells Fargo,finans,Payment rails & networks,Banks
+fix,FIX,Comfort Systems USA,dlr,DLR,Digital Realty,ai,"Cooling, power & data center infrastructure",Data centers
+fix,FIX,Comfort Systems USA,eqix,EQIX,Equinix,ai,"Cooling, power & data center infrastructure",Data centers
+form,FORM,FormFactor,ionq,IONQ,IonQ,quantum,"Enablers, test & components",Quantum hardware & platforms
+form,FORM,FormFactor,qbts,QBTS,D-Wave Quantum,quantum,"Enablers, test & components",Quantum hardware & platforms
+form,FORM,FormFactor,rgti,RGTI,Rigetti Computing,quantum,"Enablers, test & components",Quantum hardware & platforms
+fslr,FSLR,First Solar,nee,NEE,NextEra Energy,energi,Solar & wind,Utilities & power producers
+ge,GE,GE Aerospace,boeing,BA,Boeing,forsvar,Dual-use technology,Military platforms
+ge,GE,GE Aerospace,lmt,LMT,Lockheed Martin,forsvar,Dual-use technology,Defense integrators
+ge,GE,GE Aerospace,txt,TXT,Textron,forsvar,Dual-use technology,Military platforms
+gehc,GEHC,GE HealthCare,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure
+gev,GEV,GE Vernova,aep,AEP,American Electric Power,energi,Power equipment,Utilities & power producers
+gev,GEV,GE Vernova,ceg,CEG,Constellation Energy,energi,Power equipment,Utilities & power producers
+gev,GEV,GE Vernova,duk,DUK,Duke Energy,energi,Power equipment,Utilities & power producers
+gev,GEV,GE Vernova,nee,NEE,NextEra Energy,energi,Power equipment,Utilities & power producers
+gev,GEV,GE Vernova,nrg,NRG,NRG Energy,energi,Power equipment,Utilities & power producers
+gev,GEV,GE Vernova,so,SO,Southern Company,energi,Power equipment,Utilities & power producers
+gev,GEV,GE Vernova,tln,TLN,Talen Energy,energi,Power equipment,Utilities & power producers
+gev,GEV,GE Vernova,vst,VST,Vistra,energi,Power equipment,Utilities & power producers
+gild,GILD,Gilead Sciences,cah,CAH,Cardinal Health,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+gild,GILD,Gilead Sciences,cor,COR,Cencora,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+gild,GILD,Gilead Sciences,mck,MCK,McKesson,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+googl,GOOGL,Alphabet,app,APP,AppLovin,ai,Cloud platforms,AI software & productivity
+gs,GS,Goldman Sachs,kkr,KKR,KKR,finans,Investment banking & trading,Asset & alternative managers
+hei,HEI,HEICO,boeing,BA,Boeing,forsvar,Military platforms,Military platforms
+hei,HEI,HEICO,gd,GD,General Dynamics,forsvar,Military platforms,Defense integrators
+hei,HEI,HEICO,lmt,LMT,Lockheed Martin,forsvar,Military platforms,Defense integrators
+hei,HEI,HEICO,noc,NOC,Northrop Grumman,forsvar,Military platforms,Defense integrators
+hei,HEI,HEICO,rtx,RTX,RTX,forsvar,Military platforms,Defense integrators
+hii,HII,Huntington Ingalls Industries,gd,GD,General Dynamics,forsvar,Military platforms,Defense integrators
+holx,HOLX,Hologic,dgx,DGX,Quest Diagnostics,medicin,Diagnostics,Diagnostics
+hon,HON,Honeywell,boeing,BA,Boeing,forsvar,Dual-use technology,Military platforms
+hon,HON,Honeywell,gd,GD,General Dynamics,forsvar,Dual-use technology,Defense integrators
+hon,HON,Honeywell,lmt,LMT,Lockheed Martin,forsvar,Dual-use technology,Defense integrators
+hon,HON,Honeywell,noc,NOC,Northrop Grumman,forsvar,Dual-use technology,Defense integrators
+hon,HON,Honeywell,txt,TXT,Textron,forsvar,Dual-use technology,Military platforms
+hpe,HPE,HPE,dlr,DLR,Digital Realty,ai,Data centers,Data centers
+hubb,HUBB,Hubbell,duk,DUK,Duke Energy,energi,Grid & electrification,Utilities & power producers
+hubb,HUBB,Hubbell,exc,EXC,Exelon,energi,Grid & electrification,Utilities & power producers
+hubb,HUBB,Hubbell,nee,NEE,NextEra Energy,energi,Grid & electrification,Utilities & power producers
+hubb,HUBB,Hubbell,so,SO,Southern Company,energi,Grid & electrification,Utilities & power producers
+hwm,HWM,Howmet Aerospace,boeing,BA,Boeing,forsvar,Military platforms,Military platforms
+hwm,HWM,Howmet Aerospace,gd,GD,General Dynamics,forsvar,Military platforms,Defense integrators
+hwm,HWM,Howmet Aerospace,ge,GE,GE Aerospace,forsvar,Military platforms,Dual-use technology
+hwm,HWM,Howmet Aerospace,lmt,LMT,Lockheed Martin,forsvar,Military platforms,Defense integrators
+hwm,HWM,Howmet Aerospace,noc,NOC,Northrop Grumman,forsvar,Military platforms,Defense integrators
+hwm,HWM,Howmet Aerospace,rtx,RTX,RTX,forsvar,Military platforms,Defense integrators
+hwm,HWM,Howmet Aerospace,txt,TXT,Textron,forsvar,Military platforms,Military platforms
+ice,ICE,Intercontinental Exchange,blk,BLK,BlackRock,finans,Exchanges & market data,Asset & alternative managers
+ice,ICE,Intercontinental Exchange,gs,GS,Goldman Sachs,finans,Exchanges & market data,Investment banking & trading
+ice,ICE,Intercontinental Exchange,ibkr,IBKR,Interactive Brokers,finans,Exchanges & market data,Brokers & fintech
+ice,ICE,Intercontinental Exchange,schw,SCHW,Charles Schwab,finans,Exchanges & market data,Brokers & fintech
+ilmn,ILMN,Illumina,dgx,DGX,Quest Diagnostics,medicin,Life science tools,Diagnostics
+ilmn,ILMN,Illumina,lh,LH,Labcorp,medicin,Life science tools,Diagnostics
+ilmn,ILMN,Illumina,ntra,NTRA,Natera,medicin,Life science tools,Diagnostics
+ilmn,ILMN,Illumina,regn,REGN,Regeneron,medicin,Life science tools,Biotech & innovation
+ilmn,ILMN,Illumina,vrtx,VRTX,Vertex Pharmaceuticals,medicin,Life science tools,Biotech & innovation
+incy,INCY,Incyte,cor,COR,Cencora,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+intc,INTC,Intel,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+intc,INTC,Intel,dell,DELL,Dell Technologies,ai,Chips & accelerators,Data centers
+intc,INTC,Intel,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+iqv,IQV,IQVIA Holdings,amgn,AMGN,Amgen,medicin,CDMO & pharma manufacturing,Biotech & innovation
+iqv,IQV,IQVIA Holdings,biib,BIIB,Biogen,medicin,CDMO & pharma manufacturing,Biotech & innovation
+iqv,IQV,IQVIA Holdings,gild,GILD,Gilead Sciences,medicin,CDMO & pharma manufacturing,Biotech & innovation
+iqv,IQV,IQVIA Holdings,lly,LLY,Eli Lilly,medicin,CDMO & pharma manufacturing,Diabetes & metabolic disease
+iqv,IQV,IQVIA Holdings,mrk,MRK,Merck & Co.,medicin,CDMO & pharma manufacturing,Big pharma
+iqv,IQV,IQVIA Holdings,nbix,NBIX,Neurocrine Biosciences,medicin,CDMO & pharma manufacturing,Biotech & innovation
+iqv,IQV,IQVIA Holdings,pfe,PFE,Pfizer,medicin,CDMO & pharma manufacturing,Big pharma
+iqv,IQV,IQVIA Holdings,uthr,UTHR,United Therapeutics,medicin,CDMO & pharma manufacturing,Biotech & innovation
+jnj,JNJ,Johnson & Johnson,cor,COR,Cencora,medicin,Big pharma,Distribution & pharmacy infrastructure
+jnj,JNJ,Johnson & Johnson,mck,MCK,McKesson,medicin,Big pharma,Distribution & pharmacy infrastructure
+jpm,JPM,JPMorgan Chase,blk,BLK,BlackRock,finans,Banks,Asset & alternative managers
+klac,KLAC,KLA,intc,INTC,Intel,ai,Semiconductor equipment & IP,Chips & accelerators
+klac,KLAC,KLA,mu,MU,Micron,ai,Semiconductor equipment & IP,Chips & accelerators
+ktos,KTOS,Kratos Defense,rtx,RTX,RTX,forsvar,Drones & autonomous systems,Defense integrators
+leu,LEU,Centrus Energy,ceg,CEG,Constellation Energy,energi,Nuclear energy & uranium,Utilities & power producers
+leu,LEU,Centrus Energy,nee,NEE,NextEra Energy,energi,Nuclear energy & uranium,Utilities & power producers
+leu,LEU,Centrus Energy,oklo,OKLO,Oklo,energi,Nuclear energy & uranium,Nuclear energy & uranium
+leu,LEU,Centrus Energy,tln,TLN,Talen Energy,energi,Nuclear energy & uranium,Utilities & power producers
+leu,LEU,Centrus Energy,vst,VST,Vistra,energi,Nuclear energy & uranium,Utilities & power producers
+lh,LH,Labcorp,unh,UNH,UnitedHealth,medicin,Diagnostics,Distribution & pharmacy infrastructure
+lhx,LHX,L3Harris,rtx,RTX,RTX,forsvar,Defense integrators,Defense integrators
+lly,LLY,Eli Lilly,cah,CAH,Cardinal Health,medicin,Diabetes & metabolic disease,Distribution & pharmacy infrastructure
+lly,LLY,Eli Lilly,cor,COR,Cencora,medicin,Diabetes & metabolic disease,Distribution & pharmacy infrastructure
+lly,LLY,Eli Lilly,mck,MCK,McKesson,medicin,Diabetes & metabolic disease,Distribution & pharmacy infrastructure
+lrcx,LRCX,Lam Research,intc,INTC,Intel,ai,Semiconductor equipment & IP,Chips & accelerators
+lrcx,LRCX,Lam Research,mu,MU,Micron,ai,Semiconductor equipment & IP,Chips & accelerators
+ma,MA,Mastercard,bac,BAC,Bank of America,finans,Payment rails & networks,Banks
+ma,MA,Mastercard,c,C,Citigroup,finans,Payment rails & networks,Banks
+ma,MA,Mastercard,jpm,JPM,JPMorgan Chase,finans,Payment rails & networks,Banks
+ma,MA,Mastercard,pypl,PYPL,PayPal,finans,Payment rails & networks,Payment rails & networks
+ma,MA,Mastercard,usb,USB,U.S. Bancorp,finans,Payment rails & networks,Banks
+ma,MA,Mastercard,wfc,WFC,Wells Fargo,finans,Payment rails & networks,Banks
+ma,MA,Mastercard,xyz,XYZ,Block,finans,Payment rails & networks,Brokers & fintech
+mchp,MCHP,Microchip Technology,tsla,TSLA,Tesla,ai,Chips & accelerators,AI software & productivity
+mchp,MCHP,Microchip Technology,vrt,VRT,Vertiv,ai,Chips & accelerators,"Cooling, power & data center infrastructure"
+mck,MCK,McKesson,cvs,CVS,CVS Health,medicin,Distribution & pharmacy infrastructure,Distribution & pharmacy infrastructure
+mco,MCO,Moody’s,bac,BAC,Bank of America,finans,Exchanges & market data,Banks
+mco,MCO,Moody’s,jpm,JPM,JPMorgan Chase,finans,Exchanges & market data,Banks
+mco,MCO,Moody’s,kkr,KKR,KKR,finans,Exchanges & market data,Asset & alternative managers
+mdt,MDT,Medtronic,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure
+mod,MOD,Modine Manufacturing,dlr,DLR,Digital Realty,ai,"Cooling, power & data center infrastructure",Data centers
+mpwr,MPWR,Monolithic Power,amd,AMD,AMD,ai,Chips & accelerators,Chips & accelerators
+mpwr,MPWR,Monolithic Power,nvda,NVDA,Nvidia,ai,Chips & accelerators,Chips & accelerators
+mrk,MRK,Merck & Co.,cor,COR,Cencora,medicin,Big pharma,Distribution & pharmacy infrastructure
+mrk,MRK,Merck & Co.,mck,MCK,McKesson,medicin,Big pharma,Distribution & pharmacy infrastructure
+mrvl,MRVL,Marvell,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+mrvl,MRVL,Marvell,googl,GOOGL,Alphabet,ai,Chips & accelerators,Cloud platforms
+mrvl,MRVL,Marvell,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+msci,MSCI,MSCI,blk,BLK,BlackRock,finans,Exchanges & market data,Asset & alternative managers
+msft,MSFT,Microsoft,acn,ACN,Accenture,ai,Cloud platforms,IT consultants & integrators
+msft,MSFT,Microsoft,adbe,ADBE,Adobe,ai,Cloud platforms,AI software & productivity
+msft,MSFT,Microsoft,ctsh,CTSH,Cognizant,ai,Cloud platforms,IT consultants & integrators
+msft,MSFT,Microsoft,now,NOW,ServiceNow,ai,Cloud platforms,AI software & productivity
+msft,MSFT,Microsoft,snow,SNOW,Snowflake,ai,Cloud platforms,"Data, analytics & enterprise AI"
+mtz,MTZ,MasTec,nee,NEE,NextEra Energy,energi,Grid & electrification,Utilities & power producers
+mu,MU,Micron,amd,AMD,AMD,ai,Chips & accelerators,Chips & accelerators
+mu,MU,Micron,dell,DELL,Dell Technologies,ai,Chips & accelerators,Data centers
+mu,MU,Micron,nvda,NVDA,Nvidia,ai,Chips & accelerators,Chips & accelerators
+nbix,NBIX,Neurocrine Biosciences,mck,MCK,McKesson,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+ndaq,NDAQ,Nasdaq,gs,GS,Goldman Sachs,finans,Exchanges & market data,Investment banking & trading
+ndaq,NDAQ,Nasdaq,hood,HOOD,Robinhood,finans,Exchanges & market data,Brokers & fintech
+noc,NOC,Northrop Grumman,boeing,BA,Boeing,forsvar,Defense integrators,Military platforms
+noc,NOC,Northrop Grumman,lmt,LMT,Lockheed Martin,forsvar,Defense integrators,Defense integrators
+ntap,NTAP,NetApp,msft,MSFT,Microsoft,ai,Data centers,Cloud platforms
+ntra,NTRA,Natera,unh,UNH,UnitedHealth,medicin,Diagnostics,Distribution & pharmacy infrastructure
+nvda,NVDA,Nvidia,acn,ACN,Accenture,ai,Chips & accelerators,IT consultants & integrators
+nvda,NVDA,Nvidia,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+nvda,NVDA,Nvidia,crwv,CRWV,CoreWeave,ai,Chips & accelerators,Cloud platforms
+nvda,NVDA,Nvidia,dell,DELL,Dell Technologies,ai,Chips & accelerators,Data centers
+nvda,NVDA,Nvidia,googl,GOOGL,Alphabet,ai,Chips & accelerators,Cloud platforms
+nvda,NVDA,Nvidia,hpe,HPE,HPE,ai,Chips & accelerators,Data centers
+nvda,NVDA,Nvidia,ibm,IBM,IBM,ai,Chips & accelerators,IT consultants & integrators
+nvda,NVDA,Nvidia,meta,META,Meta Platforms,ai,Chips & accelerators,AI software & productivity
+nvda,NVDA,Nvidia,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+nvda,NVDA,Nvidia,orcl,ORCL,Oracle,ai,Chips & accelerators,Cloud platforms
+nvda,NVDA,Nvidia,smci,SMCI,Super Micro,ai,Chips & accelerators,Data centers
+nvda,NVDA,Nvidia,tsla,TSLA,Tesla,ai,Chips & accelerators,AI software & productivity
+okta,OKTA,Okta,net,NET,Cloudflare,forsvar,Identity & access management,Cloud security
+on,ON,ON Semiconductor,tsla,TSLA,Tesla,ai,Chips & accelerators,AI software & productivity
+on,ON,ON Semiconductor,vrt,VRT,Vertiv,ai,Chips & accelerators,"Cooling, power & data center infrastructure"
+pfe,PFE,Pfizer,cah,CAH,Cardinal Health,medicin,Big pharma,Distribution & pharmacy infrastructure
+pfe,PFE,Pfizer,cor,COR,Cencora,medicin,Big pharma,Distribution & pharmacy infrastructure
+pfe,PFE,Pfizer,mck,MCK,McKesson,medicin,Big pharma,Distribution & pharmacy infrastructure
+podd,PODD,Insulet,cvs,CVS,CVS Health,medicin,Diabetes & metabolic disease,Distribution & pharmacy infrastructure
+pstg,PSTG,Pure Storage,meta,META,Meta Platforms,ai,Data centers,AI software & productivity
+pwr,PWR,Quanta Services,aep,AEP,American Electric Power,energi,Grid & electrification,Utilities & power producers
+pwr,PWR,Quanta Services,d,D,Dominion Energy,energi,Grid & electrification,Utilities & power producers
+pwr,PWR,Quanta Services,duk,DUK,Duke Energy,energi,Grid & electrification,Utilities & power producers
+pwr,PWR,Quanta Services,exc,EXC,Exelon,energi,Grid & electrification,Utilities & power producers
+pwr,PWR,Quanta Services,nee,NEE,NextEra Energy,energi,Grid & electrification,Utilities & power producers
+pwr,PWR,Quanta Services,so,SO,Southern Company,energi,Grid & electrification,Utilities & power producers
+qcom,QCOM,Qualcomm,msft,MSFT,Microsoft,ai,Chips & accelerators,Cloud platforms
+rmd,RMD,ResMed,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure
+rok,ROK,Rockwell Automation,fslr,FSLR,First Solar,energi,Power equipment,Solar & wind
+rtx,RTX,RTX,boeing,BA,Boeing,forsvar,Defense integrators,Military platforms
+rtx,RTX,RTX,lmt,LMT,Lockheed Martin,forsvar,Defense integrators,Defense integrators
+rvty,RVTY,Revvity,bmy,BMY,Bristol Myers Squibb,medicin,Life science tools,Big pharma
+smci,SMCI,Super Micro,crwv,CRWV,CoreWeave,ai,Data centers,Cloud platforms
+snps,SNPS,Synopsys,amd,AMD,AMD,ai,Semiconductor equipment & IP,Chips & accelerators
+snps,SNPS,Synopsys,avgo,AVGO,Broadcom,ai,Semiconductor equipment & IP,Chips & accelerators
+snps,SNPS,Synopsys,intc,INTC,Intel,ai,Semiconductor equipment & IP,Chips & accelerators
+snps,SNPS,Synopsys,nvda,NVDA,Nvidia,ai,Semiconductor equipment & IP,Chips & accelerators
+snps,SNPS,Synopsys,qcom,QCOM,Qualcomm,ai,Semiconductor equipment & IP,Chips & accelerators
+spacex,,SpaceX,asts,ASTS,AST SpaceMobile,forsvar,Space industry & satellites,Space industry & satellites
+spacex,,SpaceX,gsat,GSAT,Globalstar,forsvar,Space industry & satellites,Space industry & satellites
+spacex,,SpaceX,irdm,IRDM,Iridium Communications,forsvar,Space industry & satellites,Space industry & satellites
+spacex,,SpaceX,vsat,VSAT,Viasat,forsvar,Space industry & satellites,Space industry & satellites
+spgi,SPGI,S&P Global,apo,APO,Apollo Global,finans,Exchanges & market data,Asset & alternative managers
+spgi,SPGI,S&P Global,axp,AXP,American Express,finans,Exchanges & market data,Payment rails & networks
+spgi,SPGI,S&P Global,bac,BAC,Bank of America,finans,Exchanges & market data,Banks
+spgi,SPGI,S&P Global,blk,BLK,BlackRock,finans,Exchanges & market data,Asset & alternative managers
+spgi,SPGI,S&P Global,bx,BX,Blackstone,finans,Exchanges & market data,Asset & alternative managers
+spgi,SPGI,S&P Global,gs,GS,Goldman Sachs,finans,Exchanges & market data,Investment banking & trading
+spgi,SPGI,S&P Global,jpm,JPM,JPMorgan Chase,finans,Exchanges & market data,Banks
+spgi,SPGI,S&P Global,ms,MS,Morgan Stanley,finans,Exchanges & market data,Investment banking & trading
+spgi,SPGI,S&P Global,schw,SCHW,Charles Schwab,finans,Exchanges & market data,Brokers & fintech
+stx,STX,Seagate,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+stx,STX,Seagate,googl,GOOGL,Alphabet,ai,Chips & accelerators,Cloud platforms
+syk,SYK,Stryker,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure
+tdg,TDG,TransDigm Group,boeing,BA,Boeing,forsvar,Dual-use technology,Military platforms
+tdg,TDG,TransDigm Group,lmt,LMT,Lockheed Martin,forsvar,Dual-use technology,Defense integrators
+tdg,TDG,TransDigm Group,noc,NOC,Northrop Grumman,forsvar,Dual-use technology,Defense integrators
+tdg,TDG,TransDigm Group,rtx,RTX,RTX,forsvar,Dual-use technology,Defense integrators
+tdy,TDY,Teledyne Technologies,avav,AVAV,AeroVironment,forsvar,Dual-use technology,Drones & autonomous systems
+tdy,TDY,Teledyne Technologies,boeing,BA,Boeing,forsvar,Dual-use technology,Military platforms
+tdy,TDY,Teledyne Technologies,hii,HII,Huntington Ingalls Industries,forsvar,Dual-use technology,Military platforms
+tdy,TDY,Teledyne Technologies,ktos,KTOS,Kratos Defense,forsvar,Dual-use technology,Drones & autonomous systems
+tdy,TDY,Teledyne Technologies,lhx,LHX,L3Harris,forsvar,Dual-use technology,Defense integrators
+tdy,TDY,Teledyne Technologies,lmt,LMT,Lockheed Martin,forsvar,Dual-use technology,Defense integrators
+tdy,TDY,Teledyne Technologies,noc,NOC,Northrop Grumman,forsvar,Dual-use technology,Defense integrators
+tdy,TDY,Teledyne Technologies,rklb,RKLB,Rocket Lab,forsvar,Dual-use technology,Space industry & satellites
+tdy,TDY,Teledyne Technologies,rtx,RTX,RTX,forsvar,Dual-use technology,Defense integrators
+ter,TER,Teradyne,intc,INTC,Intel,ai,Semiconductor equipment & IP,Chips & accelerators
+ter,TER,Teradyne,mu,MU,Micron,ai,Semiconductor equipment & IP,Chips & accelerators
+ter,TER,Teradyne,qcom,QCOM,Qualcomm,ai,Semiconductor equipment & IP,Chips & accelerators
+tmo,TMO,Thermo Fisher Scientific,amgn,AMGN,Amgen,medicin,Life science tools,Biotech & innovation
+tmo,TMO,Thermo Fisher Scientific,idxx,IDXX,IDEXX Laboratories,medicin,Life science tools,Diagnostics
+tmo,TMO,Thermo Fisher Scientific,jnj,JNJ,Johnson & Johnson,medicin,Life science tools,Big pharma
+tmo,TMO,Thermo Fisher Scientific,lly,LLY,Eli Lilly,medicin,Life science tools,Diabetes & metabolic disease
+tmo,TMO,Thermo Fisher Scientific,mrna,MRNA,Moderna,medicin,Life science tools,Biotech & innovation
+tmo,TMO,Thermo Fisher Scientific,pfe,PFE,Pfizer,medicin,Life science tools,Big pharma
+txn,TXN,Texas Instruments,dell,DELL,Dell Technologies,ai,Chips & accelerators,Data centers
+txn,TXN,Texas Instruments,vrt,VRT,Vertiv,ai,Chips & accelerators,"Cooling, power & data center infrastructure"
+uthr,UTHR,United Therapeutics,ci,CI,The Cigna Group,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+uthr,UTHR,United Therapeutics,cvs,CVS,CVS Health,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+v,V,Visa,bac,BAC,Bank of America,finans,Payment rails & networks,Banks
+v,V,Visa,c,C,Citigroup,finans,Payment rails & networks,Banks
+v,V,Visa,hood,HOOD,Robinhood,finans,Payment rails & networks,Brokers & fintech
+v,V,Visa,jpm,JPM,JPMorgan Chase,finans,Payment rails & networks,Banks
+v,V,Visa,pnc,PNC,PNC Financial,finans,Payment rails & networks,Banks
+v,V,Visa,pypl,PYPL,PayPal,finans,Payment rails & networks,Payment rails & networks
+v,V,Visa,usb,USB,U.S. Bancorp,finans,Payment rails & networks,Banks
+v,V,Visa,wfc,WFC,Wells Fargo,finans,Payment rails & networks,Banks
+v,V,Visa,xyz,XYZ,Block,finans,Payment rails & networks,Brokers & fintech
+vrt,VRT,Vertiv,dlr,DLR,Digital Realty,ai,"Cooling, power & data center infrastructure",Data centers
+vrt,VRT,Vertiv,eqix,EQIX,Equinix,ai,"Cooling, power & data center infrastructure",Data centers
+vrt,VRT,Vertiv,msft,MSFT,Microsoft,ai,"Cooling, power & data center infrastructure",Cloud platforms
+vrtx,VRTX,Vertex Pharmaceuticals,ci,CI,The Cigna Group,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+vrtx,VRTX,Vertex Pharmaceuticals,mck,MCK,McKesson,medicin,Biotech & innovation,Distribution & pharmacy infrastructure
+wat,WAT,Waters Corporation,abbv,ABBV,AbbVie,medicin,Life science tools,Big pharma
+wat,WAT,Waters Corporation,lly,LLY,Eli Lilly,medicin,Life science tools,Diabetes & metabolic disease
+wdc,WDC,Western Digital,amzn,AMZN,Amazon,ai,Chips & accelerators,Cloud platforms
+wdc,WDC,Western Digital,dell,DELL,Dell Technologies,ai,Chips & accelerators,Data centers
+wst,WST,West Pharmaceutical Services,abbv,ABBV,AbbVie,medicin,CDMO & pharma manufacturing,Big pharma
+wst,WST,West Pharmaceutical Services,amgn,AMGN,Amgen,medicin,CDMO & pharma manufacturing,Biotech & innovation
+wst,WST,West Pharmaceutical Services,bmy,BMY,Bristol Myers Squibb,medicin,CDMO & pharma manufacturing,Big pharma
+wst,WST,West Pharmaceutical Services,jnj,JNJ,Johnson & Johnson,medicin,CDMO & pharma manufacturing,Big pharma
+wst,WST,West Pharmaceutical Services,lly,LLY,Eli Lilly,medicin,CDMO & pharma manufacturing,Diabetes & metabolic disease
+wst,WST,West Pharmaceutical Services,mrk,MRK,Merck & Co.,medicin,CDMO & pharma manufacturing,Big pharma
+wst,WST,West Pharmaceutical Services,pfe,PFE,Pfizer,medicin,CDMO & pharma manufacturing,Big pharma
+wst,WST,West Pharmaceutical Services,regn,REGN,Regeneron,medicin,CDMO & pharma manufacturing,Biotech & innovation
+zbh,ZBH,Zimmer Biomet,cah,CAH,Cardinal Health,medicin,Medtech & devices,Distribution & pharmacy infrastructure

@@ -79,6 +79,7 @@ from ui.options_3d import (
 )
 from ui.prefs import load_prefs, save_prefs
 from ui.watchlist import load_watchlist, add_ticker as watchlist_add, remove_ticker as watchlist_remove
+from ui.stock_graph import open_stock_graph_window, resolve_graph_ticker
 
 
 class MarketApp:
@@ -160,6 +161,12 @@ class MarketApp:
             state="disabled", style="Ghost.TButton",
         )
         self.btn_news.pack(side="left", padx=(10, 0))
+
+        self.btn_graph = ttk.Button(
+            input_frame, text="Graph", command=self.open_graph_window,
+            state="disabled", style="Ghost.TButton",
+        )
+        self.btn_graph.pack(side="left", padx=(8, 0))
 
         vol_opts = ttk.Frame(input_frame)
         vol_opts.pack(side="left", padx=(16, 0))
@@ -606,6 +613,8 @@ class MarketApp:
             self.hv_30 = 0.0
             self.btn_opt.config(state="disabled", text="Options Explorer")
             self.btn_news.config(state="disabled")
+            if hasattr(self, "btn_graph"):
+                self.btn_graph.config(state="disabled")
             
             # Start background fundamental fetch
             threading.Thread(target=self.get_info, daemon=True).start()
@@ -1007,6 +1016,32 @@ class MarketApp:
         # Update the heading command to toggle the sort direction next time
         tv.heading(col, command=lambda _col=col: self.treeview_sort_column(tv, _col, not reverse))
     
+
+    def open_graph_window(self):
+        """Open Stock Relationship Graph peers / divergence / HTML export."""
+        sym = resolve_graph_ticker(
+            self.entry_ticker.get() if hasattr(self, "entry_ticker") else "",
+            getattr(self, "current_ticker", None),
+        )
+        if not sym:
+            messagebox.showinfo("Stock Graph", "Enter or load a ticker first.")
+            return
+
+        def _select_peer(peer_sym: str):
+            self.entry_ticker.delete(0, "end")
+            self.entry_ticker.insert(0, peer_sym)
+            self.load_data()
+
+        try:
+            open_stock_graph_window(
+                self.root,
+                sym,
+                data_provider=getattr(self, "data_provider", None),
+                on_select_ticker=_select_peer,
+            )
+        except ValueError:
+            return
+
     def open_news_window(self):
         if not self.current_ticker: return
         
@@ -1381,6 +1416,8 @@ class MarketApp:
             self.lbl_cci.config(text="N/A", foreground="gray")
 
         self.btn_opt.config(state="normal", text=f"Open {self.current_ticker} Options")
+        if hasattr(self, "btn_graph"):
+            self.btn_graph.config(state="normal")
     
     def visualize_3d(self, option_type):
         """Interactive 3D landscape: Days × Strike × EV@Ask ($) with readable chrome."""
