@@ -8,3 +8,4 @@ transformers>=4.36.0
 torch>=2.14.0
 plotly>=5.18.0
 lxml
+pandas-market-calendars>=5.1.0

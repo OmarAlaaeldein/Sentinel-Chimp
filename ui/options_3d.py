@@ -13,13 +13,22 @@ CAT_EARN_UNDER = "earnings_under"
 CAT_EARN_OVER = "earnings_over"
 CAT_UNDER = "under"
 CAT_OVER = "over"
+CAT_FAIR = "fair"
+CAT_EARN_FAIR = "earnings_fair"
 
 # Distinct marker accents for earnings (EV colorbar still drives regular points)
 EARN_UNDER_RGB = (0, 230, 230)   # cyan
 EARN_OVER_RGB = (200, 80, 255)   # magenta
 
 
-def categorize_row(is_earnings: bool, is_undervalued: bool) -> str:
+def categorize_row(is_earnings: bool, is_undervalued: bool, verdict=None) -> str:
+    if verdict is not None:
+        if "Under" in verdict:
+            is_undervalued = True
+        elif "Over" in verdict:
+            is_undervalued = False
+        else:
+            return CAT_EARN_FAIR if is_earnings else CAT_FAIR
     if is_earnings:
         return CAT_EARN_UNDER if is_undervalued else CAT_EARN_OVER
     return CAT_UNDER if is_undervalued else CAT_OVER
@@ -104,6 +113,8 @@ def build_plotly_figure(
         CAT_EARN_OVER: "Earnings Over (sell-side edge near earnings)",
         CAT_UNDER: "Under — Fair beats Ask (green row)",
         CAT_OVER: "Over — Bid beats Fair (red row)",
+        CAT_FAIR: "Fair — no tradeable edge",
+        CAT_EARN_FAIR: "Fair — no tradeable edge near earnings",
     }
     hover = []
     for i in range(len(days_a)):
@@ -323,23 +334,18 @@ def filter_rows_for_plot(
     show_earn_over: bool,
     show_under: bool,
     show_over: bool,
+    show_fair: bool = True,
 ) -> List[dict]:
     """Apply checkbox filters; attach ``category`` for Plotly/matplotlib."""
     out = []
     for row in base_data:
-        is_earn = bool(row.get("is_earnings"))
-        is_good = bool(row.get("is_good"))  # undervalued / Under
-        if is_earn:
-            if is_good and not show_earn_under:
-                continue
-            if (not is_good) and not show_earn_over:
-                continue
-        else:
-            if is_good and not show_under:
-                continue
-            if (not is_good) and not show_over:
-                continue
+        category = categorize_row(bool(row.get("is_earnings")), bool(row.get("is_good")), row.get("verdict"))
+        enabled = {CAT_EARN_UNDER: show_earn_under, CAT_EARN_OVER: show_earn_over,
+                   CAT_UNDER: show_under, CAT_OVER: show_over,
+                   CAT_FAIR: show_fair, CAT_EARN_FAIR: show_fair}
+        if not enabled[category]:
+            continue
         item = dict(row)
-        item["category"] = categorize_row(is_earn, is_good)
+        item["category"] = category
         out.append(item)
     return out

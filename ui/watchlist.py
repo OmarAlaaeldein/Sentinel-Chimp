@@ -5,6 +5,7 @@ import json
 import os
 import re
 from typing import List
+from ui.storage import atomic_json
 
 _TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.\-]{0,15}$")
 DEFAULT_WATCHLIST: List[str] = ["AMD", "AAPL", "MSFT", "NVDA", "SPY"]
@@ -39,7 +40,7 @@ def load_watchlist(root_dir: str) -> List[str]:
             if _valid_symbol(sym) and sym not in seen:
                 seen.add(sym)
                 out.append(sym)
-        return out if out else list(DEFAULT_WATCHLIST)
+        return out if out or not loaded else list(DEFAULT_WATCHLIST)
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return list(DEFAULT_WATCHLIST)
 
@@ -54,11 +55,7 @@ def save_watchlist(root_dir: str, tickers: List[str]) -> List[str]:
             seen.add(sym)
             out.append(sym)
     path = watchlist_path(root_dir)
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"tickers": out}, f, indent=2)
-    except OSError:
-        pass
+    atomic_json(path, {"tickers": out})
     return out
 
 

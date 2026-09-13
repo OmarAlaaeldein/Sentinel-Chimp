@@ -8,3 +8,4 @@ urllib3>=2.7.0
 plotly>=5.18.0
 pytest>=9.0.0
 lxml
+pandas-market-calendars>=5.1.0

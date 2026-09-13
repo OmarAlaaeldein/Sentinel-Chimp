@@ -115,8 +115,6 @@ def apply_tick_labels(ax, times_for_labels, period: str) -> None:
         if period == "1d":
             label = ts.strftime("%H:%M")
         else:
-            if ts.hour == 15 and ts.minute == 55:
-                ts = ts + timedelta(days=1)
             label = ts.strftime("%Y-%m-%d")
         final_labels.append(label)
 
@@ -157,7 +155,8 @@ def draw_earnings_markers(
     labeled = False
     for ed in earnings_dates:
         ed_date = _to_date(ed)
-        if ed_date is None:
+        visible = [d for d in bar_dates if d is not None]
+        if ed_date is None or not visible or not min(visible) <= ed_date <= max(visible):
             continue
         # nearest bar on/after earnings date (or exact match)
         hit = None

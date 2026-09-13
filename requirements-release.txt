@@ -9,3 +9,4 @@ urllib3>=2.7.0
 plotly>=5.18.0
 lxml
 pyinstaller>=6.0.0
+pandas-market-calendars>=5.1.0

@@ -205,6 +205,10 @@ PYI_ARGS=(
   --exclude-module matplotlib.backends.backend_gtk4cairo
   --exclude-module matplotlib.backends.backend_nbagg
   --exclude-module matplotlib.backends.backend_cairo
+  --collect-all pandas_market_calendars
+  --collect-all exchange_calendars
+  --collect-all tzdata
+  --add-data "$ROOT/data:data"
   --collect-submodules matplotlib
 )
 

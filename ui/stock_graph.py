@@ -155,7 +155,7 @@ def open_stock_graph_window(
                 "",
                 "end",
                 values=(
-                    rel.replace("_", " "),
+                    f"{rel.replace('_', ' ')} ({p.get('source', ticker)} → {p.get('target', p['ticker'])})",
                     p["ticker"],
                     p["name"],
                     p["sector"],

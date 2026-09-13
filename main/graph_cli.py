@@ -15,6 +15,13 @@ from core.graph_service import (
 from core.stock_graph import StockGraph
 
 
+def _positive_depth(value):
+    depth = int(value)
+    if depth < 1:
+        raise argparse.ArgumentTypeError("depth must be a positive integer")
+    return depth
+
+
 def add_commands(sub: argparse._SubParsersAction) -> None:
     graph_parser = sub.add_parser(
         "graph",
@@ -25,7 +32,7 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     # 1. show
     show = commands.add_parser("show", help="Inspect network nodes and connections")
     show.add_argument("ticker", nargs="?", help="Center ticker to inspect (omit for entire network summary)")
-    show.add_argument("--depth", type=int, default=1, help="Neighbor traversal depth (default: 1)")
+    show.add_argument("--depth", type=_positive_depth, default=1, help="Neighbor traversal depth (default: 1)")
     common_flags(show)
 
     # 2. peers
@@ -43,7 +50,7 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     exp = commands.add_parser("export", help="Export interactive Plotly network graph to standalone HTML")
     exp.add_argument("ticker", nargs="?", help="Center ticker for subgraph (omit for full market network)")
     exp.add_argument("--html", required=True, metavar="PATH", help="Destination HTML file path")
-    exp.add_argument("--depth", type=int, default=1, help="Neighbor traversal depth for center ticker")
+    exp.add_argument("--depth", type=_positive_depth, default=1, help="Neighbor traversal depth for center ticker")
     exp.add_argument("--dim", choices=["2d", "3d"], default="2d", help="Visualization dimensionality (2d or 3d)")
     common_flags(exp)
 
@@ -119,7 +126,7 @@ def render(data: dict, as_json: bool) -> None:
         print("Connected Companies:")
         for c in data["connections"]:
             rel = c['relation'].replace('_', ' ')
-            print(f"  [{rel}] {c['neighbor']} ({c['name']})")
+            print(f"  [{rel}: {c['source']} → {c['target']}] {c['neighbor']} ({c['name']})")
             if c['description']:
                 print(f"      Details: {c['description']}")
 
@@ -129,7 +136,7 @@ def render(data: dict, as_json: bool) -> None:
         for rel, peer_list in data["peer_categories"].items():
             print(f"\n{rel.replace('_', ' ').upper()}:")
             for p in peer_list:
-                print(f"  * {p['ticker']} ({p['name']}) — {p['sector']}")
+                print(f"  * {p['ticker']} ({p['name']}) — {p['sector']} [{p['source']} → {p['target']}]")
                 if p['description']:
                     print(f"    {p['description']}")
 
