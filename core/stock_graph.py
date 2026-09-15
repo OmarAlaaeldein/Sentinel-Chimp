@@ -149,6 +149,8 @@ class StockGraph:
         relation_types: Optional[Sequence[str]] = None,
     ) -> List[Tuple[StockNode, GraphEdge]]:
         """Find neighboring nodes up to a certain depth."""
+        if not isinstance(depth, int) or depth < 1:
+            raise ValueError("depth must be a positive integer")
         sym = ticker.upper()
         if sym not in self._nodes:
             return []
@@ -373,9 +375,8 @@ def build_default_graph(*, include_sectivia: bool = True) -> StockGraph:
         try:
             from core.sectivia_import import merge_cached_sectivia
 
-            merge_cached_sectivia(g, optional=True)
-        except Exception:
-            # Offline / missing optional deps must not break default graph.
-            pass
+            g.import_status = merge_cached_sectivia(g, optional=True)
+        except Exception as exc:
+            g.import_status = {"status": "error", "error": str(exc)}
     return g
 

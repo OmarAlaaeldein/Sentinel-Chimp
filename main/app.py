@@ -9,12 +9,12 @@ import pandas as pd
 import numpy as np
 import math
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import copy
 import time
 import requests
 import xml.etree.ElementTree as ET
 import os
-import urllib3
 import webbrowser
 import csv
 import re
@@ -31,8 +31,6 @@ try:
 except Exception:  # pragma: no cover - defensive
     PLOTLY_AVAILABLE = False
 
-# Suppress SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Charting Libraries ---
 from matplotlib.figure import Figure
@@ -78,6 +76,7 @@ from ui.options_3d import (
     CAT_EARN_OVER,
 )
 from ui.prefs import load_prefs, save_prefs
+from ui.storage import config_dir
 from ui.watchlist import load_watchlist, add_ticker as watchlist_add, remove_ticker as watchlist_remove
 from ui.stock_graph import open_stock_graph_window, resolve_graph_ticker
 
@@ -108,7 +107,7 @@ class MarketApp:
         
         self.use_sentiment = False
         # Vol / Greek experiments (EWMA path preserved unless blend flags are on)
-        self._prefs_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._prefs_root = config_dir()
         _prefs = load_prefs(self._prefs_root)
         self.use_garch_blend = bool(_prefs.get("use_garch_blend", False))
         self.use_smile_vol = bool(_prefs.get("use_smile_vol", False))
@@ -382,7 +381,7 @@ class MarketApp:
         return "\n".join(lines)
 
     def _persist_vol_prefs(self):
-        save_prefs(
+        saved = save_prefs(
             self._prefs_root,
             use_garch_blend=self.use_garch_blend,
             use_smile_vol=self.use_smile_vol,
@@ -391,6 +390,9 @@ class MarketApp:
             show_ichimoku=self.show_ichimoku,
             show_earnings=self.show_earnings,
         )
+
+        if not saved:
+            self.log("Could not save preferences; settings will not survive restart.")
 
     def _refresh_vol_label(self):
         """Update HV/EWMA/GARCH label marks immediately (no network reload)."""
@@ -474,7 +476,11 @@ class MarketApp:
         sym = self.entry_ticker.get().upper().strip()
         if not sym:
             return
-        self._watchlist = watchlist_add(self._prefs_root, sym)
+        try:
+            self._watchlist = watchlist_add(self._prefs_root, sym)
+        except OSError as exc:
+            messagebox.showerror("Watchlist", f"Could not save watchlist: {exc}")
+            return
         self._refresh_watchlist_combo()
         self.var_watch.set(sym)
         self.log(f"Watchlist + {sym} ({len(self._watchlist)} tickers)")
@@ -483,7 +489,11 @@ class MarketApp:
         sym = (self.var_watch.get() or self.entry_ticker.get() or "").upper().strip()
         if not sym:
             return
-        self._watchlist = watchlist_remove(self._prefs_root, sym)
+        try:
+            self._watchlist = watchlist_remove(self._prefs_root, sym)
+        except OSError as exc:
+            messagebox.showerror("Watchlist", f"Could not save watchlist: {exc}")
+            return
         self._refresh_watchlist_combo()
         if self._watchlist:
             self.var_watch.set(self._watchlist[0])
@@ -617,7 +627,9 @@ class MarketApp:
                 self.btn_graph.config(state="disabled")
             
             # Start background fundamental fetch
-            threading.Thread(target=self.get_info, daemon=True).start()
+            self._fundamental_request_id = getattr(self, "_fundamental_request_id", 0) + 1
+            self._close_options_window()
+            threading.Thread(target=self.get_info, args=(self.stock, new_ticker, self._fundamental_request_id), daemon=True).start()
             self.log(f"Ticker changed: {new_ticker}. Session reused.")
 
         # Always refresh the chart (light logic)
@@ -863,7 +875,7 @@ class MarketApp:
         for q in queries:
             try:
                 url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
-                resp = requests.get(url, headers=headers, timeout=5, verify=False) 
+                resp = requests.get(url, headers=headers, timeout=5)
                 
                 if resp.status_code == 200:
                     root = ET.fromstring(resp.content)
@@ -892,9 +904,9 @@ class MarketApp:
                         if title and title not in seen_titles:
                             seen_titles.add(title)
                             try:
-                                dt = pd.to_datetime(pub_date_str)
+                                dt = pd.to_datetime(pub_date_str, utc=True)
                             except:
-                                dt = datetime.now()
+                                dt = datetime.now(timezone.utc)
 
                             news_items.append({
                                 'title': title,
@@ -911,6 +923,14 @@ class MarketApp:
                  self.log(f"RSS Variation Error ({q}): {e}")
         
         return news_items
+
+    def _chart_news(self, ticker, stock_obj):
+        """News is optional: its failure must not discard usable chart history."""
+        try:
+            return self.calculate_sentiment(ticker, stock_obj)
+        except Exception as exc:
+            self.log(f"News refresh skipped: {exc}")
+            return None, []
 
     def calculate_sentiment(self, ticker, stock_obj):
         # 1. Check Cache
@@ -933,7 +953,7 @@ class MarketApp:
                     if not title.strip(): continue
                     
                     ts = n.get('providerPublishTime', time.time())
-                    dt = datetime.fromtimestamp(ts)
+                    dt = datetime.fromtimestamp(ts, timezone.utc)
                     summary = n.get('summary') or f"Source: {n.get('publisher', 'Yahoo')}"
                     
                     all_news.append({
@@ -948,13 +968,18 @@ class MarketApp:
 
         # B. Google RSS (Backup)
         if len(all_news) < 5:
-            google_news = self.get_google_news_rss(ticker)
-            all_news.extend(google_news)
+            try:
+                all_news.extend(self.get_google_news_rss(ticker))
+            except Exception as exc:
+                self.log(f"News unavailable: {exc}")
 
         if not all_news:
             return None, []
 
         # 3. Sort: Newest First
+        for item in all_news:
+            stamp = pd.to_datetime(item.get('published'), utc=True, errors='coerce')
+            item['published'] = stamp if not pd.isna(stamp) else pd.Timestamp.now(tz='UTC')
         all_news.sort(key=lambda x: x['published'], reverse=True)
         all_news = all_news[:self.headline_limit]
 
@@ -1192,7 +1217,7 @@ class MarketApp:
             garch_vol, garch_info = garch11_vol_forecast(log_rets)
             
             # --- 4. Sentiment Analysis ---
-            sentiment_score, headlines = self.calculate_sentiment(ticker, stock)
+            sentiment_score, headlines = self._chart_news(ticker, stock)
 
             # --- 5. UI Updates ---
             last_copy = last.copy()
@@ -1421,6 +1446,7 @@ class MarketApp:
     
     def visualize_3d(self, option_type):
         """Interactive 3D landscape: Days × Strike × EV@Ask ($) with readable chrome."""
+        ticker = self.current_ticker
         with self._scan_lock:
             if not getattr(self, 'scan_data', None):
                 messagebox.showinfo("3D Plot", "No data to plot. Please run a Scan first.")
@@ -1431,7 +1457,7 @@ class MarketApp:
             return
 
         vis_win = Toplevel(self.root)
-        vis_win.title(f"3D Analysis: {self.current_ticker} {option_type}s — EV@Ask ($)")
+        vis_win.title(f"3D Analysis: {ticker} {option_type}s — EV@Ask ($)")
         vis_win.geometry("1100x900")
         vis_win.configure(bg=APP_BG)
 
@@ -1445,6 +1471,7 @@ class MarketApp:
         var_earn_over = tk.BooleanVar(value=True)
         var_reg_under = tk.BooleanVar(value=True)
         var_reg_over = tk.BooleanVar(value=True)
+        var_fair = tk.BooleanVar(value=True)
 
         fig = Figure(figsize=(9, 6.5), dpi=110, facecolor=APP_BG)
         ax = fig.add_subplot(111, projection='3d')
@@ -1490,6 +1517,7 @@ class MarketApp:
                 show_earn_over=var_earn_over.get(),
                 show_under=var_reg_under.get(),
                 show_over=var_reg_over.get(),
+                show_fair=var_fair.get(),
             )
             export_state["rows"] = rows
 
@@ -1497,7 +1525,7 @@ class MarketApp:
             dates_x, strikes, evs, colors, sizes = [], [], [], [], []
             all_evs = [float(r['ev']) for r in base_data if r.get('ev') is not None]
             if not all_evs:
-                style_mpl_3d_axes(ax, self.current_ticker, option_type)
+                style_mpl_3d_axes(ax, ticker, option_type)
                 canvas.draw()
                 return
             cmap = plt.get_cmap('RdYlGn')
@@ -1540,8 +1568,8 @@ class MarketApp:
                 except Exception:
                     pass
 
-            style_mpl_3d_axes(ax, self.current_ticker, option_type)
-            btn_export.config(command=lambda: self.save_3d_html(option_type, export_state["rows"]))
+            style_mpl_3d_axes(ax, ticker, option_type)
+            btn_export.config(command=lambda: self.save_3d_html(option_type, export_state["rows"], ticker=ticker))
             canvas.draw()
 
         ttk.Label(ctrl_frame, text="[Cyan]", foreground="#00e6e6").pack(side="left")
@@ -1560,10 +1588,13 @@ class MarketApp:
             ctrl_frame, text="Over (regular)", variable=var_reg_over, command=refresh_plot,
         ).pack(side="left", padx=8)
 
+        ttk.Checkbutton(ctrl_frame, text="Fair (no edge)", variable=var_fair,
+                        command=refresh_plot).pack(side="left", padx=8)
         refresh_plot()
 
-    def save_3d_html(self, option_type, rows):
+    def save_3d_html(self, option_type, rows, *, ticker=None):
         """Export Plotly HTML with EV@Ask colorbar, hover, camera, optional heatmap."""
+        ticker = ticker or self.current_ticker
         if not PLOTLY_AVAILABLE:
             messagebox.showerror("Error", "Plotly not installed.")
             return
@@ -1577,7 +1608,7 @@ class MarketApp:
             return
 
         filename = filedialog.asksaveasfilename(
-            initialfile=f"{self.current_ticker}_{option_type}_3D_Analysis.html",
+            initialfile=f"{ticker}_{option_type}_3D_Analysis.html",
             defaultextension=".html",
             filetypes=[("HTML Files", "*.html")]
         )
@@ -1600,7 +1631,7 @@ class MarketApp:
                     continue
 
             fig = build_plotly_figure(
-                self.current_ticker,
+                ticker,
                 option_type,
                 days,
                 strikes,
@@ -1692,35 +1723,41 @@ class MarketApp:
         # Search ALL dates, but enable filtering for "Under" only
         if hasattr(self, 'all_exps'):
             self.log(f"Scanning {len(self.all_exps)} chains for value...")
-            threading.Thread(target=self.fetch_options_batch, args=(self.all_exps, True), daemon=True).start()
+            self._start_options_scan(self.all_exps, True)
     
     
     def _normalize_div_yield(self, div):
         """Normalize a dividend yield to decimal form (e.g. 0.0294 for 2.94%)."""
         return normalize_div_yield(div)
 
-    def get_info(self):
-        """Consolidated fundamental fetch called when ticker changes."""
+    def get_info(self, stock=None, ticker=None, request_id=None):
+        """Compute on isolated state; only publish for the current request on Tk."""
+        stock = self.stock if stock is None else stock
+        ticker = self.current_ticker if ticker is None else ticker
+        request_id = getattr(self, "_fundamental_request_id", 0) if request_id is None else request_id
+        worker = copy.copy(self)
+        worker.current_ticker = ticker
+        worker.stock = stock
+        worker.valuation_status = {}
         try:
-            stock = self.stock
             info = self.data_provider.get_info(stock)
-            
-            # 1. Basic Fundamental Extraction
-            self.pe_fwd = self._to_finite_float(info.get('forwardPE'))
-            self.pe_ttm = self._to_finite_float(info.get('trailingPE'))
-            self.peg_ratio = self._to_finite_float(info.get('trailingPegRatio'))
-            self.earnings_growth = self._to_finite_float(info.get('earningsGrowth'))
-            
-            # 2. Compute derived valuation metrics
-            self.calculate_pe_percentile(stock)
-            self.compute_peg_ratio()
-            
-            # 3. Force UI update now that data is ready
-            self.root.after(0, self.update_pe_display)
-            
-        except Exception as e:
-            self.log(f"Fundamental fetch error: {e}")
-            self.root.after(0, self.update_pe_display)
+            worker.pe_fwd = self._to_finite_float(info.get('forwardPE'))
+            worker.pe_ttm = self._to_finite_float(info.get('trailingPE'))
+            worker.peg_ratio = self._to_finite_float(info.get('trailingPegRatio'))
+            worker.earnings_growth = self._to_finite_float(info.get('earningsGrowth'))
+            worker.calculate_pe_percentile(stock)
+            worker.compute_peg_ratio()
+        except Exception as exc:
+            self.log(f"Fundamental fetch error: {exc}")
+            return
+
+        def publish():
+            if ticker != self.current_ticker or request_id != getattr(self, "_fundamental_request_id", 0):
+                return
+            for name in ("pe_fwd", "pe_ttm", "peg_ratio", "earnings_growth", "pe_percentile", "valuation_status"):
+                setattr(self, name, getattr(worker, name))
+            self.update_pe_display()
+        self.root.after(0, publish)
 
     def get_smart_dividend(self, stock_obj):
         """Dividend yield as decimal via shared ``resolve_dividend_yield``."""
@@ -1731,6 +1768,7 @@ class MarketApp:
 
     def open_options_window(self):
         if not self.current_ticker: return
+        self._close_options_window()
         refs = build_options_explorer(
             self.root,
             self.current_ticker,
@@ -1742,10 +1780,14 @@ class MarketApp:
             on_exp_select=self.on_exp_select,
             on_sort_column=self.treeview_sort_column,
         )
+        self._options_window = refs["win"]
+        self._options_window.protocol("WM_DELETE_WINDOW", self._close_options_window)
+        self.all_exps = []
+        self.scan_data = []
         self.entry_date = refs["entry_date"]
         self.exp_list = refs["exp_list"]
         self.tree = refs["tree"]
-        threading.Thread(target=self.load_expirations, daemon=True).start()
+        threading.Thread(target=self.load_expirations, args=(self.stock, self.current_ticker, self.exp_list), daemon=True).start()
 
     def export_to_csv(self):
 
@@ -1785,10 +1827,27 @@ class MarketApp:
             messagebox.showerror("Export Error", f"Failed to save CSV:\n{e}")
             self.log(f"Export Error: {e}")
 
-    def load_expirations(self):
-        stock = self.stock
-        self.all_exps = self.data_provider.get_option_expirations(stock)
-        self.root.after(0, lambda: self.update_exp_list(self.all_exps))
+    def _close_options_window(self):
+        self._options_request_id = getattr(self, "_options_request_id", 0) + 1
+        win = getattr(self, "_options_window", None)
+        if win is not None:
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+        self._options_window = None
+
+    def load_expirations(self, stock, ticker, exp_list):
+        try:
+            expirations = list(self.data_provider.get_option_expirations(stock))
+        except Exception as exc:
+            self.log(f"Expiration fetch failed: {exc}")
+            return
+        def publish():
+            if ticker == self.current_ticker and exp_list is self.exp_list and exp_list.winfo_exists():
+                self.all_exps = expirations
+                self.update_exp_list(expirations)
+        self.root.after(0, publish)
 
     def update_exp_list(self, exp_list):
         self.exp_list.delete(0, "end")
@@ -1811,7 +1870,7 @@ class MarketApp:
         dates = [self.exp_list.get(i) for i in sel]
         if not dates: return
         for i in self.tree.get_children(): self.tree.delete(i)
-        threading.Thread(target=self.fetch_options_batch, args=(dates,), daemon=True).start()
+        self._start_options_scan(dates)
 
     def _fetch_rate_curve(self):
         """Fetches ^IRX (short) and ^TNX (long) rates once. Returns (short_rate, long_rate)."""
@@ -1862,34 +1921,43 @@ class MarketApp:
         for vals, tag in rows:
             tree.insert("", "end", values=vals, tags=(tag,))
 
-    def fetch_options_batch(self, dates, filter_under_only=False):
-        """Options Finder batch — delegates pricing/filters to ``core.scan_service``."""
-        with self._scan_lock:
-            self.scan_data = []
-
-        def on_ui_batch(items):
-            batch = list(items)
-            if batch:
-                self.root.after(0, lambda b=batch: self._flush_option_rows(b))
-
-        result = scan_option_chains(
-            data_provider=self.data_provider,
-            stock=self.stock,
-            spot=float(self.current_price),
-            dates=dates,
-            all_exps=getattr(self, "all_exps", None),
-            projected_earnings=self.projected_earnings,
-            ewma_vol=getattr(self, "ewma_vol", 0.0),
-            garch_vol=getattr(self, "garch_vol", 0.0),
+    def _start_options_scan(self, dates, filter_under_only=False):
+        self._options_request_id = getattr(self, "_options_request_id", 0) + 1
+        token = self._options_request_id
+        ticker, tree = self.current_ticker, self.tree
+        inputs = dict(
+            data_provider=self.data_provider, stock=self.stock, spot=float(self.current_price),
+            dates=tuple(dates), all_exps=tuple(getattr(self, "all_exps", ())),
+            projected_earnings=tuple(self.projected_earnings),
+            ewma_vol=getattr(self, "ewma_vol", 0.0), garch_vol=getattr(self, "garch_vol", 0.0),
             hv_30=getattr(self, "hv_30", 0.0),
             use_garch_blend=getattr(self, "use_garch_blend", False),
             use_smile_vol=getattr(self, "use_smile_vol", False),
             use_american_greeks=getattr(self, "use_american_greeks", True),
             under_only=filter_under_only,
-            dividend_yield=self.get_smart_dividend(self.stock),
-            log=self.log,
-            on_ui_batch=on_ui_batch,
         )
-        if result.scan_buf:
-            with self._scan_lock:
-                self.scan_data.extend(result.scan_buf)
+        self.scan_data = []
+        threading.Thread(target=self.fetch_options_batch, args=(inputs, ticker, tree, token), daemon=True).start()
+
+    def _options_request_current(self, ticker, tree, token):
+        return (ticker == self.current_ticker and tree is self.tree
+                and token == self._options_request_id and bool(tree.winfo_exists()))
+
+    def fetch_options_batch(self, inputs, ticker, tree, token):
+        """Workers receive immutable input snapshots; Tk owns all publication."""
+        def publish_batch(batch):
+            if self._options_request_current(ticker, tree, token):
+                for values, tag in batch:
+                    tree.insert("", "end", values=values, tags=(tag,))
+        def on_ui_batch(items):
+            self.root.after(0, lambda batch=list(items): publish_batch(batch))
+        try:
+            result = scan_option_chains(**inputs, log=self.log, on_ui_batch=on_ui_batch)
+        except Exception as exc:
+            self.log(f"Options scan failed: {exc}")
+            return
+        def publish_result():
+            if self._options_request_current(ticker, tree, token):
+                with self._scan_lock:
+                    self.scan_data = list(result.scan_buf)
+        self.root.after(0, publish_result)

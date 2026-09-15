@@ -140,6 +140,10 @@ if [[ "$PLATFORM" == "linux" ]]; then
     --strip
     --name Sentinel
     --collect-submodules matplotlib
+    --collect-all pandas_market_calendars
+    --collect-all exchange_calendars
+    --collect-all tzdata
+    --add-data "$ROOT/data:data"
     --collect-submodules core
     --collect-submodules main
     "${EXCLUDE_ARGS[@]}"
@@ -174,6 +178,10 @@ elif [[ "$PLATFORM" == "macos" ]]; then
     --strip
     --name Sentinel
     --collect-submodules matplotlib
+    --collect-all pandas_market_calendars
+    --collect-all exchange_calendars
+    --collect-all tzdata
+    --add-data "$ROOT/data:data"
     --collect-submodules core
     --collect-submodules main
     "${EXCLUDE_ARGS[@]}"

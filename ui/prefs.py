@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Dict
+import warnings
+from ui.storage import atomic_json
 
 DEFAULT_PREFS: Dict[str, Any] = {
     "use_garch_blend": False,
@@ -34,14 +36,15 @@ def load_prefs(root_dir: str) -> Dict[str, Any]:
     return data
 
 
-def save_prefs(root_dir: str, **kwargs) -> None:
+def save_prefs(root_dir: str, **kwargs) -> bool:
     path = prefs_path(root_dir)
     data = load_prefs(root_dir)
     for k, v in kwargs.items():
         if k in DEFAULT_PREFS:
             data[k] = bool(v)
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except OSError:
-        pass
+        atomic_json(path, data)
+        return True
+    except OSError as exc:
+        warnings.warn(f"Could not save preferences: {exc}", RuntimeWarning)
+        return False

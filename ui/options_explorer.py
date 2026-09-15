@@ -34,7 +34,7 @@ ANALYZER_LEGEND = (
     "red = Over (Bid beats Fair enough to sell) · no tint = Fair (no tradeable edge).\n"
     "EV@Ask $ = Fair − Ask (buy-side edge). Mid $ = (bid+ask)/2. "
     "Fair $ uses forecast vol only (EWMA ± optional GARCH), not contract IV. "
-    "Imp Vol is market IV (display / Greeks)."
+    "Imp Vol is market IV (display / Greeks). BE $ assumes entry at Ask; POP is risk-neutral at that breakeven."
 )
 
 COLUMN_HELP = {
@@ -43,9 +43,9 @@ COLUMN_HELP = {
     "EV@Ask $": "Fair $ − Ask. Positive = buy-side tradeable edge before hurdles.",
     "Verdict": "Under / Over / Fair after dollar + % hurdles vs the tradeable side of the quote. See docs/LOGIC_REVIEW.md.",
     "Spread%": "(Ask − Bid) / Mid. Liquidity filter rejects spreads > 20%.",
-    "BE $": "Breakeven underlying price at Mid $ (call: K+mid, put: K−mid).",
+    "BE $": "Long-entry breakeven at Ask $ (call: K+ask, put: K−ask).",
     "Imp Vol": "Listed / smile-smoothed IV for display and Greeks — not used for Fair $.",
-    "POP": "Rough risk-neutral probability of finishing beyond breakeven (market IV).",
+    "POP": "Risk-neutral probability of finishing beyond ask-based long breakeven (market IV); not a real-world forecast.",
 }
 
 
@@ -132,10 +132,6 @@ def build_options_explorer(
             command=lambda _c=c: on_sort_column(tree, _c, False),
         )
         tree.column(c, width=col_widths.get(c, 64), anchor="center")
-        help_txt = COLUMN_HELP.get(c)
-        if help_txt:
-            # Heading widgets are not first-class; bind identity via column id on motion.
-            pass
 
     scr = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
     tree.configure(yscroll=scr.set)
@@ -185,6 +181,14 @@ def build_options_explorer(
         justify="left",
     )
     tip_lbl.pack(fill="x", pady=(6, 0))
+
+    def show_column_help(event):
+        if tree.identify_region(event.x, event.y) == "heading":
+            column = tree.identify_column(event.x)
+            index = int(column[1:]) - 1
+            if 0 <= index < len(OPTION_COLS):
+                tip_lbl.config(text=COLUMN_HELP.get(OPTION_COLS[index], ANALYZER_LEGEND))
+    tree.bind("<Motion>", show_column_help, add="+")
 
     return {
         "win": win,

@@ -74,6 +74,10 @@ $PyiArgs = @(
   "--noconsole",
   "--name", "Sentinel",
   "--collect-submodules", "matplotlib",
+  "--collect-all", "pandas_market_calendars",
+  "--collect-all", "exchange_calendars",
+  "--collect-all", "tzdata",
+  "--add-data", "$Root/data;data",
   "--collect-submodules", "core",
   "--collect-submodules", "main"
 ) + $Exclude

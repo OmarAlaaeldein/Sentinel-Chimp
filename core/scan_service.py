@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from core.pricing import VegaChimpCore
+from core.expiry_time import remaining_years
 from core.technicals import calculate_technicals
 from core.vol_models import (
     blend_forecast_vol,
@@ -145,7 +146,7 @@ def _as_decimal_yield(value: Any, *, percent_units: bool) -> Optional[float]:
     return d
 
 
-def resolve_dividend_yield(data_provider, stock_obj) -> float:
+def resolve_dividend_yield(data_provider, stock_obj, *, status=None) -> float:
     """Dividend yield as a decimal fraction.
 
     Per-source units (verified against live yfinance quotes, 2026-09):
@@ -155,27 +156,29 @@ def resolve_dividend_yield(data_provider, stock_obj) -> float:
     old ``> 1`` heuristic misread as 98% / 34%.
     Priority: fast_info → info.dividendYield → trailing; else 0.0.
     """
+    status = {} if status is None else status
+    status.update(source="missing", errors=[])
     try:
         fast_info = data_provider.get_fast_info(stock_obj)
-        fast_div = _as_decimal_yield(
-            fast_info.get("dividend_yield")
-            if isinstance(fast_info, dict)
-            else getattr(fast_info, "get", lambda *a: None)("dividend_yield"),
-            percent_units=False,
-        )
-        if fast_div is not None:
-            return fast_div
+        value = _as_decimal_yield(fast_info.get("dividend_yield"), percent_units=False)
+        if value is not None:
+            status["source"] = "fast_info.dividend_yield"
+            return value
+    except Exception as exc:
+        status["errors"].append({"source": "fast_info", "error": str(exc)})
+    try:
         info = data_provider.get_info(stock_obj)
-        div = _as_decimal_yield(info.get("dividendYield"), percent_units=True)
-        if div is not None:
-            return div
-        div = _as_decimal_yield(
-            info.get("trailingAnnualDividendYield"), percent_units=False
-        )
-        if div is not None:
-            return div
-    except Exception:
-        pass
+    except Exception as exc:
+        status["errors"].append({"source": "info", "error": str(exc)})
+        info = {}
+    for field, percent in (("dividendYield", True), ("trailingAnnualDividendYield", False)):
+        try:
+            value = _as_decimal_yield(info.get(field), percent_units=percent)
+            if value is not None:
+                status["source"] = f"info.{field}"
+                return value
+        except Exception as exc:
+            status["errors"].append({"source": field, "error": str(exc)})
     return 0.0
 
 
@@ -264,6 +267,10 @@ class OptionScanRow:
     verdict: str
     is_earnings: bool = False
     tag: str = ""
+    bid: float = 0.0
+    ask: float = 0.0
+    category: Optional[str] = None
+    probability_model: str = "risk-neutral lognormal, market IV, long entry at ask"
 
     def tree_vals(self) -> tuple:
         """Tuple matching Options Explorer column order."""
@@ -288,7 +295,9 @@ class OptionScanRow:
         )
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data["category"] = self.category or self.verdict.rstrip(" !")
+        return data
 
 
 @dataclass
@@ -298,6 +307,7 @@ class ScanResult:
     forecast_vol: float = 0.0
     spot: float = 0.0
     dividend_yield: float = 0.0
+    dividend_status: dict = field(default_factory=dict)
     rules_log: str = SCAN_RULES_LOG
     errors: List[dict] = field(default_factory=list)
     requested_expiries: int = 0
@@ -443,6 +453,7 @@ def scan_option_chains(
     long_rate: Optional[float] = None,
     log: Optional[LogFn] = None,
     on_ui_batch: Optional[UiBatchFn] = None,
+    valuation_time: Optional[datetime] = None,
 ) -> ScanResult:
     """Run the Options Finder scan over ``dates``.
 
@@ -455,8 +466,9 @@ def scan_option_chains(
             log(msg)
 
     spot = float(spot)
+    dividend_status = {"source": "override", "errors": []}
     if dividend_yield is None:
-        dividend_yield = resolve_dividend_yield(data_provider, stock)
+        dividend_yield = resolve_dividend_yield(data_provider, stock, status=dividend_status)
     DIV_YIELD = float(dividend_yield)
 
     if short_rate is None or long_rate is None:
@@ -472,7 +484,7 @@ def scan_option_chains(
     )
 
     opt_type = (option_type or "all").strip().lower()
-    today = datetime.now().date()
+    valuation_time = valuation_time or pd.Timestamp.now(tz="UTC")
     ui_batch: List[Tuple[tuple, str]] = []
     under_rows: List[Tuple[float, OptionScanRow]] = []
     rows_out: List[OptionScanRow] = []
@@ -495,13 +507,10 @@ def scan_option_chains(
                 _log(SCAN_RULES_LOG)
                 rules_logged = True
 
-            exp_date = datetime.strptime(date, "%Y-%m-%d").date()
-            trading_days = int(np.busday_count(today, exp_date))
-            if trading_days < 0:
+            T = remaining_years(date, valuation_time)
+            if T <= 0:
                 _log(f"Skipping expired contract {date}")
                 continue
-            # 0DTE (expires today): half a session remains on average.
-            T = max(trading_days / 252.0, 0.5 / 252.0)
             RFR = interpolate_rfr(_short_rate, _long_rate, T)
 
             chain = data_provider.get_option_chain(stock, date)
@@ -644,9 +653,9 @@ def scan_option_chains(
 
                 try:
                     if kind_str == "call":
-                        breakeven_price = strike + market_price
+                        breakeven_price = strike + a
                     else:
-                        breakeven_price = strike - market_price
+                        breakeven_price = strike - a
                     if breakeven_price <= 0:
                         pop = 0.0
                     elif kind_str == "call":
@@ -680,9 +689,10 @@ def scan_option_chains(
                     "vol": float(vol_v[j]),
                     "is_earnings": is_earnings,
                     "is_good": is_undervalued,
+                    "verdict": verdict,
                 })
 
-                breakeven = strike + market_price if kind_str == "call" else strike - market_price
+                breakeven = strike + a if kind_str == "call" else strike - a
                 tag = ""
                 if is_undervalued:
                     tag = "green"
@@ -699,6 +709,8 @@ def scan_option_chains(
                     volume=float(vol_v[j]),
                     oi=oi,
                     mid=market_price,
+                    bid=b,
+                    ask=a,
                     spread_pct=sp,
                     breakeven=breakeven,
                     iv=iv,
@@ -711,6 +723,7 @@ def scan_option_chains(
                     vega=float(greeks["vega"]),
                     pop=float(pop),
                     verdict=display_verdict,
+                    category=verdict,
                     is_earnings=is_earnings,
                     tag=tag,
                 )
@@ -746,6 +759,7 @@ def scan_option_chains(
         forecast_vol=forecast_vol,
         spot=spot,
         dividend_yield=DIV_YIELD,
+        dividend_status=dividend_status,
         rules_log=SCAN_RULES_LOG,
         errors=errors,
         requested_expiries=len(dates),

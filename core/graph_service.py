@@ -30,25 +30,27 @@ def categorize_peers(graph: StockGraph, ticker: str) -> Dict[str, Any]:
     node = graph.get_node(sym)
     if not node:
         raise ValueError(f"Ticker {sym!r} not found in stock graph.")
-    neighbors = graph.get_neighbors(sym, depth=1)
     categorized: Dict[str, List[dict]] = {}
-    for n, edge in neighbors:
-        categorized.setdefault(edge.relation, []).append(
-            {
-                "ticker": n.ticker,
-                "name": n.name,
-                "sector": n.sector,
-                "sub_industry": n.sub_industry,
-                "description": edge.description,
-                "weight": edge.weight,
-            }
-        )
+    for edge in graph.edges:
+        if sym not in (edge.source, edge.target):
+            continue
+        peer = edge.target if edge.source == sym else edge.source
+        n = graph.get_node(peer)
+        if n is None:
+            continue
+        categorized.setdefault(edge.relation, []).append({
+            "ticker": n.ticker, "name": n.name, "sector": n.sector,
+            "sub_industry": n.sub_industry, "description": edge.description,
+            "weight": edge.weight, "source": edge.source, "target": edge.target,
+            "direction": "bidirectional" if edge.bidirectional else "outgoing" if edge.source == sym else "incoming",
+        })
     return {
         "action": "peers",
         "ticker": sym,
         "node": node.to_dict(),
         "peer_categories": categorized,
-        "peer_count": sum(len(v) for v in categorized.values()),
+        "peer_count": len({p["ticker"] for peers in categorized.values() for p in peers}),
+        "relationship_count": sum(len(v) for v in categorized.values()),
     }
 
 
@@ -62,6 +64,7 @@ def show_connections(
             "action": "summary",
             "total_nodes": len(nodes),
             "total_edges": len(graph.edges),
+            "import_status": getattr(graph, "import_status", {"status": "not requested"}),
             "sectors": sorted({n["sector"] for n in nodes}),
             "tickers": sorted(n["ticker"] for n in nodes),
         }
@@ -77,6 +80,8 @@ def show_connections(
             "name": n.name,
             "sector": n.sector,
             "relation": edge.relation,
+            "source": edge.source,
+            "target": edge.target,
             "description": edge.description,
             "weight": edge.weight,
         }
