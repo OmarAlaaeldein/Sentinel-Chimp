@@ -114,6 +114,53 @@ def build_parser(machine=False) -> argparse.ArgumentParser:
     )
     p_scan.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
+    p_batch = sub.add_parser(
+        "batch",
+        help="Scan multiple tickers in one process (shared provider = fewer Yahoo requests)",
+    )
+    p_batch.add_argument("tickers", nargs="+", metavar="TICKER", help="Symbols, e.g. LULU SPY QQQ")
+    p_batch.add_argument(
+        "--under-only",
+        action="store_true",
+        help="Only keep Under / Earnings Under, ranked by edge %%",
+    )
+    p_batch.add_argument(
+        "--max-expiries",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Limit to the first N listed expirations per ticker",
+    )
+    p_batch.add_argument(
+        "--out-dir",
+        required=True,
+        metavar="DIR",
+        help="Directory for sentinel_analyze_<T>.txt / sentinel_scan_<T>.json|txt artifacts",
+    )
+    p_batch.add_argument(
+        "--pause",
+        type=float,
+        default=1.0,
+        metavar="S",
+        help="Seconds to sleep between tickers (default: 1.0)",
+    )
+    p_batch.add_argument(
+        "--type",
+        dest="option_type",
+        choices=("call", "put", "all"),
+        default="all",
+        help="Option side filter (default: all)",
+    )
+    p_batch.add_argument("--garch", action="store_true", help="Blend EWMA with fitted GARCH(1,1) for forecast vol")
+    p_batch.add_argument("--smile", action="store_true", help="Smooth display IV with the per-expiry quadratic smile fit")
+    p_batch.add_argument("--euro-greeks", action="store_true", help="Use analytic European Greeks instead of American FD Greeks")
+    p_batch.add_argument(
+        "--div",
+        default=None,
+        metavar="YIELD",
+        help="Dividend yield override: decimal (0.0098) or percent (0.98%%)",
+    )
+
     sub.add_parser("verify", help="Offline math self-test (no network needed)")
 
     from main.model_cli import add_commands
@@ -155,6 +202,25 @@ def _json_safe(value):
     return value
 
 
+def _scan_payload(analysis, result, *, under_only: bool, limit: Optional[int] = None) -> dict:
+    rows = result.rows
+    if limit is not None and limit >= 0:
+        rows = rows[:limit]
+    return {
+        "analysis": analysis.to_dict(),
+        "forecast_vol": result.forecast_vol,
+        "dividend_yield": result.dividend_yield,
+        "dividend_status": result.dividend_status,
+        "rules": result.rules_log,
+        "count": len(rows),
+        "total_count": len(result.rows),
+        "requested_expiries": result.requested_expiries,
+        "rows": [r.to_dict() for r in rows],
+        "errors": result.errors,
+        "status": "partial" if result.errors and len(result.errors) < result.requested_expiries else "error" if result.errors else "ok",
+    }
+
+
 def _print_analysis(analysis, as_json: bool) -> None:
     if as_json:
         print(json.dumps(_json_safe(analysis.to_dict()), indent=2, allow_nan=False))
@@ -169,19 +235,7 @@ def _print_scan(analysis, result, *, under_only: bool, as_json: bool,
     if limit is not None and limit >= 0:
         rows = rows[:limit]
     if as_json:
-        payload = {
-            "analysis": analysis.to_dict(),
-            "forecast_vol": result.forecast_vol,
-            "dividend_yield": result.dividend_yield,
-            "dividend_status": result.dividend_status,
-            "rules": result.rules_log,
-            "count": len(rows),
-            "total_count": len(result.rows),
-            "requested_expiries": result.requested_expiries,
-            "rows": [r.to_dict() for r in rows],
-            "errors": result.errors,
-            "status": "partial" if result.errors and len(result.errors) < result.requested_expiries else "error" if result.errors else "ok",
-        }
+        payload = _scan_payload(analysis, result, under_only=under_only, limit=limit)
         print(json.dumps(_json_safe(payload), indent=2, allow_nan=False))
         return
 
@@ -261,6 +315,61 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if result.errors:
         return 4 if len(result.errors) == result.requested_expiries else 5
     return 0
+
+
+def cmd_batch(args: argparse.Namespace) -> int:
+    """Scan several tickers in ONE process with a shared provider.
+
+    One provider means the underlying history is fetched once per ticker and
+    the risk-free-rate curve once per run, instead of once per (analyze, scan)
+    subprocess pair. Per-ticker artifacts are written to --out-dir using the
+    same names the per-mode commands produce, and machine-parsable progress
+    lines ("BATCH <ticker> ok|error ...") go to stdout.
+    """
+    import contextlib
+    import io
+    import time as _time
+    from pathlib import Path as _Path
+
+    from core.data import YFinanceProvider
+    from core.scan_service import run_ticker_scan
+
+    out_dir = _Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    provider = YFinanceProvider()
+    failed = 0
+    for index, ticker in enumerate(args.tickers):
+        if index and args.pause > 0:
+            _time.sleep(args.pause)
+        try:
+            analysis, result = run_ticker_scan(
+                provider,
+                ticker,
+                under_only=args.under_only,
+                max_expiries=args.max_expiries,
+                option_type=args.option_type,
+                use_garch_blend=args.garch,
+                use_smile_vol=args.smile,
+                use_american_greeks=not args.euro_greeks,
+                dividend_yield=parse_div_yield(args.div),
+            )
+            (out_dir / f"sentinel_analyze_{ticker}.txt").write_text(
+                "\n".join(analysis.summary_lines) + "\n", encoding="utf-8")
+            payload = _scan_payload(analysis, result, under_only=args.under_only)
+            (out_dir / f"sentinel_scan_{ticker}.json").write_text(
+                json.dumps(_json_safe(payload), indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                _print_scan(analysis, result, under_only=args.under_only, as_json=False)
+            (out_dir / f"sentinel_scan_{ticker}.txt").write_text(buffer.getvalue(), encoding="utf-8")
+            under = sum(r.get("category", r.get("verdict")) in {"Under", "Earnings Under"}
+                        for r in payload["rows"] if isinstance(r, dict))
+            print(f"BATCH {ticker} ok under={under} contracts={payload['count']} status={payload['status']}",
+                  flush=True)
+        except Exception as exc:  # one bad ticker must not kill the batch
+            failed += 1
+            print(f"BATCH {ticker} error {type(exc).__name__}: {exc}", flush=True)
+    return 0 if failed == 0 else (1 if failed < len(args.tickers) else 2)
 
 
 def cmd_verify(_args: argparse.Namespace) -> int:
@@ -377,6 +486,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise LocalModelError("INVALID_ARGUMENT", "--limit must be nonnegative.")
             parse_div_yield(args.div)
             return cmd_scan(args)
+        if args.command == "batch":
+            if args.max_expiries is not None and args.max_expiries <= 0:
+                raise LocalModelError("INVALID_ARGUMENT", "--max-expiries must be positive.")
+            if args.pause < 0:
+                raise LocalModelError("INVALID_ARGUMENT", "--pause must be nonnegative.")
+            parse_div_yield(args.div)
+            return cmd_batch(args)
         if args.command == "verify":
             return cmd_verify(args)
         if args.command == "graph":
