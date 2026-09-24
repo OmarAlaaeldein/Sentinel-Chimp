@@ -228,7 +228,7 @@ def test_mixed_news_timestamps_are_aware_and_sorted():
     app.SENT_CACHE_DURATION = 60
     app.SENT_CACHE_MAX_TICKERS = 5
     app.headline_limit = 10
-    app.use_sentiment = False
+    app.use_laya = False
     app.get_google_news_rss = lambda ticker: [{"title": "RSS", "published": datetime(2026, 9, 12)}]
     yahoo = SimpleNamespace(news=[{"title": "Yahoo", "providerPublishTime": 1789171200}])
     _, items = app.calculate_sentiment("A", yahoo)

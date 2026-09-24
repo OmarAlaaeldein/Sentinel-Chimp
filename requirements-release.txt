@@ -1,4 +1,4 @@
-# Lite Mode packaging deps — no torch / transformers / accelerate / tensorflow.
+# Lite Mode packaging deps — no optional Laya packages (laya / laya-mlx).
 # Keep pins loose like requirements.txt for CI PyInstaller builds.
 numpy>=2.0
 pandas>=2.1.0

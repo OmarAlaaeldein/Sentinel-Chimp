@@ -15,7 +15,7 @@ INSTALL_DEPS=0
 usage() {
   echo "Usage: ./build_macos.sh [--auto|--lite|--full] [--onedir|--onefile] [--install-deps]"
   echo
-  echo "  --auto     Detect mode from self.use_sentiment in main/app.py (default)"
+  echo "  --auto     Detect mode from self.use_laya in main/app.py (default)"
   echo "  --lite     Exclude heavy AI dependencies"
   echo "  --full     Include AI dependencies from requirements.txt"
   echo "  --onedir   Build Sentinel.app as a directory bundle (default)"
@@ -65,39 +65,24 @@ if [[ ! -f "$APP_SCRIPT" ]]; then
   exit 1
 fi
 
-detect_sentiment_flag() {
-  local assignment
-  # Flag lives in main/app.py (MarketApp); sentinel.py is just the launcher.
-  assignment="$(grep -Eo 'self\.use_sentiment\s*=\s*(True|False)' "$ROOT/main/app.py" | head -n1 || true)"
-  if [[ -z "$assignment" ]]; then
-    return 1
-  fi
-
-  assignment="${assignment##*=}"
-  assignment="${assignment//[[:space:]]/}"
-
-  case "$assignment" in
-    True|False)
-      echo "$assignment"
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+detect_laya_flag() {
+  # Laya is optional at runtime and never bundled — always report False for packaging.
+  # Kept for --auto compatibility with historical full/lite switch.
+  echo "False"
+  return 0
 }
 
 if [[ "$MODE_REQUEST" == "auto" ]]; then
-  if SENTIMENT_FLAG="$(detect_sentiment_flag)"; then
-    if [[ "$SENTIMENT_FLAG" == "True" ]]; then
+  if LAYA_FLAG="$(detect_laya_flag)"; then
+    if [[ "$LAYA_FLAG" == "True" ]]; then
       MODE="full"
     else
       MODE="lite"
     fi
-    echo "[INFO] Detected self.use_sentiment = $SENTIMENT_FLAG -> $MODE build mode"
+    echo "[INFO] Detected self.use_laya = $LAYA_FLAG -> $MODE build mode"
   else
     MODE="lite"
-    echo "[WARN] Could not detect self.use_sentiment in main/app.py; defaulting to lite mode"
+    echo "[WARN] Could not detect self.use_laya in main/app.py; defaulting to lite mode"
   fi
 else
   MODE="$MODE_REQUEST"
@@ -157,7 +142,7 @@ fi
 
 REQUIRED_MODULES=(PyInstaller tkinter yfinance pandas numpy requests urllib3 matplotlib)
 if [[ "$MODE" == "full" ]]; then
-  REQUIRED_MODULES+=(torch transformers accelerate)
+  # Laya (laya / laya-mlx) is optional at runtime — not bundled in PyInstaller.
 fi
 
 if ! "$PYTHON_BIN" - "${REQUIRED_MODULES[@]}" <<'PY'
@@ -226,7 +211,7 @@ if [[ "$MODE" == "lite" ]]; then
     --exclude-module accelerate
   )
 else
-  echo "[INFO] AI mode enabled: including sentiment dependencies in build"
+  echo "[INFO] Full mode: Laya remains optional at runtime (pip install laya or laya-mlx); not bundled"
 fi
 
 if [[ "$BUNDLE_MODE" == "onefile" ]]; then

@@ -1,6 +1,6 @@
 # Sentinel-Chimp Logic Review (2026-09)
 
-Research-backed mapping of pricing / technical / sentiment logic to published
+Research-backed mapping of pricing / technical / polarity logic to published
 sources, correctness spot-checks, and performance/memory changes applied on
 `main`.
 
@@ -22,7 +22,7 @@ sources, correctness spot-checks, and performance/memory changes applied on
 | Granville | 1963 | On-Balance Volume |
 | Williams | 1973 | Williams %R (14) |
 | Lambert | 1980 | CCI (20, 0.015) |
-| Araci / ProsusAI FinBERT (arXiv:1908.10063 lineage; HuggingFace `ProsusAI/finbert`) | 2019 | Financial sentiment encoder; label map from `id2label` |
+| Laya typed decisions (local System-1; optional) | 2025+ | Optional headline polarity / choice+score; see `core/laya_decisions.py` |
 | Engle, “Autoregressive Conditional Heteroscedasticity…” | 1982 | ARCH foundation for `garch11_vol_forecast` |
 | Bollerslev, “Generalized Autoregressive Conditional Heteroskedasticity” | 1986 | GARCH(1,1) variance-targeted QMLE |
 | Gatheral, *The Volatility Surface* | 2006 | Smile phenomenology; code uses OLS quadratic in log-moneyness (not SVI) |
@@ -41,7 +41,7 @@ No fabricated citations were introduced.
 | American C−P bounds | `american_put_call_parity_bounds` | Inequality bounds (not European equality) |
 | EWMA vol | `ewma_vol_forecast` | λ=0.94; init at sample variance; annualized `√(var·252)` |
 | Technicals | `core/technicals.py` | Wilder / Appel / Bollinger / StochRSI / VWAP daily reset / OBV / ADX / %R / CCI |
-| FinBERT | `core/sentiment.py` | Lazy load; `id2label` → pos/neg indices; `eval()` + `no_grad` |
+| Laya (optional) | `core/laya_decisions.py` | Lazy optional import; `SENTINEL_LAYA=1`; skip + log if missing |
 | Term RFR | `main/app.py` + `YFinanceProvider.fetch_rate_curve` | ^IRX / ^TNX interpolate by T |
 | Fair vol (options scan) | `scan_option_chains` (`core/scan_service.py`) + `core/options_scan` | Forecast vol only (EWMA ± GARCH blend); contract IV is display/Greeks only |
 | Batch BS2002 | `bjerksund_stensland_batch` | Vectorized φ/Ψ/M; scanner uses when n≥64 |
@@ -56,7 +56,7 @@ No fabricated citations were introduced.
 3. **Dividend normalization** (`_normalize_div_yield`) already handles yfinance percent-vs-decimal ambiguity; left as-is.
 4. **IV solver** is bisection (not Newton); numerically robust and covered by round-trip tests.
 5. **Technicals** cross-check suite remains the regression oracle; vectorized CCI MAD matches prior `rolling.apply` definition.
-6. **Later landed on `main`:** optional fitted GARCH(1,1) + quadratic smile (GUI toggles); American FD Greeks in the scanner (default on). Still optional backlog: full SVI; analytic BS2002 Greeks. FinBERT raises on unexpected labels.
+6. **Later landed on `main`:** optional fitted GARCH(1,1) + quadratic smile (GUI toggles); American FD Greeks in the scanner (default on). Still optional backlog: full SVI; analytic BS2002 Greeks. FinBERT removed; optional Laya polarity behind `SENTINEL_LAYA=1`.
 
 ## Performance / memory changes
 
@@ -67,7 +67,7 @@ No fabricated citations were introduced.
 | Technicals | Vectorized rolling MAD for CCI; reuse TP; fewer helper columns | ~11.9 ms → ~8.0 ms / 500 bars (~1.5×) |
 | Data | TTL cache for ^IRX/^TNX (~5 min) and option chains (~60 s) | Removes repeat yfinance hits within a scan session |
 | Options scan | Vectorized mid/spread; index loop vs `iterrows`; batched `tree.insert` (40) | Lower CPU + far fewer UI-thread callbacks |
-| FinBERT | `model.eval()` after load (with existing `no_grad`) | Avoids dropout / train-mode overhead |
+| Laya | Lazy agent cache; never required for Lite | Skip scoring when unavailable |
 
 Pricing semantics for the options scan were later reworked (see “Options scan definition” below); dividend handling unchanged for speed work.
 
@@ -242,7 +242,7 @@ yfinance daily history often indexes as `datetime64[s]` while `get_earnings_date
 | :--- | :--- |
 | Data caches | `YFinanceProvider` history (32) + chain (128) caches size-capped with TTL + oldest-first eviction |
 | GUI caches | News capped at 5 tickers / 150 headlines; valuation cache capped at 16 entries; log widget trimmed to a ~300-line tail; chart frames released on ticker change |
-| Imports | `matplotlib.pyplot`, `plotly`, `torch`/`transformers` lazy — cold start avoids them until the feature is used |
+| Imports | `matplotlib.pyplot`, `plotly`, optional Laya lazy — cold start avoids them until the feature is used |
 | Scan | Vectorized liquidity/ATM masks; GARCH grid 64→16 + `max_iter` 80→32 |
-| Sentiment | Chunked inference (32 headlines/batch) instead of one giant padded batch |
+| Polarity | Optional Laya per-headline typed questions; news still capped at 150 |
 | Deps | `requirements.txt` drops `pytest` (CI-only) and `accelerate` (unused) |

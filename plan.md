@@ -1,3 +1,5 @@
+**Status (2026-09-24):** FinBERT / `core/sentiment.py` **removed**. Optional Laya polarity lives in `core/laya_decisions.py` (`SENTINEL_LAYA=1`). Historical FinBERT audit items below are superseded.
+
 # PyStock-Sentinel: Technical Indicators & Option Pricing Audit Plan (Historical Snapshot)
 
 This document started as a gap-analysis checklist. It now serves as a historical record of prior
@@ -24,7 +26,7 @@ Implemented (among other items):
 Still open / optional backlog:
 - Full SVI / local-vol smile (quadratic OLS is the lite path)
 - Ichimoku Senkou extension past last bar; econ calendar (FOMC/CPI) overlays; semantic arb / fund-bias filter
-- Stricter FinBERT label-order assert (validation already present)
+- ~~Stricter FinBERT label-order assert~~ (removed with FinBERT)
 
 ---
 
@@ -51,7 +53,7 @@ if div is None:
         div = div / 100
 ```
 
-### A2. FinBERT Label Order May Be Wrong (Line 130-131)
+### A2. FinBERT Label Order May Be Wrong — **SUPERSEDED (FinBERT removed 2026-09-24)**
 **File:** `sentinel.py:130-131`
 **Severity:** Medium (sentiment inversion risk)
 
@@ -465,7 +467,7 @@ of midpoint price.
 | 15 | C5: Time-weighted vol blend | ✅ Reworked | Scanner fair vol is forecast-only (EWMA ± GARCH); market IV is display/Greeks. |
 | 16 | C9: Put-call parity check | ✅ Done | Residual warning logic present. |
 | 17 | C10: Add POP column | ✅ Done | POP column implemented in scanner. |
-| 18 | A2: FinBERT label-order validation | ⚠️ Partial | Warning validation exists; hard assert still optional. |
+| 18 | A2: FinBERT label-order validation | ✅ N/A | FinBERT removed; Laya optional instead. |
 | 19 | E3: Add OI and spread analysis | ✅ Done | OI and spread% columns plus filtering. |
 | 20 | E2: Add threading locks | ✅ Done | Locking added for shared structures. |
 | 21 | B4: Bollinger %B and bandwidth | ✅ Done | Implemented and displayed. |
@@ -480,4 +482,4 @@ Most high-impact items in this document are now completed.
 
 Current high-priority remaining work (see also `to_do.md`):
 - Phase II econ calendar overlays; Phase III fund-bias / semantic arb; Phase IV watchlists / background scans
-- Optional: full SVI smile; stricter FinBERT label assert; publish Actions workflow with `workflow` OAuth scope
+- Optional: full SVI smile; publish Actions workflow with `workflow` OAuth scope

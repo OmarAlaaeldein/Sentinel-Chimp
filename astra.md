@@ -9,7 +9,7 @@ See the current [CLI usage in README.md](README.md#local-ollama-cli) and the exp
 record at the end of this file. Remaining roadmap commands below are proposals;
 `explain`, GUI selection, loaded-model status and full config management are not implemented.
 
-**The best first release is model discovery, named configurations, dependable JSON, and one useful AI command.** Keep the existing argparse CLI and shared numerical services. Let users see the exact local model names, inspect their settings, save a configuration, and select it either interactively or with explicit arguments. Use that model to explain an existing analysis result. Extend news sentiment after extracting its orchestration from the GUI.
+**The best first release is model discovery, named configurations, dependable JSON, and one useful AI command.** Keep the existing argparse CLI and shared numerical services. Let users see the exact local model names, inspect their settings, save a configuration, and select it either interactively or with explicit arguments. Use that model to explain an existing analysis result. Optional Laya polarity may reuse extracted news orchestration from the GUI.
 
 An external agent should be able to discover commands and consume numerical results without using a language model inside Sentinel. Ollama is an optional application capability; the CLI contract should work equally well when AI is disabled.
 
@@ -24,12 +24,12 @@ An external agent should be able to discover commands and consume numerical resu
 | [core/pricing.py](core/pricing.py) | European pricing/IV, American BS2002, scalar/batch Greeks, lattice cross-check, EWMA. | Expose offline calculators and diagnostics without rewriting pricing. |
 | [core/technicals.py](core/technicals.py), [core/vol_models.py](core/vol_models.py) | Technicals, daily EMA mapping, Ichimoku, swing Fib, GARCH, smile, cones. | Expose already computed fields and cone data through the CLI. |
 | [core/data.py](core/data.py) | `DataProvider` and Yahoo implementation; in-memory bounded caches. | Add data provenance and later a snapshot provider. CLI processes currently lose these caches on exit. |
-| [core/sentiment.py](core/sentiment.py) | Only `FinBERT` / `ProsusAI/finbert`; 0–1 sentiment; model weights loaded on demand. | Introduce an optional Ollama provider and a common typed sentiment result. |
-| [main/app.py](main/app.py) | Controller still owns news retrieval, sentiment orchestration, valuation, exports, and worker coordination. `use_sentiment = False` is hardcoded. | Extract reusable services; add real settings and protect results against ticker/model changes. |
+| [core/laya_decisions.py](core/laya_decisions.py) | Optional Laya polarity / typed decisions (`SENTINEL_LAYA=1`). | Keep Laya optional; Ollama remains for `ask` explanations. |
+| [main/app.py](main/app.py) | Controller still owns news retrieval, sentiment orchestration, valuation, exports, and worker coordination. `use_laya` defaults off (`SENTINEL_LAYA`). | Extract reusable services; add real settings and protect results against ticker/model changes. |
 | [ui/prefs.py](ui/prefs.py), [ui/watchlist.py](ui/watchlist.py) | JSON persistence near application source; preferences accept only predefined boolean keys. | Move persistence to a headless module with shared config paths and atomic writes. |
 | [ui/chart.py](ui/chart.py), [ui/options_3d.py](ui/options_3d.py) | Chart rendering and reusable Plotly figure construction already exist. | Add file exports once package imports are decoupled from Tk. |
 | [ui/news.py](ui/news.py), [ui/options_explorer.py](ui/options_explorer.py), [ui/theme.py](ui/theme.py), [ui/tooltip.py](ui/tooltip.py) | Display helpers, readable theme, scan legend, and news reader. | Reuse their terminology; add a compact model/profile selector and status. |
-| [requirements.txt](requirements.txt), [requirements-ci.txt](requirements-ci.txt), [requirements-release.txt](requirements-release.txt) | Source requirements include torch/transformers; CI/release sets exclude them. | Add an explicitly supported lean CLI install and optional dependency groups. |
+| [requirements.txt](requirements.txt), [requirements-ci.txt](requirements-ci.txt), [requirements-release.txt](requirements-release.txt) | Source requirements are Lite-friendly; optional Laya packages install separately. | Keep lean CLI install; document Laya extras. |
 | [scripts](scripts), build scripts, [.github/workflows](.github/workflows) | Native Lite GUI releases; CI tests on Python 3.12. | Ship a console entry point and test packaged commands through captured stdout/stderr. |
 | [tests](tests), [README.md](README.md), [CLAUDE.md](CLAUDE.md), [docs/LOGIC_REVIEW.md](docs/LOGIC_REVIEW.md), [plan.md](plan.md), [to_do.md](to_do.md) | Broad numerical tests and an existing roadmap; older audit text contains superseded recommendations. | Add CLI/provider contract tests and keep new work separate from already shipped features. |
 
@@ -206,13 +206,13 @@ sentinel sentiment AMD --profile headlines --limit 20 --json
 sentinel sentiment --input headlines.json --profile headlines --offline --json
 ```
 
-Provide a small sentiment-provider interface with a FinBERT adapter and an Ollama adapter. Do not require Ollama to emulate tokenizer/model objects or the mutable `SentimentEngine.models` dictionary. Replace mixed numeric/`"Pending"` results at the new service boundary with objects containing `status`, `score`, `label`, and `reason`; adapt those back to the current GUI as needed.
+Provide a small sentiment-provider interface with a Laya adapter and an Ollama adapter. Do not require Ollama to emulate tokenizer/model objects or a mutable model registry. Replace mixed numeric/`"Pending"` results at the new service boundary with objects containing `status`, `score`, `label`, and `reason`; adapt those back to the current GUI as needed.
 
-If FinBERT is selected in offline mode, require existing local weights and prevent its current first-run download path. Missing weights should produce an explicit unavailable-model result.
+If Laya is selected in offline mode, require existing local weights and prevent its current first-run download path. Missing weights should produce an explicit unavailable-model result.
 
-Preserve headline IDs and input ordering. Require one result per supplied headline, validate uniqueness and score range, and report processed/failed counts. Start with small batches and a configurable headline cap; generative model cost differs from FinBERT's existing batches of 32. Use `null` with an unavailable status for failed classification, not a fabricated neutral score.
+Preserve headline IDs and input ordering. Require one result per supplied headline, validate uniqueness and score range, and report processed/failed counts. Start with small batches and a configurable headline cap; generative model cost differs from Laya's existing batches of 32. Use `null` with an unavailable status for failed classification, not a fabricated neutral score.
 
-Retain the existing 0–1 presentation where 0.5 is neutral, but mark scores with their provider and method: an Ollama-generated score is not automatically comparable to FinBERT's probability-derived score. Evaluate a small reviewed headline fixture before choosing task defaults. Keep news retrieval usable when sentiment is disabled.
+Retain the existing 0–1 presentation where 0.5 is neutral, but mark scores with their provider and method: an Ollama-generated score is not automatically comparable to Laya's probability-derived score. Evaluate a small reviewed headline fixture before choosing task defaults. Keep news retrieval usable when sentiment is disabled.
 
 Cache AI results by model digest, effective settings, task/prompt version, and input hash. The GUI currently keys its sentiment cache by ticker, which is insufficient once configurations can change. Bound cache size and record when cached results were generated. Show model-load/generation time and token counts when returned, without putting diagnostics into machine-readable stdout.
 
@@ -299,7 +299,7 @@ For discovery, add `sentinel commands --json`, `sentinel schema scan`, `sentinel
 | P0 | `main/cli.py::_write_csv()` prints after JSON. A mocked `scan TEST --json --csv PATH` returned exit 0 but `json.loads(stdout)` failed. | Move export status to stderr or envelope metadata; make one renderer own stdout. Also replace the pricing fallback `print()` in `core/pricing.py` with a diagnostic callback/log. | Small |
 | P0 | `scan_option_chains()` catches per-expiry exceptions and only logs. JSON mode suppresses that log; a mocked all-chain failure returned count 0 and exit 0 with no error field. | Add structured failures and completed/failed expiry lists to `ScanResult`; map empty/partial/error outcomes at the CLI boundary. Preserve GUI diagnostics. | Small–medium |
 | P0 | `--max-expiries -1` is accepted and effectively leaves scanning unlimited; `--limit -1` is also accepted. Invalid `--div` escapes as `ArgumentTypeError` from the handler. | Validate at parsing/service boundaries before constructing providers or doing I/O. Require positive expiry caps, nonnegative row limits, finite yields, and valid expiry filters. | Small |
-| P0 | `core/__init__.py` and `sentinel.py` eagerly import sentiment; `core/sentiment.py` attempts torch/transformers imports at module scope. A Python 3.11 CLI import actually loaded torch. | Make package re-exports lazy and import numerical/provider libraries inside their command paths. `--help`, schemas, and config commands should not load AI/numerical libraries. Preserve compatibility imports. | Small–medium |
+| P0 | `core/__init__.py` and `sentinel.py` eagerly import sentiment; `core/laya_decisions.py` attempts torch/transformers imports at module scope. A Python 3.11 CLI import actually loaded torch. | Make package re-exports lazy and import numerical/provider libraries inside their command paths. `--help`, schemas, and config commands should not load AI/numerical libraries. Preserve compatibility imports. | Small–medium |
 | P0 | Five batch-pricing tests fail on the system Python 3.9.6 with `'staticmethod' object is not callable`. | Declare the supported Python version and fail clearly before use. If retaining 3.9 support, remove module-level staticmethod wrappers from helper functions and attach them only on the class. Expand `verify` to exercise batch pricing. | Small |
 | P1 | CSV help promises full results, but `cmd_scan()` applies `--limit` before exporting; empty results produce no CSV file. | Apply the documented export contract, explicit UTF-8, stable field ordering, and header-only empty exports. | Small |
 | P1 | `OptionScanRow` omits original bid/ask, market IV versus smoothed display IV, contract symbol, and structured parity status; percentage units differ by field. | Add raw values and documented units. Preserve current fields during schema migration; represent verdict/side/earnings/parity separately from display text. | Small–medium |
@@ -308,7 +308,7 @@ For discovery, add `sentinel commands --json`, `sentinel schema scan`, `sentinel
 | P1 | Prefs/watchlists write directly, suppress I/O errors, and use source-relative locations. | Shared validated config/persistence, atomic writes, clear failures, and user-directory migration. | Medium |
 | P1 | Saving `[]` to the watchlist reloads the default five tickers; this was reproduced. | Distinguish an intentionally empty list from a missing or corrupt file. | Small |
 | P1 | News timestamps mix timezone-aware RSS parsing and naive Yahoo dates; sorting can fail for mixed inputs. RSS explicitly uses `verify=False` and global warning suppression. | Normalize news times to UTC, handle unknown dates explicitly, restore TLS verification, remove global warning suppression, and surface fetch failures. Validate current Yahoo payload shapes through fixtures. | Small–medium |
-| P1 | AI enablement is hardcoded, and the existing sentiment cache is keyed only by ticker. | Real `off`/FinBERT/Ollama settings, shared profile resolution, and model-aware result caching. | Medium |
+| P1 | AI enablement is hardcoded, and the existing sentiment cache is keyed only by ticker. | Real `off`/Laya/Ollama settings, shared profile resolution, and model-aware result caching. | Medium |
 | P1 | Chart workers have request IDs, but fundamentals and option workers still publish through mutable controller state. | Snapshot ticker/profile/options at job start; reject stale completions and bind callbacks to the originating window. Use bounded workers and cancellation for model switches. | Medium |
 | P1 | Windows release scripts build `--noconsole` GUI executables; no separate console artifact exists. | Build/test a CLI executable from `sentinel_cli.py`; use a package console entry point for source installs. | Medium |
 | P2 | 3D category helpers have only Under/Over and classify every non-Under row as Over, including Fair rows passed in `scan_buf`. | Carry the actual verdict into plot data and introduce an explicit Fair category/filter. | Small |
@@ -347,15 +347,15 @@ Expose configurable scan thresholds through a dataclass such as `ScanRules`. Pas
 
 **The GUI should use the same settings and services.**
 
-Add a small AI settings panel with provider `Off / Ollama / FinBERT`, a saved-profile selector, exact model name, Refresh Models, and a status message. Persist explicit selection and offer “Explain analysis” as a requested action. Model selection alone need not load weights. Make settings available even when sentiment is off; current widget construction depends on the hardcoded flag.
+Add a small AI settings panel with provider `Off / Ollama / Laya`, a saved-profile selector, exact model name, Refresh Models, and a status message. Persist explicit selection and offer “Explain analysis” as a requested action. Model selection alone need not load weights. Make settings available even when sentiment is off; current widget construction depends on the hardcoded flag.
 
 Use the same `core/config.py` and `core/ollama.py` as the CLI. Perform discovery/inference in bounded background jobs; publish only if ticker, profile, and job ID still match. Keep a frozen job context so changing the global model halfway through work cannot mix results. Reuse the existing `root.after(...)` publication pattern.
 
-Ollama client support can be included in Lite builds because inference runs in the separately installed Ollama service. Keep weights, torch, and transformers outside that feature's dependency path. Update release wording to distinguish bundled Ollama client support from optional FinBERT rather than saying all AI requires the source build.
+Ollama client support can be included in Lite builds because inference runs in the separately installed Ollama service. Keep weights, torch, and transformers outside that feature's dependency path. Update release wording to distinguish bundled Ollama client support from optional Laya rather than saying all AI requires the source build.
 
 Ship a real console executable for automation, especially on Windows: PyInstaller's windowed mode leaves standard streams unavailable there. Do not assume the current GUI executable can become a reliable CLI merely by accepting arguments. [PyInstaller standard-stream behavior](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#sys-stdin-sys-stdout-and-sys-stderr-in-noconsole-windowed-applications-windows-only)
 
-Add packaging metadata with a `sentinel = main.cli:main` console entry point and documented GUI/FinBERT extras. Make the no-argument `sentinel` console command print help; retain `python sentinel.py` for the established GUI behavior. Smoke-test installation, `--help`, `verify`, JSON parseability, exit codes, and execution from another working directory. Resource paths and user-state paths must remain distinct.
+Add packaging metadata with a `sentinel = main.cli:main` console entry point and documented GUI/Laya extras. Make the no-argument `sentinel` console command print help; retain `python sentinel.py` for the established GUI behavior. Smoke-test installation, `--help`, `verify`, JSON parseability, exit codes, and execution from another working directory. Resource paths and user-state paths must remain distinct.
 
 **Implement this as a sequence of reviewable changes.**
 
@@ -364,9 +364,9 @@ Add packaging metadata with a `sentinel = main.cli:main` console entry point and
 | 1 | Reliable existing CLI | `main/cli.py`, proposed `main/cli_output.py`, `core/scan_service.py`, package initializers | JSON+CSV parses; expected failures produce structured errors; invalid arguments do no network work; metadata/help paths avoid heavy imports. |
 | 2 | Config and model discovery | Proposed `core/config.py`, `core/ollama.py`, CLI commands | Models list/show/current; profiles can be saved/selected; config works from any cwd; daemon absence and missing models are explicit outcomes. |
 | 3 | First useful local AI feature | Proposed `core/ai_service.py`, `explain` command | A saved analysis gets a validated local explanation with model/profile/input provenance; numerical output is preserved. |
-| 4 | GUI settings and reusable news | `main/app.py`, `core/sentiment.py`, proposed news/sentiment adapters and `ui/ai_settings.py` | CLI/GUI select the same profile; stale jobs cannot overwrite current results; sentiment handles partial failures. |
+| 4 | GUI settings and reusable news | `main/app.py`, `core/laya_decisions.py`, proposed news/sentiment adapters and `ui/ai_settings.py` | CLI/GUI select the same profile; stale jobs cannot overwrite current results; sentiment handles partial failures. |
 | 5 | Broader CLI access | Existing numerical services; proposed fundamentals/watchlist modules | Expiries, rules, richer technicals, calculators, watchlist commands, then batch input and exports. |
-| 6 | Distribution and replay | Packaging metadata, build scripts, workflows, snapshot provider | Console builds work on supported platforms; lean install does not require FinBERT; offline replay makes no market/news calls. |
+| 6 | Distribution and replay | Packaging metadata, build scripts, workflows, snapshot provider | Console builds work on supported platforms; lean install does not require Laya; offline replay makes no market/news calls. |
 
 Implement only modules needed by each change; a full rewrite of the 1,858-line GUI controller is unnecessary. Before phase 4, the first three deliver a useful CLI independently. Console packaging can be pulled forward if prebuilt distribution is required for that first release.
 
@@ -395,7 +395,7 @@ Keep a separate opt-in live Ollama smoke test: list models, select a known insta
 | `python3 -m sentinel_cli --help` | Succeeded; advertised `analyze`, `scan`, `verify`. |
 | Mocked CLI/provider checks | Reproduced JSON contamination from CSV status, success on total chain failure, accepted negative limits, and uncaught dividend parsing error. |
 | Temporary watchlist check | Reproduced an intentionally empty watchlist reloading the default list. |
-| CLI import inspection under Python 3.11 | Tk/matplotlib stayed unloaded, but torch and `core.sentiment` loaded through package initialization. |
+| CLI import inspection under Python 3.11 | Tk/matplotlib stayed unloaded, but optional Laya and `core.laya_decisions` loaded through package initialization. |
 | Local Ollama manifest inspection | Four names, all referenced layers present; no explicit parameter layers. No server query, inference benchmark, or model download was performed. |
 
 Python documents the ability to call `staticmethod` objects directly as a change in 3.10, which explains the observed interpreter difference. This is a runtime-support issue rather than evidence that batch pricing is broken on the CI interpreter. [Python staticmethod documentation](https://docs.python.org/3/library/functions.html#staticmethod)
@@ -444,7 +444,7 @@ environment variables. It does not yet implement the larger proposed host/timeou
 config schema, loaded-model reporting, model filesystem inventory, doctor, profile
 deletion, interactive menus, structured market explanations or GUI integration.
 The new `ask` output is model-generated text, not a numerical engine input.
-Existing FinBERT sentiment behavior remains separate. Scan hardening still needs
+Existing Laya sentiment behavior remains separate. Scan hardening still needs
 explicit unmatched-expiry validation, richer data provenance and missing-column
 handling as listed in the roadmap.
 

@@ -1,4 +1,4 @@
-# Lean CI deps — no torch / transformers / accelerate (FinBERT optional at runtime).
+# Lean CI deps — no optional Laya packages (laya / laya-mlx).
 numpy>=2.0
 pandas>=2.1.0
 yfinance>=0.2.40

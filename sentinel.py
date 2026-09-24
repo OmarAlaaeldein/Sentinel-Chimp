@@ -14,8 +14,6 @@ import sys
 __all__ = [
     "VegaChimpCore",
     "calculate_technicals",
-    "SentimentEngine",
-    "sentiment_engine",
     "DataProvider",
     "YFinanceProvider",
     "StockGraph",

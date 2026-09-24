@@ -4,7 +4,7 @@ Guidance for coding agents working in this repository.
 
 ## Project Overview
 
-Sentinel Chimp is a Python tkinter market terminal: American options (Bjerksund-Stensland 2002), technicals, EWMA / optional GARCH volatility, probability cones, and optional FinBERT sentiment.
+Sentinel Chimp is a Python tkinter market terminal: American options (Bjerksund-Stensland 2002), technicals, EWMA / optional GARCH volatility, probability cones, and optional local **Laya** headline polarity.
 
 **Layout (Phase I MVC on `main`):** `core/` (math + data), `ui/` (views), `main/app.py` (controller), thin `sentinel.py` entrypoint.
 
@@ -18,6 +18,7 @@ python sentinel.py
 
 - Needs a working tkinter build for your Python
 - GUI app — run in the foreground or background as you prefer
+- Optional Laya: `pip install laya` (or `laya-mlx` on Apple Silicon) then `SENTINEL_LAYA=1`
 
 ## CLI (headless)
 
@@ -38,7 +39,7 @@ Shared scan orchestration: `core/scan_service.py` (GUI `MarketApp.fetch_options_
 python -m pytest tests/ -q
 ```
 
-Suite includes pricing (incl. BS2002 paper tables), technicals, probability cone, options_scan helpers, and related coverage.
+Suite includes pricing (incl. BS2002 paper tables), technicals, probability cone, options_scan helpers, optional Laya adapter mocks, and related coverage.
 
 ## Installing Dependencies
 
@@ -46,8 +47,8 @@ Suite includes pricing (incl. BS2002 paper tables), technicals, probability cone
 python -m pip install -r requirements.txt
 ```
 
-CI-lean deps (no torch): `requirements-ci.txt`.  
-`transformers` / `torch` are optional (sentiment from source only).
+CI-lean deps: `requirements-ci.txt`.  
+Optional Laya packages (`laya` / `laya-mlx`) are **not** in requirements — install separately when needed.
 
 ## Architecture
 
@@ -55,7 +56,7 @@ CI-lean deps (no torch): `requirements-ci.txt`.
 | :--- | :--- |
 | `core/pricing.py` | `VegaChimpCore` — BS, IV, EWMA, BS2002 (+ batch), American FD Greeks |
 | `core/technicals.py` | `calculate_technicals` |
-| `core/sentiment.py` | FinBERT `SentimentEngine` |
+| `core/laya_decisions.py` | Optional Laya polarity / typed decisions (`SENTINEL_LAYA=1`) |
 | `core/data.py` | `DataProvider` / `YFinanceProvider` |
 | `core/vol_models.py` | Cone math, GARCH(1,1), quadratic smile |
 | `core/options_scan.py` | Tradeable-edge / liquidity / ATM filters |
@@ -70,8 +71,8 @@ CI-lean deps (no torch): `requirements-ci.txt`.
 
 - **Threading:** I/O in daemon threads; UI via `root.after(0, …)`
 - **Caching:** bounded TTL caches for history, rates, option chains, news, valuation
-- **Startup discipline:** `matplotlib.pyplot`, `plotly`, `torch`/`transformers` import lazily; sentiment engine loads only if enabled
-- **Optional features:** `TRANSFORMERS_AVAILABLE`, `PLOTLY_AVAILABLE`; GUI flags `use_garch_blend`, `use_smile_vol`, `show_prob_cone`, `show_fib`
+- **Startup discipline:** `matplotlib.pyplot`, `plotly`, and Laya backends import lazily; polarity loads only if `SENTINEL_LAYA=1`
+- **Optional features:** Laya via `core.laya_decisions`; `PLOTLY_AVAILABLE`; GUI flags `use_garch_blend`, `use_smile_vol`, `show_prob_cone`, `show_fib`, `use_laya`
 - **Options Finder:** Fair = American price under **forecast vol**; compare to **ask/bid** with spread/OI/ATM gates (not mid-only / not IV-circular)
 - **Shutdown:** `on_close` → `os._exit(0)`
 

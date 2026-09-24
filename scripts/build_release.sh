@@ -223,7 +223,7 @@ Or remove quarantine after download:
   open /path/to/Sentinel.app
 
 Notes:
-- Lite Mode: FinBERT / PyTorch AI sentiment is NOT bundled.
+- Lite Mode: Optional Laya local decisions are NOT bundled (set SENTINEL_LAYA=1 from source).
   For AI features, clone the repo and run: python sentinel.py
 README
 

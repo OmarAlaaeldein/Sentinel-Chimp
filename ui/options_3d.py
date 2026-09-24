@@ -1,6 +1,6 @@
 """Options landscape 3D visualization helpers (Plotly HTML + matplotlib chrome).
 
-Keeps Lite Mode deps: numpy / matplotlib / plotly only. No scipy/pyvista/torch.
+Keeps Lite Mode deps: numpy / matplotlib / plotly only. No scipy/pyvista.
 """
 from __future__ import annotations
 

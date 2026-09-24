@@ -2,7 +2,7 @@
 
 **Sentinel Chimp** is a sophisticated, Python-based market analysis dashboard designed for retail traders who demand institutional-grade mathematics. It bridges the gap between basic charting tools and professional quantitative platforms, featuring advanced options pricing models, volatility forecasting, and real-time technical analysis.
 
-> **⚠️ Release Note:** The standalone release package operates in **"Lite Mode"** for maximum compatibility. It **does not include** the AI Sentiment Analysis engine to keep file sizes manageable and ensure it runs smoothly on standard systems. To use AI features, run the application from source.
+> **⚠️ Release Note:** The standalone release package operates in **"Lite Mode"** for maximum compatibility. Optional **Laya** local polarity is **not bundled** (large optional deps). Enable from source with `pip install laya` or `laya-mlx` and `SENTINEL_LAYA=1`.
 
 ---
 
@@ -26,7 +26,7 @@ python3.11 sentinel.py config --json
 and sets the default profile. Use `--replace` to overwrite an existing profile.
 Names containing `/` and `:` work as returned by `models list`; aliases remain separate names.
 Selection checks metadata; the first `ask` establishes whether the server can actually load that architecture.
-The GUI's FinBERT sentiment engine is separate from these new CLI profiles.
+Optional GUI Laya polarity (`SENTINEL_LAYA=1`) is separate from these Ollama CLI profiles.
 
 Every new command accepts `--json`, `--config PATH` and `--host URL` **after the
 leaf command** (for example, `models list --json`). JSON success uses
@@ -104,7 +104,7 @@ Unlike standard calculators that use Black-Scholes, Sentinel uses the **Bjerksun
 * **Log-Space Algebra:** Prevents mathematical overflow/underflow during extreme volatility events.
 * **Dynamic Risk-Free Rate:** Automatically uses term-aware treasury inputs with interpolation between short-end (^IRX) and long-end (^TNX) rates.
 * **Edge Detection:** Scans option chains to find contracts where the Market Price diverges significantly from the Theoretical Value (EV).
-* **3D Landscape Visualization:** Interactive matplotlib view + Plotly HTML export of **Strike × Days-to-expiry × EV@Ask ($)**, with a labeled colorbar (Fair − Ask), richer hover, fixed camera angle, and an optional EV heatmap underlay when the scatter is dense. Still uses existing Lite deps (`plotly` / `matplotlib` — no pyvista/torch).
+* **3D Landscape Visualization:** Interactive matplotlib view + Plotly HTML export of **Strike × Days-to-expiry × EV@Ask ($)**, with a labeled colorbar (Fair − Ask), richer hover, fixed camera angle, and an optional EV heatmap underlay when the scatter is dense. Still uses existing Lite deps (`plotly` / `matplotlib` — no pyvista).
 
 ### 2. Institutional Volatility Forecasting
 Sentinel looks beyond simple Historical Volatility (HV).
@@ -121,10 +121,10 @@ A threaded, non-blocking GUI featuring a professional Dark Mode interface with a
 * **Fundamental Context:** Displays P/E Ratios (TTM/Fwd) and calculates a **P/E Percentile** to show if the stock is historically cheap or expensive.
 * **Stock Relationship Graph:** Toolbar **Graph** button opens peers / divergence / HTML network export (curated + Sectivia supply-chain, CC BY 4.0).
 
-### 4. AI Sentiment Engine (Source Code Only, Off by Default)
-* **Model:** Powered by `ProsusAI/finbert` (Financial BERT).
-* **Function:** Scrapes news headlines (Yahoo/Google RSS, capped at 150) and computes a sentiment score (0–1 scale, 0.5 = neutral) using a Transformer model specifically fine-tuned for financial text.
-* *Note: Requires PyTorch and Transformers libraries; disabled in-app by default (`use_sentiment = False`).*
+### 4. Optional Laya Polarity (Source Only, Off by Default)
+* **Backend:** Local [Laya](https://pypi.org/project/laya/) typed decisions — Apple Silicon prefers `laya-mlx`; Linux / Windows / Intel Mac use upstream `laya`.
+* **Function:** When enabled, scores news headlines (Yahoo/Google RSS, capped at 150) to a 0–1 polarity (0.5 = neutral) via one-pass choice/score questions. No FinBERT.
+* *Note: Not required for Lite/release. Default off. Set `SENTINEL_LAYA=1` after `pip install laya` or `laya-mlx`. If Laya is missing, scoring is skipped with a clear log message.*
 
 ---
 
@@ -147,17 +147,16 @@ To ensure this tool works on standard trading laptops without requiring NVIDIA G
 | **EWMA/HV Volatility Logic** | ✅ Included | ✅ Included |
 | **Options Scanner** | ✅ Included | ✅ Included |
 | **3D Visualizer** | ✅ Included | ✅ Included |
-| **AI Sentiment (FinBERT)** | ⚠️ Source only, **off by default** | ❌ **Disabled** |
+| **Laya polarity** | ⚠️ Source only, **off by default** (`SENTINEL_LAYA=1`) | ❌ **Not bundled** |
 
-**Why is AI disabled in the release?**
-The AI engine relies on `PyTorch` and `Transformers`, which can add over 1GB to the file size and may cause compatibility issues on computers without specific drivers. The Release Package is optimized for speed and portability.
+**Why is Laya not in the release?**
+Optional Laya packages download sizable weights on first use. The Release Package stays lean and portable; polarity remains an opt-in source feature.
 
 ---
 
 ## 🛠️ Installation
 
-### Option A: Running from Source (Full Features)
-To use the AI Sentiment engine, you must run from the source:
+### Option A: Running from Source
 
 1.  **Clone the Repo**
     ```bash
@@ -168,8 +167,13 @@ To use the AI Sentiment engine, you must run from the source:
     ```bash
     pip install -r requirements.txt
     ```
-    *(Ensure `torch`, `transformers`, `yfinance`, `pandas`, `numpy`, `matplotlib`, `plotly` are installed)*
-3.  **Run**
+3.  **Optional Laya polarity** (not required)
+    ```bash
+    # Apple Silicon:  pip install laya-mlx
+    # Linux/Windows/Intel Mac:  pip install laya
+    export SENTINEL_LAYA=1   # Windows PowerShell: $env:SENTINEL_LAYA=1
+    ```
+4.  **Run**
     ```bash
     python sentinel.py
     ```
@@ -252,7 +256,7 @@ Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/rele
 | `sentinel.py` | Thin launcher + backwards-compatible re-exports |
 | `core/pricing.py` | `VegaChimpCore` (BS / BS2002 batch / EWMA / American FD Greeks) |
 | `core/technicals.py` | `calculate_technicals` |
-| `core/sentiment.py` | FinBERT `SentimentEngine` |
+| `core/laya_decisions.py` | Optional Laya polarity / typed decisions (`SENTINEL_LAYA=1`) |
 | `core/data.py` | `DataProvider` ABC + `YFinanceProvider` |
 | `core/vol_models.py` | Probability cone, GARCH(1,1), quadratic smile |
 | `core/options_scan.py` | Tradeable-edge / liquidity filters for Options Finder |
@@ -285,7 +289,7 @@ Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/rele
 ## ⚡ Performance notes (v2.1+)
 
 * **Bounded caches:** history/chain/news/valuation caches are size-capped with TTL eviction — long sessions can't grow memory without bound.
-* **Lazy heavy imports:** `matplotlib.pyplot`, `plotly`, and `torch`/`transformers` load only when their feature is used, keeping cold startup light.
+* **Lazy heavy imports:** `matplotlib.pyplot`, `plotly`, and optional Laya backends load only when their feature is used, keeping cold startup light.
 * **Cheaper scans:** vectorized liquidity/ATM filters, leaner GARCH fit, throttled chart hover, capped log widget and news list (150 headlines).
 
 ---

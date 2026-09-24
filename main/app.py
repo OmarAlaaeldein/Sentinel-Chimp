@@ -43,9 +43,8 @@ from core.technicals import (
     calculate_ichimoku,
     bars_per_trading_day,
 )
-# NOTE: core.sentiment pulls in torch/transformers when installed — import it
-# lazily (see init_model_bg) so startup stays light while sentiment is off.
-sentiment_engine = None
+# Optional Laya polarity is lazy (core.laya_decisions); never required for Lite.
+# Enable with SENTINEL_LAYA=1 or MarketApp.use_laya = True.
 from core.data import YFinanceProvider
 from core.vol_models import (
     garch11_vol_forecast, blend_forecast_vol,
@@ -105,7 +104,10 @@ class MarketApp:
         self.earnings_growth = None
         self.valuation_status = {}
         
-        self.use_sentiment = False
+        # Optional Laya headline polarity (default off; set SENTINEL_LAYA=1).
+        from core.laya_decisions import laya_opt_in
+        self.use_laya = laya_opt_in()
+        self._laya_ready = False
         # Vol / Greek experiments (EWMA path preserved unless blend flags are on)
         self._prefs_root = config_dir()
         _prefs = load_prefs(self._prefs_root)
@@ -211,8 +213,8 @@ class MarketApp:
         self.lbl_atr = self.add_row(self.grid_frame, "ATR (Volatility)", 4, "Average True Range (Daily Move in $).")
         self.lbl_vol = self.add_row(self.grid_frame, "Vol (HV vs EWMA)", 5, "HV: 30d Historical Volatility.\nEWMA: Exponentially Weighted Moving Average Vol Forecast (decay=0.94).")
         self._vol_tooltip = Tooltip(self.lbl_vol, self._vol_why_text())
-        if self.use_sentiment:
-            self.lbl_sent = self.add_row(self.grid_frame, "AI Sentiment", 6, "Headline sentiment scored 0-1.")
+        if self.use_laya:
+            self.lbl_sent = self.add_row(self.grid_frame, "Laya Polarity", 6, "Optional Laya headline polarity scored 0-1 (SENTINEL_LAYA=1).")
             self.lbl_return = self.add_row(self.grid_frame, "Return (Period)", 7, "Total return over selected period.")
             self.lbl_vwap = self.add_row(self.grid_frame, "VWAP Gap", 8, "Volume Weighted Average Price.\n\n'Who is winning today?'\nPrice > VWAP: Buyers are in control (Bullish).\nPrice < VWAP: Sellers are in control (Bearish).")
         else:
@@ -289,9 +291,9 @@ class MarketApp:
         self.canvas.mpl_connect('motion_notify_event', self.on_hover)
 
 # --- SYSTEM LOG & CONTROLS ---
-        if self.use_sentiment:
+        if self.use_laya:
             log_frame = ttk.LabelFrame(
-                root, text="System Log & AI Controls", padding=8, style="Card.TLabelframe",
+                root, text="System Log & Laya", padding=8, style="Card.TLabelframe",
             )
         else:
             log_frame = ttk.LabelFrame(
@@ -307,7 +309,7 @@ class MarketApp:
             ctrl_panel, text="Show Log", command=self.toggle_log, width=10, style="Ghost.TButton",
         )
         self.btn_log.pack(side="right", padx=5)
-        if self.use_sentiment:
+        if self.use_laya:
             ttk.Label(ctrl_panel, text="Active Model:", style="Muted.TLabel").pack(side="left")
             self.lbl_model_status = ttk.Label(
                 ctrl_panel, text="Status: Init...", style="Status.TLabel", foreground=WARNING,
@@ -344,12 +346,11 @@ class MarketApp:
         self.lbl_peg = self.add_row(self.grid_frame, "PEG Ratio", 13, "Price/Earnings-to-Growth Ratio. < 1.0 generally implies undervaluation.")
         self.lbl_williams = self.add_row(self.grid_frame, "Williams %R", 14, "Momentum oscillator (-100 to 0).\n\nOversold < -80 (Buy signal)\nOverbought > -20 (Sell signal)")
         self.lbl_cci = self.add_row(self.grid_frame, "CCI (20)", 15, "Commodity Channel Index.\n\nOversold < -100\nOverbought > +100\nMeasures deviation from mean price.")
-        # Only initialize the transformer if the toggle is True
-        if self.use_sentiment:
-            self.log("App Started. Defaulting to FinBERT.")
-            threading.Thread(target=self.init_model_bg, args=("FinBERT",), daemon=True).start()
+        if self.use_laya:
+            self.log("App Started. Laya polarity enabled (SENTINEL_LAYA).")
+            threading.Thread(target=self.init_laya_bg, daemon=True).start()
         else:
-            self.log("AI Sentiment is currently disabled.")
+            self.log("Laya polarity is off (set SENTINEL_LAYA=1 to enable optional local decisions).")
         self.scan_data = []
         self._scan_lock = threading.Lock()
         self._sent_cache_lock = threading.Lock()
@@ -507,27 +508,45 @@ class MarketApp:
         except Exception:
             pass
         
-        # Hard exit to kill any lingering threads (like the AI or Scanner)
+        # Hard exit to kill any lingering threads (like Laya probe or Scanner)
         os._exit(0)
 
-    def init_model_bg(self, model_name):
-        global sentiment_engine
-        if sentiment_engine is None:
-            from core.sentiment import sentiment_engine as _engine
-            sentiment_engine = _engine
-        self.root.after(0, lambda: self.lbl_model_status.config(text=f"Loading {model_name}..."))
-        success = sentiment_engine.load_model(model_name)
-        
-        if success:
-            msg = f"Ready ({model_name})"
-            if self.current_ticker:
-                self.sent_cache.pop(self.current_ticker, None) 
-                self.root.after(500, self.load_data)
-        else:
-            msg = "Failed"
-            
-        self.root.after(0, lambda: self.lbl_model_status.config(text=msg))
-        self.root.after(0, lambda: self.log(sentiment_engine.status_msg))
+    def init_laya_bg(self):
+        """Probe optional Laya backend without blocking the UI."""
+        if hasattr(self, "lbl_model_status"):
+            self.root.after(0, lambda: self.lbl_model_status.config(text="Loading Laya..."))
+        try:
+            from core.laya_decisions import backend_info, get_agent
+            info = backend_info()
+            if not info.get("available"):
+                self._laya_ready = False
+                reason = info.get("reason") or "Laya not installed"
+                msg = "Laya unavailable"
+                self.root.after(0, lambda: self.log(
+                    f"Laya scoring skipped: {reason}"
+                ))
+            else:
+                agent, loaded = get_agent()
+                self._laya_ready = agent is not None
+                if self._laya_ready:
+                    msg = f"Ready ({loaded.get('name', 'laya')})"
+                    self.root.after(0, lambda: self.log(
+                        f"Laya ready ({loaded.get('name')}) on {loaded.get('os')}."
+                    ))
+                    if self.current_ticker:
+                        self.sent_cache.pop(self.current_ticker, None)
+                        self.root.after(500, self.load_data)
+                else:
+                    msg = "Laya load failed"
+                    self.root.after(0, lambda: self.log(
+                        f"Laya scoring skipped: {loaded.get('reason')}"
+                    ))
+        except Exception as exc:
+            self._laya_ready = False
+            msg = "Laya error"
+            self.root.after(0, lambda: self.log(f"Laya scoring skipped: {exc}"))
+        if hasattr(self, "lbl_model_status"):
+            self.root.after(0, lambda m=msg: self.lbl_model_status.config(text=m))
 
     def log(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -987,20 +1006,24 @@ class MarketApp:
         avg_score = None
         headlines_for_ai = [x['title'] for x in all_news]
         
-        if self.use_sentiment:
-            global sentiment_engine
-            if sentiment_engine is None:
-                from core.sentiment import sentiment_engine as _engine
-                sentiment_engine = _engine
-            current_model = sentiment_engine.models[sentiment_engine.current_model_name]
-            if current_model["loaded"]:
-                self.log(f"AI Analyzing {len(headlines_for_ai)} headlines...")
-                scores = sentiment_engine.predict_batch(headlines_for_ai)
-                if scores:
-                    valid_scores = [s for s in scores if isinstance(s, (int, float))]
-                    if valid_scores:
-                        avg_score = sum(valid_scores) / len(valid_scores)
-                        self.log(f"FINAL AI SCORE: {avg_score:.4f}")
+        if self.use_laya:
+            try:
+                from core.laya_decisions import average_polarity, backend_info, score_headlines
+                info = backend_info()
+                if not info.get("available"):
+                    self.log(f"Laya scoring skipped: {info.get('reason')}")
+                else:
+                    self.log(f"Laya analyzing {len(headlines_for_ai)} headlines...")
+                    rows = score_headlines(headlines_for_ai)
+                    avg_score = average_polarity(rows)
+                    if avg_score is not None:
+                        self._laya_ready = True
+                        self.log(f"LAYA POLARITY: {avg_score:.4f} ({info.get('name')})")
+                    else:
+                        err = next((r.get("error") for r in rows if r.get("error")), None)
+                        self.log(f"Laya scoring skipped: {err or 'no scores returned'}")
+            except Exception as exc:
+                self.log(f"Laya scoring skipped: {exc}")
 
         with self._sent_cache_lock:
             self.sent_cache[ticker] = (avg_score, all_news, time.time())
@@ -1409,7 +1432,7 @@ class MarketApp:
         if self._vol_tooltip is not None:
             self._vol_tooltip.set_text(self._vol_why_text())
         
-        if self.use_sentiment:
+        if self.use_laya:
             if sentiment is not None:
                 try:
                 # Ensure it's treated as a float for comparison
