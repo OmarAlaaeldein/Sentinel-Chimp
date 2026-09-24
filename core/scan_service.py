@@ -2,8 +2,9 @@
 
 Extracts the Options Finder pricing / filter / verdict loop from
 ``MarketApp.fetch_options_batch`` so both surfaces share one code path.
-Fair value = Bjerksund-Stensland under **forecast vol only** (EWMA ± optional
-GARCH blend) — never contract IV.
+Fair value = Bjerksund-Stensland under forecast vol (EWMA ± optional GARCH).
+With ``use_relative_smile``, each strike keeps the chain's IV shape and the
+forecast sets the level: fair_σ(K) = forecast × IV(K) / IV_ref.
 """
 from __future__ import annotations
 
@@ -215,6 +216,38 @@ def resolve_forecast_vol(
     return float(forecast_vol)
 
 
+def relative_smile_vols(forecast_vol: float, ivs: np.ndarray, weights: np.ndarray | None = None,
+                        *, floor: float = 0.5, cap: float = 2.0) -> np.ndarray:
+    """Map one forecast level onto the chain's IV shape.
+
+    IV_ref is the weight-average of IVs at least 1%. Each ratio IV/IV_ref is
+    clipped to ``[floor, cap]``, and the result is clipped to ``[1%, 500%]``.
+    A flat IV slice returns the forecast at every strike.
+    """
+    ivs = np.asarray(ivs, dtype=float)
+    shaped = np.full(ivs.shape, float(forecast_vol), dtype=float)
+    if not math.isfinite(forecast_vol) or forecast_vol <= 0:
+        return shaped
+    valid = np.isfinite(ivs) & (ivs >= 0.01)
+    if not np.any(valid):
+        return shaped
+    if weights is None:
+        used = valid.astype(float)
+    else:
+        used = np.where(valid, np.asarray(weights, dtype=float), 0.0)
+        used = np.where(np.isfinite(used) & (used > 0), used, 0.0)
+        if float(used.sum()) <= 0:
+            used = valid.astype(float)
+    reference = float(np.sum(used * np.where(valid, ivs, 0.0)) / np.sum(used))
+    reference = max(reference, 0.01)
+    ratio = np.ones(ivs.shape, dtype=float)
+    ratio[valid] = ivs[valid] / reference
+    ratio = np.clip(ratio, floor, cap)
+    shaped = np.clip(forecast_vol * ratio, 0.01, 5.0)
+    shaped[~np.isfinite(ivs)] = forecast_vol
+    return shaped
+
+
 def interpolate_rfr(short_rate: float, long_rate: float, T: float) -> float:
     if T <= 0.25:
         return short_rate
@@ -271,6 +304,7 @@ class OptionScanRow:
     ask: float = 0.0
     category: Optional[str] = None
     probability_model: str = "risk-neutral lognormal, market IV, long entry at ask"
+    fair_vol: float = 0.0
 
     def tree_vals(self) -> tuple:
         """Tuple matching Options Explorer column order."""
@@ -445,6 +479,7 @@ def scan_option_chains(
     hv_30: float = 0.0,
     use_garch_blend: bool = False,
     use_smile_vol: bool = False,
+    use_relative_smile: bool = False,
     use_american_greeks: bool = True,
     option_type: str = "all",
     under_only: bool = False,
@@ -591,7 +626,12 @@ def scan_option_chains(
                 if smile_coef is not None:
                     iv_display = smile_vol_arr(strikes_v, forward, smile_coef)
 
-            vol_input = np.full(idx.size, float(forecast_vol), dtype=float)
+            if use_relative_smile:
+                moneyness = np.log(np.maximum(strikes_v, 1e-8) / max(forward, 1e-8))
+                weights = np.exp(-0.5 * (moneyness / 0.10) ** 2)
+                vol_input = relative_smile_vols(float(forecast_vol), iv_v, weights)
+            else:
+                vol_input = np.full(idx.size, float(forecast_vol), dtype=float)
             kinds = np.where(is_call_v, "call", "put")
             # Vectorized BS2002 once the slice is big enough to amortize
             # overhead; scalar loop below it (scalar path is exact and cheap).
@@ -726,6 +766,7 @@ def scan_option_chains(
                     category=verdict,
                     is_earnings=is_earnings,
                     tag=tag,
+                    fair_vol=float(vol_input[j]),
                 )
                 rows_out.append(row)
                 vals = row.tree_vals()
@@ -760,7 +801,8 @@ def scan_option_chains(
         spot=spot,
         dividend_yield=DIV_YIELD,
         dividend_status=dividend_status,
-        rules_log=SCAN_RULES_LOG,
+        rules_log=(SCAN_RULES_LOG + " Fair vol keeps the chain's IV shape around the forecast."
+                   if use_relative_smile else SCAN_RULES_LOG),
         errors=errors,
         requested_expiries=len(dates),
     )
@@ -776,6 +818,7 @@ def run_ticker_scan(
     option_type: str = "all",
     use_garch_blend: bool = False,
     use_smile_vol: bool = False,
+    use_relative_smile: bool = False,
     use_american_greeks: bool = True,
     dividend_yield: Optional[float] = None,
     log: Optional[LogFn] = None,
@@ -803,6 +846,7 @@ def run_ticker_scan(
         hv_30=analysis.hv_30,
         use_garch_blend=use_garch_blend,
         use_smile_vol=use_smile_vol,
+        use_relative_smile=use_relative_smile,
         use_american_greeks=use_american_greeks,
         option_type=option_type,
         under_only=under_only,

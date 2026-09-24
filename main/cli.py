@@ -89,6 +89,11 @@ def build_parser(machine=False) -> argparse.ArgumentParser:
         help="Smooth display IV with the per-expiry quadratic smile fit",
     )
     p_scan.add_argument(
+        "--relative-smile",
+        action="store_true",
+        help="Price each strike at forecast vol times that strike's IV over the slice IV",
+    )
+    p_scan.add_argument(
         "--euro-greeks",
         action="store_true",
         help="Use analytic European Greeks instead of American FD Greeks",
@@ -153,6 +158,8 @@ def build_parser(machine=False) -> argparse.ArgumentParser:
     )
     p_batch.add_argument("--garch", action="store_true", help="Blend EWMA with fitted GARCH(1,1) for forecast vol")
     p_batch.add_argument("--smile", action="store_true", help="Smooth display IV with the per-expiry quadratic smile fit")
+    p_batch.add_argument("--relative-smile", action="store_true",
+                         help="Price each strike at forecast vol times that strike's IV over the slice IV")
     p_batch.add_argument("--euro-greeks", action="store_true", help="Use analytic European Greeks instead of American FD Greeks")
     p_batch.add_argument(
         "--div",
@@ -304,6 +311,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         option_type=args.option_type,
         use_garch_blend=args.garch,
         use_smile_vol=args.smile,
+        use_relative_smile=args.relative_smile,
         use_american_greeks=not args.euro_greeks,
         dividend_yield=parse_div_yield(args.div),
         log=_log,
@@ -350,6 +358,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
                 option_type=args.option_type,
                 use_garch_blend=args.garch,
                 use_smile_vol=args.smile,
+                use_relative_smile=args.relative_smile,
                 use_american_greeks=not args.euro_greeks,
                 dividend_yield=parse_div_yield(args.div),
             )
