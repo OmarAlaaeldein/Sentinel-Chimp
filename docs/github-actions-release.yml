@@ -122,7 +122,7 @@ jobs:
           body: |
             ## Sentinel Chimp ${{ steps.tag.outputs.tag }} — Lite Mode native installers
 
-            Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
+            Prebuilt **Lite Mode** binaries (no Laya / heavy ML). Optional Laya polarity is **source-only**: `pip install laya` (or `laya-mlx` on Apple Silicon) + `SENTINEL_LAYA=1`.
 
             ### What's new
             - **UI readability / 3D:** clearer fonts, improved Options Explorer labels, richer EV@Ask 3D visualization (PR #8)
@@ -145,6 +145,6 @@ jobs:
 
             ### What's in Lite Mode
             Charting, technicals, Bjerksund-Stensland options math, EWMA/HV vol, Options Finder, 3D plot — **included**.
-            FinBERT AI sentiment — **not bundled** (use source for full features).
+            Optional Laya polarity — **not bundled** (`pip install laya` or `laya-mlx`, then `SENTINEL_LAYA=1`).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

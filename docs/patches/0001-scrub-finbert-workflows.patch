@@ -1,0 +1,61 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 2f33896..bd64810 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -27,7 +27,7 @@ jobs:
+ 
+       - name: Run core pytest suite
+         env:
+-          # Keep FinBERT / torch out of the CI path; sentiment imports are optional.
++          # Lite CI path — no optional Laya model downloads; core tests only.
+           MPLBACKEND: Agg
+         run: |
+           python -m pytest tests/ -q --tb=short
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 9a84e7a..0d2abc3 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -126,7 +126,7 @@ jobs:
+           body: |
+             ## Sentinel Chimp ${{ steps.tag.outputs.tag }} — Lite Mode native installers
+ 
+-            Prebuilt **Lite Mode** binaries (no FinBERT / PyTorch). AI sentiment remains **source-only** (`pip install -r requirements.txt` + `python sentinel.py`).
++            Prebuilt **Lite Mode** binaries (no Laya / heavy ML). Optional Laya polarity is **source-only**: `pip install laya` (or `laya-mlx` on Apple Silicon) + `SENTINEL_LAYA=1`.
+ 
+             ### What's new in 2.4.0
+             - **Stock Relationship Graph:** Relational market graph (`core/stock_graph.py`, `core/graph_data.py`) spanning the entire NASDAQ-100 and S&P 500 universe (212 nodes, 441 edges) across all 11 GICS sectors
+@@ -137,7 +137,7 @@ jobs:
+ 
+             ### What's new in 2.3.0
+             - **Local Ollama CLI:** `sentinel models list/show/select/current`, `sentinel profiles list/use`, `sentinel ask`, `sentinel config` for local model discovery, profiles, and prompt queries
+-            - **Fast CLI startup:** Lazy module imports ensure `sentinel --help` and CLI commands load in milliseconds without initializing heavy numerical or GUI libraries (torch, tkinter, pandas, numpy)
++            - **Fast CLI startup:** Lazy module imports ensure `sentinel --help` and CLI commands load in milliseconds without initializing heavy numerical or GUI libraries (tkinter, pandas, numpy)
+             - **Hardened scanning & exports:** Clean stdout in JSON mode, full-row CSV exports regardless of `--limit`, empty CSV headers, structured expiry errors, NaN safety, and nonnegative argument validation
+             - **Python 3.9 compatibility:** Fixed module-level staticmethod wrappers affecting batch pricing
+ 
+@@ -150,13 +150,13 @@ jobs:
+ 
+             ### What's new in 2.2
+             - **Left panel fix:** Technicals values wrap instead of clipping (pane min-width, wrapping value column, shorter Vol/Bollinger strings)
+-            - **Docs refresh:** full CLI flag table + `verify`, accurate project structure, sentiment corrections (off by default, 0–1 scale), v2.1 performance notes, archived workflow templates marked superseded
++            - **Docs refresh:** full CLI flag table + `verify`, accurate project structure, optional polarity notes (Laya behind SENTINEL_LAYA=1; FinBERT removed), v2.1 performance notes, archived workflow templates marked superseded
+ 
+             ### What's new in 2.1 (also in this release)
+-            - **Lower footprint:** bounded data/chain/news/valuation caches, news cap 1000 → 150 headlines, trimmed system log, hover throttled, lazy `matplotlib.pyplot` / `plotly` / `torch` imports at startup
+-            - **Faster scans:** vectorized liquidity/ATM filters, leaner GARCH fit (~4–5×), chunked sentiment inference
++            - **Lower footprint:** bounded data/chain/news/valuation caches, news cap 1000 → 150 headlines, trimmed system log, hover throttled, lazy `matplotlib.pyplot` / `plotly` imports at startup
++            - **Faster scans:** vectorized liquidity/ATM filters, leaner GARCH fit (~4–5×)
+             - **Leaner packages:** `requirements.txt` drops `pytest` (CI-only) and `accelerate` (unused); stale screenshots, spec, and distilBERT ignores removed
+-            - **Build fix:** macOS sentiment auto-detect now reads `main/app.py` where the flag lives
++            - **Build fix:** macOS optional-polarity flag auto-detect reads `main/app.py`
+ 
+             ### Downloads
+             | Platform | Artifact |
+@@ -175,6 +175,6 @@ jobs:
+ 
+             ### What's in Lite Mode
+             Charting, technicals, Bjerksund-Stensland options math, EWMA/HV vol, Options Finder, 3D plot — **included**.
+-            FinBERT AI sentiment — **not bundled** (use source for full features).
++            Optional Laya polarity — **not bundled** (`pip install laya` or `laya-mlx`, then `SENTINEL_LAYA=1`).
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

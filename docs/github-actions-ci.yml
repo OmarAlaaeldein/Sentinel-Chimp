@@ -29,7 +29,7 @@ jobs:
 
       - name: Run core pytest suite
         env:
-          # Keep FinBERT / torch out of the CI path; sentiment imports are optional.
+          # Lite CI path — no optional Laya model downloads; core tests only.
           MPLBACKEND: Agg
         run: |
           python -m pytest tests/ -q --tb=short
