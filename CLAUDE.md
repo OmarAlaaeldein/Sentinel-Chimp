@@ -26,6 +26,7 @@ No tkinter import on CLI paths (`sentinel.py` lazy-loads GUI only when argv is e
 
 ```bash
 .venv/bin/python sentinel.py analyze LULU
+.venv/bin/python sentinel.py analyze NVDA --valuation   # + P/E, PEG, P/E percentile (3 more requests)
 .venv/bin/python sentinel.py scan LULU --under-only --max-expiries 6
 .venv/bin/python -m main.cli scan LULU --type call --json
 .venv/bin/python -m sentinel_cli analyze AMD --json
@@ -61,6 +62,7 @@ Optional Laya packages (`laya` / `laya-mlx`) are **not** in requirements — ins
 | `core/vol_models.py` | Cone math, GARCH(1,1), quadratic smile |
 | `core/options_scan.py` | Tradeable-edge / liquidity / ATM filters |
 | `core/scan_service.py` | Shared options-scan + ticker analyze (GUI + CLI) |
+| `core/valuation.py` | P/E TTM / forward, PEG (provider first, derived fallback) and 5-year P/E percentile, GUI-free; `MarketApp` delegates to it, `analyze --valuation` is opt-in (scan / batch never ask) |
 | `ui/*` | Theme, chart, news, options explorer, tooltip, prefs |
 | `main/app.py` | `MarketApp` controller + remaining orchestration |
 | `main/cli.py` | Headless argparse CLI (`analyze` / `scan` / `verify`) |

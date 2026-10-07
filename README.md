@@ -188,6 +188,10 @@ python sentinel.py analyze LULU
 python -m main.cli analyze LULU
 python -m sentinel_cli analyze LULU --json
 
+# Same, plus P/E (TTM / forward), PEG and the 5-year P/E percentile (opt-in: three more Yahoo requests)
+python sentinel.py analyze NVDA --valuation
+python sentinel.py analyze NVDA --valuation --json   # adds a "valuation" object
+
 # Options scan (fair = BS2002 @ forecast vol; EV@Ask = fair − ask)
 python sentinel.py scan LULU --under-only --max-expiries 6
 python sentinel.py scan LULU --type call --garch --json
@@ -199,6 +203,7 @@ python sentinel.py verify
 
 | Flag | Meaning |
 | :--- | :--- |
+| `--valuation` | `analyze` only: add P/E TTM / forward, PEG and the 5-year P/E percentile (`core/valuation.py`, the GUI's rules). `scan` and `batch` never ask for it |
 | `--under-only` | Only Under / Earnings Under, ranked by edge % |
 | `--max-expiries N` | First N listed expirations |
 | `--expiry DATE` | Only this expiry (prefix match); repeatable |
@@ -261,6 +266,7 @@ Download from **[Releases](https://github.com/OmarAlaaeldein/Sentinel-Chimp/rele
 | `core/vol_models.py` | Probability cone, GARCH(1,1), quadratic smile |
 | `core/options_scan.py` | Tradeable-edge / liquidity filters for Options Finder |
 | `core/scan_service.py` | Shared scan + analyze orchestration (GUI + CLI) |
+| `core/valuation.py` | P/E, PEG and 5-year P/E percentile rules, no GUI (the window and `analyze --valuation` both call it) |
 | `ui/` | Theme, chart, news, options explorer, 3D plot, watchlist, prefs, tooltip |
 | `main/app.py` | `MarketApp` controller |
 | `main/cli.py` | Headless CLI (`analyze` / `scan` / `verify`) |

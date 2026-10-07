@@ -357,9 +357,12 @@ class TickerAnalysis:
     garch_ok: bool
     technicals: dict
     summary_lines: List[str]
+    # P/E, PEG and P/E percentile (core.valuation); empty unless analyze_ticker
+    # was asked for it, and then left out of to_dict() so scan / batch JSON is unchanged.
+    valuation: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "ticker": self.ticker,
             "spot": self.spot,
             "hv_30": self.hv_30,
@@ -369,6 +372,9 @@ class TickerAnalysis:
             "technicals": self.technicals,
             "summary_lines": self.summary_lines,
         }
+        if self.valuation:
+            data["valuation"] = self.valuation
+        return data
 
 
 def _fmt_tech(val: Any, digits: int = 2) -> str:
@@ -386,8 +392,14 @@ def analyze_ticker(
     symbol: str,
     *,
     log: Optional[LogFn] = None,
+    valuation: bool = False,
 ) -> TickerAnalysis:
-    """Spot, HV/EWMA/(GARCH), and a short technicals summary — no tkinter."""
+    """Spot, HV/EWMA/(GARCH), and a short technicals summary — no tkinter.
+
+    ``valuation=True`` adds P/E, PEG and the 5-year P/E percentile
+    (``core.valuation``): one ``info`` request, one 5y daily history and one
+    earnings-dates request more. Off by default, so scan / batch ask for nothing new.
+    """
     sym = symbol.strip().upper()
     stock = data_provider.create_ticker(sym)
     df_tech = data_provider.fetch_history(stock, "1y", "1d", log=log)
@@ -454,6 +466,18 @@ def analyze_ticker(
         f"ATR=${_fmt_tech(tech['ATR'])}",
     ]
 
+    valuation_data: dict = {}
+    if valuation:
+        from core import valuation as valuation_rules
+        try:
+            valuation_data = valuation_rules.valuation(data_provider, stock, log=log)
+            summary_lines.append(valuation_rules.summary_line(valuation_data))
+        except Exception as exc:
+            if log:
+                log(f"Valuation fetch error: {exc}")
+            valuation_data = {"error": str(exc)}
+            summary_lines.append(f"Valuation: unavailable ({exc})")
+
     return TickerAnalysis(
         ticker=sym,
         spot=float(spot),
@@ -463,6 +487,7 @@ def analyze_ticker(
         garch_ok=garch_ok,
         technicals=tech,
         summary_lines=summary_lines,
+        valuation=valuation_data,
     )
 
 

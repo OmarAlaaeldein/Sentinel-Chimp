@@ -46,6 +46,12 @@ def build_parser(machine=False) -> argparse.ArgumentParser:
     p_an = sub.add_parser("analyze", help="Spot, EWMA/HV, short technicals summary")
     p_an.add_argument("ticker", help="Symbol, e.g. LULU")
     p_an.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+    p_an.add_argument(
+        "--valuation",
+        action="store_true",
+        help="Add P/E (TTM, forward), PEG and the 5-year P/E percentile "
+             "(three more Yahoo requests: info, 5y history, earnings dates)",
+    )
 
     p_scan = sub.add_parser(
         "scan",
@@ -288,7 +294,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     from core.data import YFinanceProvider
     from core.scan_service import analyze_ticker
     provider = YFinanceProvider()
-    analysis = analyze_ticker(provider, args.ticker)
+    analysis = analyze_ticker(
+        provider, args.ticker, valuation=getattr(args, "valuation", False)
+    )
     _print_analysis(analysis, args.json)
     return 0
 
