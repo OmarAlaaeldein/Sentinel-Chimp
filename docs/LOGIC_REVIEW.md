@@ -234,7 +234,10 @@ Vertical dashed markers when an earnings date falls in the visible window. Sourc
 Persistent `watchlist.json` (`ui/watchlist.py`); combobox + add/remove next to ticker; prefs still hold overlay booleans in `user_prefs.json`.
 
 ### P/E Percentile datetime units (2026-09-06)
-yfinance daily history often indexes as `datetime64[s]` while `get_earnings_dates` uses `datetime64[us]`. `pd.merge_asof` requires identical units — both sides are normalized to naive `datetime64[us]` via `MarketApp._as_naive_datetime64_us` before the as-of merge.
+yfinance daily history often indexes as `datetime64[s]` while `get_earnings_dates` uses `datetime64[us]`. `pd.merge_asof` requires identical units — both sides are normalized to naive `datetime64[us]` via `MarketApp._as_naive_datetime64_us` (now `core.valuation.as_naive_datetime64_us`) before the as-of merge.
+
+### Valuation rules live in `core/valuation.py`
+P/E TTM and forward come from Yahoo `info` (`trailingPE`, `forwardPE`). PEG is provider-first (`trailingPegRatio`); otherwise forward P/E (else TTM P/E) over `earningsGrowth` × 100, with zero growth → ±inf (`ZERO_GROWTH`) and missing inputs → `MISSING_PEG_INPUTS`; negative growth gives a negative PEG. The P/E percentile is the share of the last 5 years of daily closes whose P/E (close ÷ the TTM EPS known that day, `merge_asof` backward on report dates) was strictly below today's TTM P/E, positive P/E history only. `MarketApp.get_info` / `compute_peg_ratio` / `calculate_pe_percentile` / `_get_historical_ttm_eps` keep their names and call the module; `sentinel.py analyze T --valuation` calls it too (opt-in: `info`, 5y history and earnings dates are three extra requests; `scan` / `batch` make none of them).
 
 ## Resource discipline (v2.1) — no pricing-semantics change
 

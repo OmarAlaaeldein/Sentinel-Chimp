@@ -46,6 +46,7 @@ from core.technicals import (
 # Optional Laya polarity is lazy (core.laya_decisions); never required for Lite.
 # Enable with SENTINEL_LAYA=1 or MarketApp.use_laya = True.
 from core.data import YFinanceProvider
+from core import valuation as valuation_core
 from core.vol_models import (
     garch11_vol_forecast, blend_forecast_vol,
 )
@@ -717,16 +718,7 @@ class MarketApp:
         reason = self.valuation_status.get(key)
         if not reason:
             return default
-        reason_map = {
-            "NO_CURRENT_PE_TTM": "N/A (No TTM P/E)",
-            "NO_PRICE_HISTORY": "N/A (No 5Y Price)",
-            "NO_EARNINGS_HISTORY": "N/A (No EPS History)",
-            "INSUFFICIENT_EARNINGS_HISTORY": "N/A (EPS < 4 Qtrs)",
-            "NO_VALID_PE_HISTORY": "N/A (No Valid P/E)",
-            "MISSING_PEG_INPUTS": "Not Calculable",
-            "ZERO_GROWTH": "Inf (Zero Growth)",
-        }
-        return reason_map.get(reason, default)
+        return valuation_core.REASONS.get(reason, default)
 
     def _get_historical_ttm_eps(self, ticker_obj):
         """Builds historical TTM EPS timeline from reported quarterly EPS."""
@@ -738,33 +730,10 @@ class MarketApp:
 
         try:
             earnings_df = ticker_obj.get_earnings_dates(limit=80)
-            if earnings_df is None or earnings_df.empty:
-                return None, "NO_EARNINGS_HISTORY"
+            eps_timeline, reason = valuation_core.ttm_eps_timeline(earnings_df, log=self.log)
+            if eps_timeline is None:
+                return None, reason
 
-            reported_col = None
-            for col in earnings_df.columns:
-                col_name = str(col).lower()
-                if "reported" in col_name and "eps" in col_name:
-                    reported_col = col
-                    break
-
-            if reported_col is None:
-                return None, "NO_EARNINGS_HISTORY"
-
-            eps_series = pd.to_numeric(earnings_df[reported_col], errors='coerce').dropna()
-            if eps_series.empty:
-                return None, "NO_EARNINGS_HISTORY"
-
-            eps_df = pd.DataFrame({"reported_eps": eps_series})
-            eps_df["report_date"] = MarketApp._as_naive_datetime64_us(eps_df.index)
-            eps_df = eps_df.dropna(subset=["report_date"]).sort_values("report_date")
-            eps_df = eps_df.drop_duplicates(subset=["report_date"], keep="last")
-            eps_df["ttm_eps"] = eps_df["reported_eps"].rolling(4).sum()
-            eps_df = eps_df.dropna(subset=["ttm_eps"])
-            if eps_df.empty:
-                return None, "INSUFFICIENT_EARNINGS_HISTORY"
-
-            eps_timeline = eps_df[["report_date", "ttm_eps"]].copy()
             with self._valuation_cache_lock:
                 self.valuation_cache[cache_key] = (eps_timeline, time.time())
                 now = time.time()
@@ -785,20 +754,7 @@ class MarketApp:
     @staticmethod
     def _as_naive_datetime64_us(values):
         """Normalize timestamps for merge_asof (avoids s vs us unit mismatch)."""
-        ts = pd.to_datetime(values, errors="coerce", utc=True)
-        if isinstance(ts, pd.Series):
-            if getattr(ts.dt, "tz", None) is not None:
-                ts = ts.dt.tz_convert(None)
-            return ts.astype("datetime64[us]")
-        if isinstance(ts, pd.DatetimeIndex):
-            if ts.tz is not None:
-                ts = ts.tz_convert(None)
-            return ts.astype("datetime64[us]")
-        # Fallback scalar/array path
-        ts = pd.DatetimeIndex(ts)
-        if ts.tz is not None:
-            ts = ts.tz_convert(None)
-        return pd.Series(ts.astype("datetime64[us]"))
+        return valuation_core.as_naive_datetime64_us(values)
 
     def calculate_pe_percentile(self, ticker_obj):
         """Computes a strict TTM-based P/E percentile using historical reported EPS."""
@@ -812,72 +768,21 @@ class MarketApp:
 
         try:
             hist = self.data_provider.fetch_history(ticker_obj, "5y", "1d", log=self.log)
-            if hist is None or hist.empty or "Close" not in hist.columns:
-                self.valuation_status["pe_percentile_reason"] = "NO_PRICE_HISTORY"
-                return
-
-            eps_timeline, eps_reason = self._get_historical_ttm_eps(ticker_obj)
-            if eps_timeline is None or eps_timeline.empty:
-                self.valuation_status["pe_percentile_reason"] = eps_reason or "NO_EARNINGS_HISTORY"
-                return
-
-            hist_df = hist[["Close"]].copy().dropna()
-            hist_df["date"] = self._as_naive_datetime64_us(hist_df.index)
-            hist_df = hist_df.dropna(subset=["date"]).sort_values("date")
-
-            eps_timeline = eps_timeline.copy()
-            eps_timeline["report_date"] = self._as_naive_datetime64_us(eps_timeline["report_date"])
-            eps_timeline = eps_timeline.dropna(subset=["report_date"]).sort_values("report_date")
-
-            merged = pd.merge_asof(
-                hist_df[["date", "Close"]],
-                eps_timeline,
-                left_on="date",
-                right_on="report_date",
-                direction="backward"
+            eps_timeline, eps_reason = None, None
+            if valuation_core.has_price_history(hist):
+                eps_timeline, eps_reason = self._get_historical_ttm_eps(ticker_obj)
+            self.pe_percentile, self.valuation_status["pe_percentile_reason"] = valuation_core.pe_percentile(
+                hist, eps_timeline, current_pe_ttm, eps_reason=eps_reason, log=self.log
             )
-
-            pe_series = pd.to_numeric(merged["Close"], errors='coerce') / pd.to_numeric(merged["ttm_eps"], errors='coerce')
-            pe_series = pe_series.replace([np.inf, -np.inf], np.nan).dropna()
-
-            # For percentile comparability, use positive P/E history only.
-            pe_series = pe_series[pe_series > 0]
-            if pe_series.empty:
-                self.valuation_status["pe_percentile_reason"] = "NO_VALID_PE_HISTORY"
-                return
-
-            self.pe_percentile = float((pe_series < current_pe_ttm).mean() * 100.0)
-            self.valuation_status["pe_percentile_reason"] = None
         except Exception as e:
             self.log(f"P/E Percentile error: {e}")
             self.valuation_status["pe_percentile_reason"] = "NO_VALID_PE_HISTORY"
 
     def compute_peg_ratio(self):
         """Computes PEG with provider-first fallback to derived forward PEG."""
-        self.valuation_status["peg_reason"] = None
-
-        provider_peg = self._to_finite_float(self.peg_ratio)
-        if provider_peg is not None:
-            self.peg_ratio = provider_peg
-            return
-
-        pe_for_peg = self._to_finite_float(self.pe_fwd)
-        if pe_for_peg is None:
-            pe_for_peg = self._to_finite_float(self.pe_ttm)
-
-        growth_dec = self._to_finite_float(self.earnings_growth)
-        if pe_for_peg is None or growth_dec is None:
-            self.peg_ratio = None
-            self.valuation_status["peg_reason"] = "MISSING_PEG_INPUTS"
-            return
-
-        growth_pct = growth_dec * 100.0
-        if abs(growth_pct) < 1e-9:
-            self.peg_ratio = math.inf if pe_for_peg >= 0 else -math.inf
-            self.valuation_status["peg_reason"] = "ZERO_GROWTH"
-            return
-
-        self.peg_ratio = pe_for_peg / growth_pct
+        self.peg_ratio, _source, self.valuation_status["peg_reason"] = valuation_core.peg_ratio(
+            self.peg_ratio, self.pe_fwd, self.pe_ttm, self.earnings_growth
+        )
 
     def get_google_news_rss(self, ticker):
         self.log(f"Fetching Google RSS for {ticker} (Rich Data)...")
@@ -1763,11 +1668,11 @@ class MarketApp:
         worker.stock = stock
         worker.valuation_status = {}
         try:
-            info = self.data_provider.get_info(stock)
-            worker.pe_fwd = self._to_finite_float(info.get('forwardPE'))
-            worker.pe_ttm = self._to_finite_float(info.get('trailingPE'))
-            worker.peg_ratio = self._to_finite_float(info.get('trailingPegRatio'))
-            worker.earnings_growth = self._to_finite_float(info.get('earningsGrowth'))
+            info = valuation_core.read_info(self.data_provider.get_info(stock))
+            worker.pe_fwd = info["pe_fwd"]
+            worker.pe_ttm = info["pe_ttm"]
+            worker.peg_ratio = info["provider_peg"]
+            worker.earnings_growth = info["earnings_growth"]
             worker.calculate_pe_percentile(stock)
             worker.compute_peg_ratio()
         except Exception as exc:
